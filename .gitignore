@@ -6,3 +6,4 @@ artifacts/api-server/uploads/*
 !artifacts/api-server/uploads/.gitkeep
 .DS_Store
 *.tsbuildinfo
+.antigravitycli/

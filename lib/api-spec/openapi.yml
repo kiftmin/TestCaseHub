@@ -1,0 +1,1986 @@
+openapi: 3.1.0
+info:
+  title: TestCaseHub API
+  version: "1.0.0"
+  description: UAT Test Case Management API
+
+servers:
+  - url: http://localhost:3000/api
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        username: { type: string }
+        name: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [ADMIN, USER] }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    Project:
+      type: object
+      properties:
+        id: { type: integer }
+        project_code: { type: string }
+        name: { type: string }
+        designed_by: { type: string }
+        module_name: { type: string }
+        design_date: { type: string }
+        test_link: { type: string, nullable: true }
+        version: { type: integer }
+        version_date: { type: string, format: date-time }
+        test_lead_id: { type: integer, nullable: true }
+        is_signed_off: { type: integer }
+        sign_off_data: { type: string, nullable: true }
+        objectives: { type: string, nullable: true }
+        scope: { type: string, nullable: true }
+        out_of_scope: { type: string, nullable: true }
+        entry_criteria: { type: string, nullable: true }
+        exit_criteria: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ProjectAssignment:
+      type: object
+      properties:
+        id: { type: integer }
+        project_id: { type: integer }
+        user_id: { type: integer }
+        role: { type: string, enum: [TEST_LEAD, TEST_AUTHOR, BUSINESS_OWNER, TESTER, DEVELOPER, UAT_COORDINATOR] }
+        assigned_at: { type: string, format: date-time }
+
+    UseCase:
+      type: object
+      properties:
+        id: { type: integer }
+        project_id: { type: integer }
+        code: { type: string }
+        name: { type: string }
+        priority: { type: string, nullable: true }
+        category: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    TestCase:
+      type: object
+      properties:
+        id: { type: integer }
+        use_case_id: { type: integer }
+        case_number: { type: string }
+        title: { type: string }
+        test_type: { type: string, nullable: true }
+        estimated_minutes: { type: integer, nullable: true }
+        acceptance_criteria: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    TestStep:
+      type: object
+      properties:
+        id: { type: integer }
+        test_case_id: { type: integer }
+        step_number: { type: string }
+        instruction: { type: string }
+        test_data: { type: string, nullable: true }
+        expected_result: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    Attachment:
+      type: object
+      properties:
+        id: { type: integer }
+        entity_type: { type: string }
+        entity_id: { type: integer }
+        field: { type: string, nullable: true }
+        file_name: { type: string }
+        file_url: { type: string }
+        file_type: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    TestRun:
+      type: object
+      properties:
+        id: { type: integer }
+        project_id: { type: integer }
+        name: { type: string }
+        status: { type: string, enum: [scheduled, in_progress, completed] }
+        scheduled_at: { type: string, format: date-time, nullable: true }
+        passed: { type: boolean, nullable: true }
+        source_test_run_id: { type: integer, nullable: true }
+        entry_confirmed: { type: boolean }
+        entry_confirmed_by_user_id: { type: integer, nullable: true }
+        entry_confirmed_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    TestRunChecklistItem:
+      type: object
+      properties:
+        id: { type: integer }
+        test_run_id: { type: integer }
+        item_text: { type: string }
+        is_checked: { type: boolean }
+        checked_by_user_id: { type: integer, nullable: true }
+        checked_at: { type: string, format: date-time, nullable: true }
+        sort_order: { type: integer }
+        created_at: { type: string, format: date-time }
+
+    TestRunUseCase:
+      type: object
+      properties:
+        id: { type: integer }
+        test_run_id: { type: integer }
+        use_case_id: { type: integer }
+        assigned_tester_id: { type: integer, nullable: true }
+        free_pass: { type: boolean }
+        status: { type: string, enum: [pending, in_progress, passed, failed, passed_by_agreement] }
+        tester_sign_off: { type: boolean }
+        tester_sign_off_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    Execution:
+      type: object
+      properties:
+        id: { type: integer }
+        test_case_id: { type: integer }
+        test_run_id: { type: integer, nullable: true }
+        iteration_number: { type: integer }
+        tester_name: { type: string, nullable: true }
+        tester_id: { type: integer, nullable: true }
+        status: { type: string, enum: [in_progress, completed, failed] }
+        overall_result: { type: string, enum: [passed, failed, passed_by_agreement], nullable: true }
+        notes: { type: string, nullable: true }
+        executed_at: { type: string, format: date-time }
+
+    StepResult:
+      type: object
+      properties:
+        id: { type: integer }
+        execution_id: { type: integer }
+        step_id: { type: integer }
+        actual_result: { type: string, nullable: true }
+        comments: { type: string, nullable: true }
+        passed: { type: boolean, nullable: true }
+        recorded_at: { type: string, format: date-time }
+
+    Defect:
+      type: object
+      properties:
+        id: { type: integer }
+        test_run_id: { type: integer }
+        test_case_id: { type: integer }
+        execution_id: { type: integer }
+        tester_notes: { type: string, nullable: true }
+        status: { type: string }
+        retest_reason: { type: string, nullable: true }
+        accepted_by_business_note: { type: string, nullable: true }
+        rejection_log: { type: string, nullable: true }
+        severity: { type: string, nullable: true }
+        priority: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    DefectRetest:
+      type: object
+      properties:
+        id: { type: integer }
+        defect_id: { type: integer }
+        test_run_id: { type: integer }
+        assigned_tester_id: { type: integer, nullable: true }
+        retest_result: { type: string, nullable: true }
+        retest_notes: { type: string, nullable: true }
+        retested_by_user_id: { type: integer, nullable: true }
+        retested_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    Bug:
+      type: object
+      properties:
+        id: { type: integer }
+        project_id: { type: integer }
+        defect_id: { type: integer }
+        bug_number: { type: integer }
+        support_ticket_number: { type: string, nullable: true }
+        assigned_developer_id: { type: integer, nullable: true }
+        status: { type: string, enum: [OPEN, ASSIGNED, IN_PROGRESS, RESOLVED, FAILED_TO_RESOLVE, CLOSED, REOPENED] }
+        developer_notes: { type: string, nullable: true }
+        failed_to_resolve_reason: { type: string, nullable: true }
+        root_cause_category: { type: string, nullable: true }
+        opened_at: { type: string, format: date-time }
+        assigned_at: { type: string, format: date-time, nullable: true }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        test_at: { type: string, format: date-time, nullable: true }
+        failed_to_resolve_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    StatusAuditLog:
+      type: object
+      properties:
+        id: { type: integer }
+        entity_type: { type: string }
+        entity_id: { type: integer }
+        changed_by_user_id: { type: integer, nullable: true }
+        from_status: { type: string, nullable: true }
+        to_status: { type: string, nullable: true }
+        reason: { type: string, nullable: true }
+        changed_at: { type: string, format: date-time }
+
+    TeamDiscussion:
+      type: object
+      properties:
+        id: { type: integer }
+        project_id: { type: integer }
+        test_run_id: { type: integer }
+        initiated_by_user_id: { type: integer, nullable: true }
+        meeting_type: { type: string, enum: [defect_review, post_mortem] }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time, nullable: true }
+
+    TeamDiscussionParticipant:
+      type: object
+      properties:
+        id: { type: integer }
+        discussion_id: { type: integer }
+        user_id: { type: integer }
+        can_add_notes: { type: boolean }
+        added_at: { type: string, format: date-time }
+
+    DefectNote:
+      type: object
+      properties:
+        id: { type: integer }
+        defect_id: { type: integer }
+        discussion_id: { type: integer, nullable: true }
+        added_by_user_id: { type: integer, nullable: true }
+        note: { type: string }
+        created_at: { type: string, format: date-time }
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      tags: [Health]
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+
+  /auth/login:
+    post:
+      summary: Login
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  user:
+                    $ref: "#/components/schemas/User"
+
+  /auth/register:
+    post:
+      summary: Register (Admin only)
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                password: { type: string }
+                name: { type: string }
+                email: { type: string }
+                role: { type: string, enum: [ADMIN, USER] }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /users:
+    get:
+      summary: List all users (Admin only)
+      tags: [Users]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+    post:
+      summary: Create user (Admin only)
+      tags: [Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                password: { type: string }
+                name: { type: string }
+                email: { type: string }
+                role: { type: string, enum: [ADMIN, USER] }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /users/{userId}:
+    put:
+      summary: Update user (Admin only)
+      tags: [Users]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                email: { type: string }
+                role: { type: string, enum: [ADMIN, USER] }
+      responses:
+        "200":
+          description: OK
+
+  /users/{userId}/suspend:
+    put:
+      summary: Suspend/unsuspend user (Admin only)
+      tags: [Users]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /users/{userId}/password:
+    put:
+      summary: Change user password (Admin only)
+      tags: [Users]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /users/{userId}:
+    delete:
+      summary: Delete user (Admin only)
+      tags: [Users]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content
+
+  /projects:
+    get:
+      summary: List projects
+      tags: [Projects]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Project"
+    post:
+      summary: Create project (Admin only)
+      tags: [Projects]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                designedBy: { type: string }
+                moduleName: { type: string }
+                designDate: { type: string }
+                testLink: { type: string, nullable: true }
+                testLeadId: { type: integer }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+
+  /projects/{projectId}:
+    get:
+      summary: Get project by id
+      tags: [Projects]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+    put:
+      summary: Update project
+      tags: [Projects]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Project"
+      responses:
+        "200":
+          description: OK
+    delete:
+      summary: Delete project (Admin only)
+      tags: [Projects]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content
+
+  /projects/{projectId}/users:
+    get:
+      summary: List project users
+      tags: [ProjectAssignments]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProjectAssignment"
+    post:
+      summary: Assign user to project
+      tags: [ProjectAssignments]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId: { type: integer }
+                role: { type: string }
+      responses:
+        "201":
+          description: Created
+
+  /projects/{projectId}/users/{userId}:
+    delete:
+      summary: Remove user from project
+      tags: [ProjectAssignments]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content
+
+  /users/{userId}/projects:
+    get:
+      summary: List user's projects
+      tags: [ProjectAssignments]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Project"
+
+  /projects/{projectId}/use-cases:
+    get:
+      summary: List use cases for project
+      tags: [UseCases]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  testScenarios:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UseCase"
+    post:
+      summary: Create use case
+      tags: [UseCases]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: { type: string }
+                name: { type: string }
+                priority: { type: string, nullable: true }
+                category: { type: string, nullable: true }
+      responses:
+        "201":
+          description: Created
+
+  /use-cases/{useCaseId}:
+    put:
+      summary: Update use case
+      tags: [UseCases]
+      parameters:
+        - in: path
+          name: useCaseId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UseCase"
+      responses:
+        "200":
+          description: OK
+    delete:
+      summary: Delete use case
+      tags: [UseCases]
+      parameters:
+        - in: path
+          name: useCaseId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content
+
+  /use-cases/{useCaseId}/test-cases:
+    get:
+      summary: List test cases for use case
+      tags: [TestCases]
+      parameters:
+        - in: path
+          name: useCaseId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TestCase"
+    post:
+      summary: Create test case
+      tags: [TestCases]
+      parameters:
+        - in: path
+          name: useCaseId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                caseNumber: { type: string }
+                title: { type: string }
+                testType: { type: string, nullable: true }
+                estimatedMinutes: { type: integer, nullable: true }
+                acceptanceCriteria: { type: string, nullable: true }
+      responses:
+        "201":
+          description: Created
+
+  /test-cases/{testCaseId}:
+    put:
+      summary: Update test case
+      tags: [TestCases]
+      parameters:
+        - in: path
+          name: testCaseId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestCase"
+      responses:
+        "200":
+          description: OK
+    delete:
+      summary: Delete test case
+      tags: [TestCases]
+      parameters:
+        - in: path
+          name: testCaseId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content
+
+  /test-cases/{testCaseId}/steps:
+    get:
+      summary: List steps for test case
+      tags: [TestSteps]
+      parameters:
+        - in: path
+          name: testCaseId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TestStep"
+    post:
+      summary: Create step
+      tags: [TestSteps]
+      parameters:
+        - in: path
+          name: testCaseId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestStep"
+      responses:
+        "201":
+          description: Created
+
+  /test-cases/{testCaseId}/steps/bulk:
+    post:
+      summary: Bulk create steps
+      tags: [TestSteps]
+      parameters:
+        - in: path
+          name: testCaseId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/TestStep"
+      responses:
+        "201":
+          description: Created
+
+  /test-steps/{stepId}:
+    put:
+      summary: Update step
+      tags: [TestSteps]
+      parameters:
+        - in: path
+          name: stepId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestStep"
+      responses:
+        "200":
+          description: OK
+    delete:
+      summary: Delete step
+      tags: [TestSteps]
+      parameters:
+        - in: path
+          name: stepId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content
+
+  /projects/{projectId}/test-runs:
+    get:
+      summary: List test runs for project
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TestRun"
+    post:
+      summary: Create test run
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                scheduledAt: { type: string, format: date-time }
+                useCaseIds: { type: array, items: { type: integer } }
+      responses:
+        "201":
+          description: Created
+
+  /test-runs/{testRunId}:
+    get:
+      summary: Get test run by id
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+    patch:
+      summary: Update test run
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestRun"
+      responses:
+        "200":
+          description: OK
+    delete:
+      summary: Delete test run (scheduled only)
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content
+
+  /test-runs/{testRunId}/use-cases:
+    post:
+      summary: Add use case to test run
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                useCaseId: { type: integer }
+      responses:
+        "201":
+          description: Created
+
+  /test-runs/{testRunId}/use-cases/{testRunUseCaseId}:
+    patch:
+      summary: Update test run use case
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: testRunUseCaseId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                assignedTesterId: { type: integer, nullable: true }
+                freePass: { type: boolean }
+                status: { type: string }
+      responses:
+        "200":
+          description: OK
+    delete:
+      summary: Remove use case from test run
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: testRunUseCaseId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content
+
+  /test-runs/{testRunId}/use-cases/{useCaseId}/sync:
+    post:
+      summary: Sync use case status
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: useCaseId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /test-runs/{testRunId}/re-run:
+    post:
+      summary: Re-run failed test cases
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                scheduledAt: { type: string, format: date-time }
+                failedOnly: { type: boolean }
+      responses:
+        "201":
+          description: Created
+
+  /projects/{projectId}/test-runs/analytics:
+    get:
+      summary: Get test run analytics for project
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /test-runs/{testRunId}/full-report:
+    get:
+      summary: Get full test run report
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /test-runs/{testRunId}/confirm-entry:
+    patch:
+      summary: Confirm entry criteria
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /test-runs/{testRunId}/access-qr:
+    get:
+      summary: Generate QR code for test run
+      tags: [TestRuns]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessUrl: { type: string }
+                  qrDataUrl: { type: string }
+
+  /test-runs/{testRunId}/checklist:
+    get:
+      summary: Get test run checklist
+      tags: [TestRunChecklist]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TestRunChecklistItem"
+    post:
+      summary: Add checklist item
+      tags: [TestRunChecklist]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                itemText: { type: string }
+      responses:
+        "201":
+          description: Created
+
+  /test-runs/{testRunId}/checklist/{itemId}:
+    patch:
+      summary: Update checklist item
+      tags: [TestRunChecklist]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: itemId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                isChecked: { type: boolean }
+      responses:
+        "200":
+          description: OK
+    delete:
+      summary: Delete checklist item
+      tags: [TestRunChecklist]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: itemId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content
+
+  /test-runs/{testRunId}/use-cases/{testRunUseCaseId}/tester-sign-off:
+    patch:
+      summary: Tester sign off
+      tags: [Executions]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: testRunUseCaseId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /dashboard/tester/{userId}/test-runs:
+    get:
+      summary: Get tester's assigned test runs
+      tags: [Dashboard]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /test-runs/{testRunId}/test-cases/{testCaseId}/execute:
+    post:
+      summary: Execute test case
+      tags: [Executions]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: testCaseId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Execution"
+
+  /executions/{executionId}:
+    patch:
+      summary: Update execution
+      tags: [Executions]
+      parameters:
+        - in: path
+          name: executionId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string }
+                overall_result: { type: string }
+                notes: { type: string, nullable: true }
+      responses:
+        "200":
+          description: OK
+
+  /executions/{executionId}/steps/{stepId}/result:
+    post:
+      summary: Record step result
+      tags: [Executions]
+      parameters:
+        - in: path
+          name: executionId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: stepId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                actual_result: { type: string, nullable: true }
+                comments: { type: string, nullable: true }
+                passed: { type: boolean, nullable: true }
+      responses:
+        "201":
+          description: Created
+    put:
+      summary: Update step result
+      tags: [Executions]
+      parameters:
+        - in: path
+          name: executionId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: stepId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                actual_result: { type: string, nullable: true }
+                comments: { type: string, nullable: true }
+                passed: { type: boolean, nullable: true }
+      responses:
+        "200":
+          description: OK
+
+  /test-runs/{testRunId}/defects:
+    get:
+      summary: List defects for test run
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Defect"
+
+  /defects/{defectId}:
+    get:
+      summary: Get defect by id
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Defect"
+
+  /defects/{defectId}/flag-bug:
+    patch:
+      summary: Flag defect as bug
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/flag-retest:
+    patch:
+      summary: Flag defect for retest
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/flag-accepted-by-business:
+    patch:
+      summary: Flag defect accepted by business
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/business-accept:
+    patch:
+      summary: Business owner accepts defect
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/business-reject:
+    patch:
+      summary: Business owner rejects defect
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/classify:
+    patch:
+      summary: Classify defect
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                severity: { type: string }
+                priority: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/notes:
+    post:
+      summary: Add note to defect
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+      responses:
+        "201":
+          description: Created
+
+  /defects/{defectId}/retests:
+    get:
+      summary: List retests for defect
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DefectRetest"
+
+  /defect-retests/{retestId}:
+    patch:
+      summary: Update retest result
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: retestId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                retestResult: { type: string }
+                retestNotes: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /projects/{projectId}/bugs:
+    get:
+      summary: List bugs for project
+      tags: [Bugs]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Bug"
+
+  /bugs/{bugId}:
+    get:
+      summary: Get bug by id
+      tags: [Bugs]
+      parameters:
+        - in: path
+          name: bugId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bug"
+
+  /bugs/{bugId}/assign:
+    patch:
+      summary: Assign bug to developer
+      tags: [Bugs]
+      parameters:
+        - in: path
+          name: bugId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                developerId: { type: integer }
+                supportTicketNumber: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /bugs/{bugId}/status:
+    patch:
+      summary: Update bug status
+      tags: [Bugs]
+      parameters:
+        - in: path
+          name: bugId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string }
+                reason: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /bugs/{bugId}/notes:
+    patch:
+      summary: Add / bug notes
+      tags: [Bugs]
+      parameters:
+        - in: path
+          name: bugId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes: { type: string }
+                rootCauseCategory: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /bugs/{bugId}/reassign:
+    patch:
+      summary: Reassign bug developer
+      tags: [Bugs]
+      parameters:
+        - in: path
+          name: bugId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                developerId: { type: integer }
+      responses:
+        "200":
+          description: OK
+
+  /test-runs/{testRunId}/discussions:
+    post:
+      summary: Create team discussion
+      tags: [TeamDiscussions]
+      parameters:
+        - in: path
+          name: testRunId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                meetingType: { type: string, enum: [defect_review, post_mortem] }
+                participantIds: { type: array, items: { type: integer } }
+      responses:
+        "201":
+          description: Created
+
+  /discussions/{discussionId}:
+    get:
+      summary: Get discussion by id
+      tags: [TeamDiscussions]
+      parameters:
+        - in: path
+          name: discussionId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /discussions/{discussionId}/participants:
+    post:
+      summary: Add participant to discussion
+      tags: [TeamDiscussions]
+      parameters:
+        - in: path
+          name: discussionId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId: { type: integer }
+                canAddNotes: { type: boolean }
+      responses:
+        "201":
+          description: Created
+
+  /discussions/{discussionId}/participants/{userId}:
+    delete:
+      summary: Remove participant from discussion
+      tags: [TeamDiscussions]
+      parameters:
+        - in: path
+          name: discussionId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content
+
+  /discussions/{discussionId}/end:
+    patch:
+      summary: End discussion
+      tags: [TeamDiscussions]
+      parameters:
+        - in: path
+          name: discussionId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /discussions/{discussionId}/defects/{defectId}:
+    get:
+      summary: Get defects in discussion
+      tags: [TeamDiscussions]
+      parameters:
+        - in: path
+          name: discussionId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /dashboard/summary:
+    get:
+      summary: Dashboard summary
+      tags: [Dashboard]
+      responses:
+        "200":
+          description: OK
+
+  /dashboard/recent-activity:
+    get:
+      summary: Recent activity
+      tags: [Dashboard]
+      responses:
+        "200":
+          description: OK
+
+  /dashboard/developer/{userId}/bugs:
+    get:
+      summary: Developer's bugs
+      tags: [Dashboard]
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /upload:
+    post:
+      summary: Upload file
+      tags: [Uploads]
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fileUrl: { type: string }
+                  fileName: { type: string }
+                  fileType: { type: string }
+
+  /attachments:
+    post:
+      summary: Create attachment record
+      tags: [Uploads]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Attachment"
+      responses:
+        "201":
+          description: Created
+
+  /attachments/{entityType}/{entityId}:
+    get:
+      summary: List attachments for entity
+      tags: [Uploads]
+      parameters:
+        - in: path
+          name: entityType
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: entityId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Attachment"
+
+  /attachments/{attachmentId}:
+    delete:
+      summary: Delete attachment
+      tags: [Uploads]
+      parameters:
+        - in: path
+          name: attachmentId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: No Content
+
+  /projects/{projectId}/sign-off:
+    post:
+      summary: Sign off project
+      tags: [Projects]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /projects/{projectId}/sign-off-status:
+    get:
+      summary: Get sign off status
+      tags: [Projects]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /projects/{projectId}/uat-summary:
+    get:
+      summary: UAT summary
+      tags: [Projects]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /projects/{projectId}/audit-log:
+    get:
+      summary: Audit log for project
+      tags: [Projects]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 100
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: OK
+
+  /projects/code/{projectCode}:
+    get:
+      summary: Get project by code
+      tags: [Projects]
+      parameters:
+        - in: path
+          name: projectCode
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+
+  /projects/{projectId}/test-runs: {}
+
+security:
+  - BearerAuth: []

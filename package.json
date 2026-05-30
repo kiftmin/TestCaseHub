@@ -1,0 +1,27 @@
+{
+  "name": "testcasehub",
+  "private": true,
+  "version": "1.0.0",
+  "description": "TestCaseHub - UAT Test Case Management System",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "db:generate": "pnpm --filter db generate",
+    "db:migrate": "pnpm --filter db migrate",
+    "db:seed": "pnpm --filter db seed",
+    "db:studio": "pnpm --filter db studio",
+    "api:dev": "pnpm --filter api-server dev",
+    "api:build": "pnpm --filter api-server build",
+    "api:start": "pnpm --filter api-server start",
+    "client:dev": "pnpm --filter uat-manager dev",
+    "client:build": "pnpm --filter uat-manager build",
+    "client:preview": "pnpm --filter uat-manager preview",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

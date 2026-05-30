@@ -1,0 +1,119 @@
+import express from "express";
+import { eq, desc, and, sql } from "drizzle-orm";
+import { z } from "zod";
+import { db } from "../db.js";
+import * as schema from "@workspace/db";
+import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+
+const router = express.Router();
+
+async function bumpProjectVersion(projectId: number): Promise<void> {
+  await db
+    .update(schema.projects)
+    .set({
+      version: sql`${schema.projects.version} + 1`,
+      version_date: new Date(),
+    })
+    .where(eq(schema.projects.id, projectId));
+}
+
+async function logAudit(params: { entityType: string; entityId: number; changedByUserId: number | null; fromStatus?: string | null; toStatus?: string | null }) {
+  await db.insert(schema.statusAuditLog).values({
+    entity_type: params.entityType,
+    entity_id: params.entityId,
+    changed_by_user_id: params.changedByUserId,
+    from_status: params.fromStatus ?? null,
+    to_status: params.toStatus ?? null,
+  });
+}
+
+// These routes are mounted at /api/use-cases and /api/projects/:projectId/use-cases
+// We handle the project-based route differently - note that Express router params work from the mount point
+
+// GET /api/projects/:projectId/use-cases
+router.get("/", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    // This can be called as /api/projects/:projectId/use-cases (projectId is a query param) 
+    // or as route mounted with projectId in path
+    const projectId = Number(req.params.projectId || req.query.projectId);
+    if (!projectId) {
+      res.status(400).json({ message: "projectId is required" });
+      return;
+    }
+    const result = await db.query.useCases.findMany({
+      where: eq(schema.useCases.project_id, projectId),
+      with: { testCases: { with: { steps: true } } },
+    });
+    res.json({ testScenarios: result });
+  } catch (err) { next(err); }
+});
+
+// POST /api/projects/:projectId/use-cases
+router.post("/", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const projectId = Number(req.params.projectId || req.query.projectId);
+    if (!projectId) {
+      res.status(400).json({ message: "projectId is required" });
+      return;
+    }
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD", "TEST_AUTHOR"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const bodySchema = z.object({
+      code: z.string(),
+      name: z.string(),
+      priority: z.string().nullable().optional(),
+      category: z.string().nullable().optional(),
+    });
+    const data = bodySchema.parse(req.body);
+
+    const [useCase] = await db.insert(schema.useCases)
+      .values({ project_id: projectId, code: data.code, name: data.name, priority: data.priority ?? null, category: data.category ?? null })
+      .returning();
+
+    await bumpProjectVersion(projectId);
+    await logAudit({ entityType: "test_scenario", entityId: useCase.id, changedByUserId: req.user!.userId, toStatus: "created" });
+
+    res.status(201).json(useCase);
+  } catch (err) { next(err); }
+});
+
+// PUT /api/use-cases/:useCaseId
+router.put("/:useCaseId", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const useCaseId = Number(req.params.useCaseId);
+    const useCase = await db.query.useCases.findFirst({ where: eq(schema.useCases.id, useCaseId) });
+    if (!useCase) { res.status(404).json({ message: "Not found" }); return; }
+    const allowed = await checkProjectRole(req, useCase.project_id, ["TEST_LEAD", "TEST_AUTHOR"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const [updated] = await db.update(schema.useCases)
+      .set(req.body)
+      .where(eq(schema.useCases.id, useCaseId))
+      .returning();
+
+    await bumpProjectVersion(useCase.project_id);
+    await logAudit({ entityType: "test_scenario", entityId: useCaseId, changedByUserId: req.user!.userId, toStatus: "updated" });
+
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/use-cases/:useCaseId
+router.delete("/:useCaseId", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const useCaseId = Number(req.params.useCaseId);
+    const useCase = await db.query.useCases.findFirst({ where: eq(schema.useCases.id, useCaseId) });
+    if (!useCase) { res.status(404).json({ message: "Not found" }); return; }
+    const allowed = await checkProjectRole(req, useCase.project_id, ["TEST_LEAD", "TEST_AUTHOR"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    await db.delete(schema.useCases).where(eq(schema.useCases.id, useCaseId));
+    await bumpProjectVersion(useCase.project_id);
+    await logAudit({ entityType: "test_scenario", entityId: useCaseId, changedByUserId: req.user!.userId, toStatus: "deleted" });
+
+    res.status(204).end();
+  } catch (err) { next(err); }
+});
+
+export default router;

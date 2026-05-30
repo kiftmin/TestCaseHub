@@ -1,0 +1,12 @@
+{
+  "name": "@workspace/api-spec",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "generate": "orval --config orval.config.ts"
+  },
+  "devDependencies": {
+    "orval": "^6.28.0",
+    "typescript": "^5.4.0"
+  }
+}

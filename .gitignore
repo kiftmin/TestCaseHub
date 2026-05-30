@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.log
+artifacts/api-server/uploads/*
+!artifacts/api-server/uploads/.gitkeep
+.DS_Store
+*.tsbuildinfo

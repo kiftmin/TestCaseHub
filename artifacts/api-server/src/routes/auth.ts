@@ -37,7 +37,7 @@ router.post("/login", async (req, res, next) => {
       return res.status(403).json({ message: "Account has been suspended" });
     }
 
-    const valid = await bcrypt.compare(password, user.password);
+    const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
@@ -48,7 +48,8 @@ router.post("/login", async (req, res, next) => {
       { expiresIn: "7d" }
     );
 
-    res.json({ token, user });
+    const { password_hash, ...safeUser } = user;
+    res.json({ token, user: safeUser });
   } catch (err) {
     next(err);
   }
@@ -62,10 +63,11 @@ router.post("/register", async (req, res, next) => {
 
     const [user] = await db
       .insert(schema.users)
-      .values({ username, password: hashedPassword, name, email, role })
+      .values({ username, password_hash: hashedPassword, name, email, role })
       .returning();
 
-    res.status(201).json(user);
+    const { password_hash, ...safeUser } = user;
+    res.status(201).json(safeUser);
   } catch (err) {
     next(err);
   }

@@ -1,3 +1,6 @@
 packages:
   - 'lib/*'
   - 'artifacts/*'
+allowBuilds:
+  es5-ext: true
+  esbuild: true

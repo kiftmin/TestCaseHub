@@ -237,22 +237,7 @@ router.post(
         })
         .returning();
 
-      // Auto-create defect on failure — unconditional (spec §7.8)
-      let defect = null;
-      if (!parsed.passed) {
-        [defect] = await db
-          .insert(schema.defects)
-          .values({
-            test_run_id: execution.test_run_id!,
-            test_case_id: execution.test_case_id,
-            execution_id: executionId,
-            tester_notes: parsed.comments || "Auto-created from failed step",
-            status: "New Defect",
-          })
-          .returning();
-      }
-
-      res.status(201).json({ stepResult, defect });
+      res.status(201).json({ stepResult });
     } catch (err) {
       next(err);
     }

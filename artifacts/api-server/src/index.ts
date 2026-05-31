@@ -1,5 +1,7 @@
 import express, { Express } from "express";
 import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import pinoHttp from "pino-http";
 import { logger } from "./utils/logger.js";
 import { errorHandler } from "./middlewares/errorHandler.js";
@@ -26,14 +28,24 @@ import attachmentRoutes from "./routes/attachments.js";
 
 const app: Express = express();
 app.use(cors());
+app.use(helmet());
 app.use(express.json());
 app.use(pinoHttp({ logger }));
 app.use("/uploads", express.static("uploads"));
 
 const api = express.Router();
 
+// Rate limiting on auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { message: "Too many requests, please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // Public
-api.use("/auth", authRoutes);
+api.use("/auth", authLimiter, authRoutes);
 api.use("/health", healthRoutes);
 
 // Protected — specific mounts first

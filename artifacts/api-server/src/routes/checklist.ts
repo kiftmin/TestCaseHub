@@ -3,11 +3,12 @@ import { eq, desc } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
+import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
 
 const router = express.Router();
 
 // GET /api/test-runs/:testRunId/checklist
-router.get("/", async (req, res, next) => {
+router.get("/", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId || req.query.testRunId);
     if (!testRunId) { res.status(400).json({ message: "testRunId is required" }); return; }
@@ -20,13 +21,20 @@ router.get("/", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/test-runs/:testRunId/checklist
-router.post("/", async (req, res, next) => {
+// POST /api/test-runs/:testRunId/checklist — Admin or TEST_LEAD
+router.post("/", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId || req.body.test_run_id);
+    if (!testRunId) { res.status(400).json({ message: "test_run_id is required" }); return; }
+
+    const testRun = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, testRunId) });
+    if (!testRun) { res.status(404).json({ message: "Test run not found" }); return; }
+
+    const allowed = await checkProjectRole(req, testRun.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
     const parsed = z.object({ itemText: z.string() }).parse(req.body);
 
-    // Get max sort_order
     const items = await db.query.testRunChecklistItems.findMany({
       where: eq(schema.testRunChecklistItems.test_run_id, testRunId),
       orderBy: desc(schema.testRunChecklistItems.sort_order),
@@ -41,8 +49,8 @@ router.post("/", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/test-runs/:testRunId/checklist/:itemId
-router.patch("/:itemId", async (req, res, next) => {
+// PATCH /api/test-runs/:testRunId/checklist/:itemId — Admin or TEST_LEAD
+router.patch("/:itemId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const itemId = Number(req.params.itemId);
     const parsed = z.object({ isChecked: z.boolean() }).parse(req.body);
@@ -50,11 +58,17 @@ router.patch("/:itemId", async (req, res, next) => {
     const existing = await db.query.testRunChecklistItems.findFirst({ where: eq(schema.testRunChecklistItems.id, itemId) });
     if (!existing) { res.status(404).json({ message: "Checklist item not found" }); return; }
 
+    const testRun = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, existing.test_run_id) });
+    if (!testRun) { res.status(404).json({ message: "Test run not found" }); return; }
+
+    const allowed = await checkProjectRole(req, testRun.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
     const [updated] = await db.update(schema.testRunChecklistItems)
       .set({
         is_checked: parsed.isChecked,
         checked_at: parsed.isChecked ? new Date() : null,
-        checked_by_user_id: parsed.isChecked ? (req as any).user?.userId : null,
+        checked_by_user_id: parsed.isChecked ? req.user!.userId : null,
       })
       .where(eq(schema.testRunChecklistItems.id, itemId))
       .returning();
@@ -62,10 +76,19 @@ router.patch("/:itemId", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// DELETE /api/test-runs/:testRunId/checklist/:itemId
-router.delete("/:itemId", async (req, res, next) => {
+// DELETE /api/test-runs/:testRunId/checklist/:itemId — Admin or TEST_LEAD
+router.delete("/:itemId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const itemId = Number(req.params.itemId);
+    const existing = await db.query.testRunChecklistItems.findFirst({ where: eq(schema.testRunChecklistItems.id, itemId) });
+    if (!existing) { res.status(404).json({ message: "Checklist item not found" }); return; }
+
+    const testRun = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, existing.test_run_id) });
+    if (!testRun) { res.status(404).json({ message: "Test run not found" }); return; }
+
+    const allowed = await checkProjectRole(req, testRun.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
     await db.delete(schema.testRunChecklistItems).where(eq(schema.testRunChecklistItems.id, itemId));
     res.status(204).end();
   } catch (err) { next(err); }

@@ -3,14 +3,31 @@ import { eq, desc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
+import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
 
 const router = express.Router();
 
-// GET /api/test-steps?testCaseId=
-router.get("/", async (req, res, next) => {
+async function bumpProjectVersion(projectId: number): Promise<void> {
+  await db.update(schema.projects)
+    .set({ version: sql`${schema.projects.version} + 1`, version_date: new Date() })
+    .where(eq(schema.projects.id, projectId));
+}
+
+async function logAudit(params: { entityType: string; entityId: number; changedByUserId: number | null; fromStatus?: string | null; toStatus?: string | null }) {
+  await db.insert(schema.statusAuditLog).values({
+    entity_type: params.entityType,
+    entity_id: params.entityId,
+    changed_by_user_id: params.changedByUserId,
+    from_status: params.fromStatus ?? null,
+    to_status: params.toStatus ?? null,
+  });
+}
+
+// GET /api/test-cases/:testCaseId/steps
+router.get("/", async (req: AuthenticatedRequest, res, next) => {
   try {
-    const testCaseId = Number(req.query.testCaseId);
-    if (!testCaseId) { res.status(400).json({ message: "testCaseId query parameter is required" }); return; }
+    const testCaseId = Number(req.params.testCaseId || req.query.testCaseId);
+    if (!testCaseId) { res.status(400).json({ message: "testCaseId is required" }); return; }
     const data = await db.query.testSteps.findMany({
       where: eq(schema.testSteps.test_case_id, testCaseId),
       orderBy: sql`CAST(${schema.testSteps.step_number} AS INTEGER)`,
@@ -20,7 +37,7 @@ router.get("/", async (req, res, next) => {
 });
 
 // GET /api/test-steps/:stepId
-router.get("/:stepId", async (req, res, next) => {
+router.get("/:stepId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const id = Number(req.params.stepId);
     const step = await db.query.testSteps.findFirst({ where: eq(schema.testSteps.id, id) });
@@ -29,36 +46,52 @@ router.get("/:stepId", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/test-cases/:testCaseId/steps
-router.post("/", async (req, res, next) => {
+// POST /api/test-cases/:testCaseId/steps — Admin, TEST_LEAD, TEST_AUTHOR
+router.post("/", async (req: AuthenticatedRequest, res, next) => {
   try {
+    const testCaseId = Number(req.params.testCaseId || req.body.test_case_id);
+    if (!testCaseId) { res.status(400).json({ message: "test_case_id is required" }); return; }
+
+    const testCase = await db.query.testCases.findFirst({ where: eq(schema.testCases.id, testCaseId) });
+    if (!testCase) { res.status(404).json({ message: "Test case not found" }); return; }
+
+    const useCase = await db.query.useCases.findFirst({ where: eq(schema.useCases.id, testCase.use_case_id) });
+    if (!useCase) { res.status(404).json({ message: "Use case not found" }); return; }
+
+    const allowed = await checkProjectRole(req, useCase.project_id, ["TEST_LEAD", "TEST_AUTHOR"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
     const parsed = z.object({
-      test_case_id: z.number(),
+      test_case_id: z.number().optional(),
       step_number: z.string(),
       instruction: z.string(),
       test_data: z.string().optional(),
       expected_result: z.string().optional(),
     }).parse(req.body);
 
-    const testCase = await db.query.testCases.findFirst({ where: eq(schema.testCases.id, parsed.test_case_id) });
-    if (!testCase) { res.status(404).json({ message: "Test case not found" }); return; }
-
-    const [inserted] = await db.insert(schema.testSteps).values(parsed).returning();
-
-    const useCase = await db.query.useCases.findFirst({ where: eq(schema.useCases.id, testCase.use_case_id) });
-    if (useCase) {
-      await db.update(schema.projects)
-        .set({ version: sql`${schema.projects.version} + 1`, version_date: new Date() })
-        .where(eq(schema.projects.id, useCase.project_id));
-    }
+    const [inserted] = await db.insert(schema.testSteps).values({ ...parsed, test_case_id: testCaseId }).returning();
+    await bumpProjectVersion(useCase.project_id);
+    await logAudit({ entityType: "test_step", entityId: inserted.id, changedByUserId: req.user!.userId, toStatus: "created" });
 
     res.status(201).json(inserted);
   } catch (err) { next(err); }
 });
 
 // POST /api/test-steps/bulk
-router.post("/bulk", async (req, res, next) => {
+router.post("/bulk", async (req: AuthenticatedRequest, res, next) => {
   try {
+    const testCaseId = Number(req.body.test_case_id);
+    if (!testCaseId) { res.status(400).json({ message: "test_case_id is required" }); return; }
+
+    const testCase = await db.query.testCases.findFirst({ where: eq(schema.testCases.id, testCaseId) });
+    if (!testCase) { res.status(404).json({ message: "Test case not found" }); return; }
+
+    const useCase = await db.query.useCases.findFirst({ where: eq(schema.useCases.id, testCase.use_case_id) });
+    if (!useCase) { res.status(404).json({ message: "Use case not found" }); return; }
+
+    const allowed = await checkProjectRole(req, useCase.project_id, ["TEST_LEAD", "TEST_AUTHOR"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
     const parsed = z.object({
       test_case_id: z.number(),
       steps: z.array(z.object({
@@ -69,25 +102,16 @@ router.post("/bulk", async (req, res, next) => {
       })),
     }).parse(req.body);
 
-    const testCase = await db.query.testCases.findFirst({ where: eq(schema.testCases.id, parsed.test_case_id) });
-    if (!testCase) { res.status(404).json({ message: "Test case not found" }); return; }
-
     const values = parsed.steps.map(step => ({ test_case_id: parsed.test_case_id, ...step }));
     const inserted = await db.insert(schema.testSteps).values(values).returning();
-
-    const useCase = await db.query.useCases.findFirst({ where: eq(schema.useCases.id, testCase.use_case_id) });
-    if (useCase) {
-      await db.update(schema.projects)
-        .set({ version: sql`${schema.projects.version} + 1`, version_date: new Date() })
-        .where(eq(schema.projects.id, useCase.project_id));
-    }
+    await bumpProjectVersion(useCase.project_id);
 
     res.status(201).json(inserted);
   } catch (err) { next(err); }
 });
 
-// PUT /api/test-steps/:stepId
-router.put("/:stepId", async (req, res, next) => {
+// PUT /api/test-steps/:stepId — Admin, TEST_LEAD, TEST_AUTHOR (with Zod validation)
+router.put("/:stepId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const id = Number(req.params.stepId);
     const existing = await db.query.testSteps.findFirst({
@@ -96,24 +120,33 @@ router.put("/:stepId", async (req, res, next) => {
     });
     if (!existing) { res.status(404).json({ message: "Not found" }); return; }
 
+    const useCase = await db.query.useCases.findFirst({ where: eq(schema.useCases.id, existing.testCase.use_case_id) });
+    if (!useCase) { res.status(404).json({ message: "Use case not found" }); return; }
+
+    const allowed = await checkProjectRole(req, useCase.project_id, ["TEST_LEAD", "TEST_AUTHOR"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const parsed = z.object({
+      step_number: z.string().optional(),
+      instruction: z.string().optional(),
+      test_data: z.string().nullable().optional(),
+      expected_result: z.string().nullable().optional(),
+    }).parse(req.body);
+
     const [updated] = await db.update(schema.testSteps)
-      .set(req.body)
+      .set(parsed)
       .where(eq(schema.testSteps.id, id))
       .returning();
 
-    const useCase = await db.query.useCases.findFirst({ where: eq(schema.useCases.id, existing.testCase.use_case_id) });
-    if (useCase) {
-      await db.update(schema.projects)
-        .set({ version: sql`${schema.projects.version} + 1`, version_date: new Date() })
-        .where(eq(schema.projects.id, useCase.project_id));
-    }
+    await bumpProjectVersion(useCase.project_id);
+    await logAudit({ entityType: "test_step", entityId: id, changedByUserId: req.user!.userId, toStatus: "updated" });
 
     res.json(updated);
   } catch (err) { next(err); }
 });
 
-// DELETE /api/test-steps/:stepId
-router.delete("/:stepId", async (req, res, next) => {
+// DELETE /api/test-steps/:stepId — Admin, TEST_LEAD, TEST_AUTHOR
+router.delete("/:stepId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const id = Number(req.params.stepId);
     const existing = await db.query.testSteps.findFirst({
@@ -122,14 +155,15 @@ router.delete("/:stepId", async (req, res, next) => {
     });
     if (!existing) { res.status(404).json({ message: "Not found" }); return; }
 
-    await db.delete(schema.testSteps).where(eq(schema.testSteps.id, id));
-
     const useCase = await db.query.useCases.findFirst({ where: eq(schema.useCases.id, existing.testCase.use_case_id) });
-    if (useCase) {
-      await db.update(schema.projects)
-        .set({ version: sql`${schema.projects.version} + 1`, version_date: new Date() })
-        .where(eq(schema.projects.id, useCase.project_id));
-    }
+    if (!useCase) { res.status(404).json({ message: "Use case not found" }); return; }
+
+    const allowed = await checkProjectRole(req, useCase.project_id, ["TEST_LEAD", "TEST_AUTHOR"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
+    await db.delete(schema.testSteps).where(eq(schema.testSteps.id, id));
+    await bumpProjectVersion(useCase.project_id);
+    await logAudit({ entityType: "test_step", entityId: id, changedByUserId: req.user!.userId, toStatus: "deleted" });
 
     res.status(204).end();
   } catch (err) { next(err); }

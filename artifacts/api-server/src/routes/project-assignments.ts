@@ -8,7 +8,7 @@ import { authenticate, authorize, authorizeProjectRole, checkProjectRole, Authen
 const router = express.Router();
 
 // GET /api/projects/:projectId/users
-router.get("/:projectId/users", async (req: AuthenticatedRequest, res, next) => {
+router.get("/projects/:projectId/users", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
     const assignments = await db.query.projectAssignments.findMany({
@@ -20,7 +20,7 @@ router.get("/:projectId/users", async (req: AuthenticatedRequest, res, next) => 
 });
 
 // POST /api/projects/:projectId/users
-router.post("/:projectId/users", async (req: AuthenticatedRequest, res, next) => {
+router.post("/projects/:projectId/users", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
     const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
@@ -41,7 +41,7 @@ router.post("/:projectId/users", async (req: AuthenticatedRequest, res, next) =>
 });
 
 // DELETE /api/projects/:projectId/users/:userId
-router.delete("/:projectId/users/:userId", async (req: AuthenticatedRequest, res, next) => {
+router.delete("/projects/:projectId/users/:userId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
     const userId = Number(req.params.userId);
@@ -65,7 +65,6 @@ router.delete("/:projectId/users/:userId", async (req: AuthenticatedRequest, res
 
 // GET /api/users/:userId/projects
 router.get("/users/:userId/projects", async (req: AuthenticatedRequest, res, next) => {
-// This route should be mounted at /api, so full path is /api/users/:userId/projects
   try {
     const userId = Number(req.params.userId);
     const assignments = await db.query.projectAssignments.findMany({

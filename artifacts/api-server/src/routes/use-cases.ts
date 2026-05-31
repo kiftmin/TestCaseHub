@@ -33,8 +33,6 @@ async function logAudit(params: { entityType: string; entityId: number; changedB
 // GET /api/projects/:projectId/use-cases
 router.get("/", async (req: AuthenticatedRequest, res, next) => {
   try {
-    // This can be called as /api/projects/:projectId/use-cases (projectId is a query param) 
-    // or as route mounted with projectId in path
     const projectId = Number(req.params.projectId || req.query.projectId);
     if (!projectId) {
       res.status(400).json({ message: "projectId is required" });
@@ -44,6 +42,21 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
       where: eq(schema.useCases.project_id, projectId),
       with: { testCases: { with: { steps: true } } },
     });
+    res.json({ testScenarios: result });
+  } catch (err) { next(err); }
+});
+
+// GET /api/use-cases/:useCaseId/test-cases
+router.get("/:useCaseId/test-cases", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const useCaseId = Number(req.params.useCaseId);
+    const data = await db.query.testCases.findMany({
+      where: eq(schema.testCases.use_case_id, useCaseId),
+      orderBy: desc(schema.testCases.created_at),
+    });
+    res.json(data);
+  } catch (err) { next(err); }
+});
     res.json({ testScenarios: result });
   } catch (err) { next(err); }
 });
@@ -87,8 +100,15 @@ router.put("/:useCaseId", async (req: AuthenticatedRequest, res, next) => {
     const allowed = await checkProjectRole(req, useCase.project_id, ["TEST_LEAD", "TEST_AUTHOR"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
+    const parsed = z.object({
+      code: z.string().optional(),
+      name: z.string().optional(),
+      priority: z.string().nullable().optional(),
+      category: z.string().nullable().optional(),
+    }).parse(req.body);
+
     const [updated] = await db.update(schema.useCases)
-      .set(req.body)
+      .set(parsed)
       .where(eq(schema.useCases.id, useCaseId))
       .returning();
 

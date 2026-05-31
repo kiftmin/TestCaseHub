@@ -19,13 +19,9 @@ async function logAudit(params: { entityType: string; entityId: number; changedB
 }
 
 // GET /api/projects/:projectId/bugs
-router.get("/", async (req: AuthenticatedRequest, res, next) => {
+router.get("/projects/:projectId/bugs", async (req: AuthenticatedRequest, res, next) => {
   try {
-    const projectId = Number(req.params.projectId || req.query.projectId);
-    if (!projectId) {
-      res.status(400).json({ message: "projectId is required" });
-      return;
-    }
+    const projectId = Number(req.params.projectId);
     const conditions = [eq(schema.bugs.project_id, projectId)];
     if (req.query.status) conditions.push(eq(schema.bugs.status, req.query.status as string));
     if (req.query.developerId) conditions.push(eq(schema.bugs.assigned_developer_id, Number(req.query.developerId)));
@@ -42,7 +38,7 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
 });
 
 // GET /api/bugs/:bugId
-router.get("/:bugId", async (req: AuthenticatedRequest, res, next) => {
+router.get("/bugs/:bugId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const bugId = Number(req.params.bugId);
     const bug = await db.query.bugs.findFirst({
@@ -54,8 +50,8 @@ router.get("/:bugId", async (req: AuthenticatedRequest, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/bugs/:bugId/assign
-router.patch("/:bugId/assign", async (req: AuthenticatedRequest, res, next) => {
+// PATCH /api/bugs/:bugId/assign — TEST_LEAD only
+router.patch("/bugs/:bugId/assign", async (req: AuthenticatedRequest, res, next) => {
   try {
     const bugId = Number(req.params.bugId);
     const bodySchema = z.object({ developerId: z.number(), supportTicketNumber: z.string().optional() });
@@ -63,6 +59,9 @@ router.patch("/:bugId/assign", async (req: AuthenticatedRequest, res, next) => {
 
     const bug = await db.query.bugs.findFirst({ where: eq(schema.bugs.id, bugId) });
     if (!bug) { res.status(404).json({ message: "Not found" }); return; }
+
+    const allowed = await checkProjectRole(req, bug.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
 
     const oldStatus = bug.status;
     const [updated] = await db.update(schema.bugs)
@@ -82,8 +81,8 @@ router.patch("/:bugId/assign", async (req: AuthenticatedRequest, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/bugs/:bugId/status
-router.patch("/:bugId/status", async (req: AuthenticatedRequest, res, next) => {
+// PATCH /api/bugs/:bugId/status — TEST_LEAD or assigned DEVELOPER
+router.patch("/bugs/:bugId/status", async (req: AuthenticatedRequest, res, next) => {
   try {
     const bugId = Number(req.params.bugId);
     const bodySchema = z.object({ status: z.string(), reason: z.string().optional() });
@@ -91,6 +90,13 @@ router.patch("/:bugId/status", async (req: AuthenticatedRequest, res, next) => {
 
     const bug = await db.query.bugs.findFirst({ where: eq(schema.bugs.id, bugId) });
     if (!bug) { res.status(404).json({ message: "Not found" }); return; }
+
+    const isTestLead = await checkProjectRole(req, bug.project_id, ["TEST_LEAD"]);
+    const isAssignedDev = bug.assigned_developer_id === req.user!.userId;
+    if (!isTestLead && !isAssignedDev && req.user!.role !== "ADMIN") {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
 
     const oldStatus = bug.status;
     const updateData: any = { status: data.status, updated_at: new Date() };
@@ -110,7 +116,6 @@ router.patch("/:bugId/status", async (req: AuthenticatedRequest, res, next) => {
 
     await logAudit({ entityType: "bug", entityId: bugId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: data.status, reason: data.reason });
 
-    // If bug goes to TEST, update linked defect status
     if (data.status === "TEST") {
       await db.update(schema.defects)
         .set({ status: "Ready for Testing", updated_at: new Date() })
@@ -121,12 +126,22 @@ router.patch("/:bugId/status", async (req: AuthenticatedRequest, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/bugs/:bugId/notes
-router.patch("/:bugId/notes", async (req: AuthenticatedRequest, res, next) => {
+// PATCH /api/bugs/:bugId/notes — DEVELOPER (own) or TEST_LEAD
+router.patch("/bugs/:bugId/notes", async (req: AuthenticatedRequest, res, next) => {
   try {
     const bugId = Number(req.params.bugId);
     const bodySchema = z.object({ notes: z.string().optional(), rootCauseCategory: z.string().optional() });
     const data = bodySchema.parse(req.body);
+
+    const bug = await db.query.bugs.findFirst({ where: eq(schema.bugs.id, bugId) });
+    if (!bug) { res.status(404).json({ message: "Not found" }); return; }
+
+    const isTestLead = await checkProjectRole(req, bug.project_id, ["TEST_LEAD"]);
+    const isAssignedDev = bug.assigned_developer_id === req.user!.userId;
+    if (!isTestLead && !isAssignedDev && req.user!.role !== "ADMIN") {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
 
     const updateData: any = { updated_at: new Date() };
     if (data.notes !== undefined) updateData.developer_notes = data.notes;
@@ -140,12 +155,18 @@ router.patch("/:bugId/notes", async (req: AuthenticatedRequest, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/bugs/:bugId/reassign
-router.patch("/:bugId/reassign", async (req: AuthenticatedRequest, res, next) => {
+// PATCH /api/bugs/:bugId/reassign — TEST_LEAD only
+router.patch("/bugs/:bugId/reassign", async (req: AuthenticatedRequest, res, next) => {
   try {
     const bugId = Number(req.params.bugId);
     const bodySchema = z.object({ developerId: z.number() });
     const data = bodySchema.parse(req.body);
+
+    const bug = await db.query.bugs.findFirst({ where: eq(schema.bugs.id, bugId) });
+    if (!bug) { res.status(404).json({ message: "Not found" }); return; }
+
+    const allowed = await checkProjectRole(req, bug.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
 
     const [updated] = await db.update(schema.bugs)
       .set({ assigned_developer_id: data.developerId, status: "ASSIGNED", assigned_at: new Date(), updated_at: new Date() })

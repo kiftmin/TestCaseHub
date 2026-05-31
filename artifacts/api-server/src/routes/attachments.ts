@@ -28,9 +28,27 @@ const storage = multer.diskStorage({
   },
 });
 
+// Allowed MIME types per spec: images, PDF, DOCX, XLSX
+const ALLOWED_MIMES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+];
+
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    if (ALLOWED_MIMES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Invalid file type. Allowed: JPEG, PNG, GIF, WebP, PDF, DOCX, XLSX"));
+    }
+  },
 });
 
 // POST /api/upload
@@ -109,7 +127,6 @@ router.delete("/attachments/:attachmentId", async (req, res, next) => {
       return;
     }
 
-    // Remove the physical file if it exists
     if (existing.file_url) {
       const filePath = path.join(
         __dirname,

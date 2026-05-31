@@ -5,6 +5,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
+import { authenticate, authorize } from "../middlewares/auth.js";
 
 const router = express.Router();
 
@@ -55,7 +56,7 @@ router.post("/login", async (req, res, next) => {
   }
 });
 
-router.post("/register", async (req, res, next) => {
+router.post("/register", authenticate, authorize(["ADMIN"]), async (req, res, next) => {
   try {
     const { username, password, name, email, role } = registerSchema.parse(req.body);
 

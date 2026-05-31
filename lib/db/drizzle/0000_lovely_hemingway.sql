@@ -450,11 +450,16 @@ END $$;
 DO $$ BEGIN
  ALTER TABLE "test_steps" ADD CONSTRAINT "test_steps_test_case_id_test_cases_id_fk" FOREIGN KEY ("test_case_id") REFERENCES "public"."test_cases"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
- WHEN duplicate_object THEN null;
+  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
-DO $$ BEGIN
- ALTER TABLE "use_cases" ADD CONSTRAINT "use_cases_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;
-EXCEPTION
- WHEN duplicate_object THEN null;
-END $$;
+-- Composite indexes for high-frequency filter columns
+CREATE INDEX IF NOT EXISTS idx_project_assignments_project_user ON "project_assignments" ("project_id", "user_id");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS idx_defects_test_run_id ON "defects" ("test_run_id");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS idx_bugs_project_id ON "bugs" ("project_id");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS idx_executions_test_run_case ON "executions" ("test_run_id", "test_case_id");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON "status_audit_log" ("entity_type", "entity_id");

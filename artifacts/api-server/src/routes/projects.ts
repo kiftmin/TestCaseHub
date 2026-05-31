@@ -45,7 +45,6 @@ async function logAudit(params: {
 }
 
 // GET /api/projects - List all projects
-// Filtered by user's assignments for non-admins
 router.get("/", async (req: AuthenticatedRequest, res, next) => {
   try {
     if (req.user!.role === "ADMIN") {
@@ -55,7 +54,6 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
       });
       res.json(projects);
     } else {
-      // Get projects where user has an assignment
       const assignments = await db.query.projectAssignments.findMany({
         where: eq(schema.projectAssignments.user_id, req.user!.userId),
         with: { project: { with: { testLead: true } } },
@@ -93,7 +91,6 @@ router.post("/", authenticate, authorize(["ADMIN"]), async (req: AuthenticatedRe
       })
       .returning();
 
-    // Auto-assign the Test Lead
     await db.insert(schema.projectAssignments)
       .values({
         project_id: project.id,
@@ -136,15 +133,42 @@ router.get("/:projectId", async (req: AuthenticatedRequest, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PUT /api/projects/:projectId - Update project
+// GET /api/projects/:projectId/test-runs
+router.get("/:projectId/test-runs", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const projectId = Number(req.params.projectId);
+    const data = await db.query.testRuns.findMany({
+      where: eq(schema.testRuns.project_id, projectId),
+      orderBy: desc(schema.testRuns.scheduled_at),
+    });
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+// PUT /api/projects/:projectId - Update project (with Zod validation — no mass assignment)
 router.put("/:projectId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
     const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
+    const bodySchema = z.object({
+      name: z.string().optional(),
+      designed_by: z.string().optional(),
+      module_name: z.string().optional(),
+      design_date: z.string().optional(),
+      test_link: z.string().nullable().optional(),
+      test_lead_id: z.number().optional(),
+      objectives: z.string().nullable().optional(),
+      scope: z.string().nullable().optional(),
+      out_of_scope: z.string().nullable().optional(),
+      entry_criteria: z.string().nullable().optional(),
+      exit_criteria: z.string().nullable().optional(),
+    });
+    const data = bodySchema.parse(req.body);
+
     const [project] = await db.update(schema.projects)
-      .set({ ...req.body, updated_at: new Date() })
+      .set({ ...data, updated_at: new Date() })
       .where(eq(schema.projects.id, projectId))
       .returning();
 
@@ -190,7 +214,7 @@ router.get("/code/:projectCode", async (req: AuthenticatedRequest, res, next) =>
   } catch (err) { next(err); }
 });
 
-// POST /api/projects/:projectId/sign-off
+// POST /api/projects/:projectId/sign-off — TEST_LEAD or BUSINESS_OWNER dual signature
 router.post("/:projectId/sign-off", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
@@ -203,7 +227,21 @@ router.post("/:projectId/sign-off", async (req: AuthenticatedRequest, res, next)
     let signOffData: any = {};
     try { signOffData = JSON.parse(project.sign_off_data || "{}"); } catch { signOffData = {}; }
 
-    const key = req.user!.role === "ADMIN" || req.user!.role === "TESTER" ? "testLead" : "businessOwner";
+    // Fix sign-off role key assignment (spec §8.15)
+    // ADMIN or TEST_LEAD → "testLead", BUSINESS_OWNER → "businessOwner"
+    const isAdminOrTestLead = req.user!.role === "ADMIN" || (await checkProjectRole(req, projectId, ["TEST_LEAD"]));
+    const isBusinessOwner = await checkProjectRole(req, projectId, ["BUSINESS_OWNER"]);
+
+    let key: string;
+    if (isAdminOrTestLead) {
+      key = "testLead";
+    } else if (isBusinessOwner) {
+      key = "businessOwner";
+    } else {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
+
     signOffData[key] = {
       name: req.body.name || "",
       role: req.body.role || "",
@@ -240,6 +278,7 @@ router.get("/:projectId/sign-off-status", async (req: AuthenticatedRequest, res,
       where: eq(schema.projects.id, projectId),
       columns: { is_signed_off: true, sign_off_data: true },
     });
+    if (!project) { res.status(404).json({ message: "Project not found" }); return; }
     res.json(project);
   } catch (err) { next(err); }
 });
@@ -277,18 +316,24 @@ router.get("/:projectId/uat-summary", async (req: AuthenticatedRequest, res, nex
   } catch (err) { next(err); }
 });
 
-// GET /api/projects/:projectId/audit-log
+// GET /api/projects/:projectId/audit-log — filter by entity_type = 'project'
 router.get("/:projectId/audit-log", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
     const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
+    const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
+    if (!project) { res.status(404).json({ message: "Project not found" }); return; }
+
     const limit = Number(req.query.limit) || 100;
     const offset = Number(req.query.offset) || 0;
 
     const logs = await db.query.statusAuditLog.findMany({
-      where: eq(schema.statusAuditLog.entity_id, projectId),
+      where: and(
+        eq(schema.statusAuditLog.entity_type, "project"),
+        eq(schema.statusAuditLog.entity_id, projectId),
+      ),
       orderBy: desc(schema.statusAuditLog.changed_at),
       limit,
       offset,

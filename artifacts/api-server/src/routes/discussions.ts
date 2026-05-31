@@ -7,33 +7,33 @@ import { authenticate, authorize, authorizeProjectRole, checkProjectRole, Authen
 
 const router = express.Router();
 
-// POST /api/test-runs/:testRunId/discussions - Create team discussion
-router.post("/", async (req: AuthenticatedRequest, res, next) => {
+// POST /api/test-runs/:testRunId/discussions — TEST_LEAD only
+router.post("/test-runs/:testRunId/discussions", async (req: AuthenticatedRequest, res, next) => {
   try {
-    const testRunId = Number(req.params.testRunId || req.body.testRunId);
+    const testRunId = Number(req.params.testRunId);
     const bodySchema = z.object({
-      testRunId: z.number().optional(),
       meetingType: z.enum(["defect_review", "post_mortem"]),
       participantIds: z.array(z.number()),
     });
     const data = bodySchema.parse(req.body);
 
-    const runId = testRunId || data.testRunId;
-    const testRun = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, runId) });
+    const testRun = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, testRunId) });
     if (!testRun) { res.status(404).json({ message: "Test run not found" }); return; }
+
+    const allowed = await checkProjectRole(req, testRun.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
 
     const [discussion] = await db.insert(schema.teamDiscussions)
       .values({
         project_id: testRun.project_id,
-        test_run_id: runId,
+        test_run_id: testRunId,
         initiated_by_user_id: req.user!.userId,
         meeting_type: data.meetingType,
       })
       .returning();
 
-    // Add participants
     for (const userId of data.participantIds) {
-      const canAddNotes = data.meetingType === "post_mortem"; // Business Owners get note permission by default
+      const canAddNotes = data.meetingType === "post_mortem";
       await db.insert(schema.teamDiscussionParticipants)
         .values({ discussion_id: discussion.id, user_id: userId, can_add_notes: canAddNotes });
     }
@@ -43,7 +43,7 @@ router.post("/", async (req: AuthenticatedRequest, res, next) => {
 });
 
 // GET /api/discussions/:discussionId
-router.get("/:discussionId", async (req: AuthenticatedRequest, res, next) => {
+router.get("/discussions/:discussionId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const discussionId = Number(req.params.discussionId);
     const discussion = await db.query.teamDiscussions.findFirst({
@@ -58,10 +58,17 @@ router.get("/:discussionId", async (req: AuthenticatedRequest, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/discussions/:discussionId/participants
-router.post("/:discussionId/participants", async (req: AuthenticatedRequest, res, next) => {
+// POST /api/discussions/:discussionId/participants — TEST_LEAD only
+router.post("/discussions/:discussionId/participants", async (req: AuthenticatedRequest, res, next) => {
   try {
     const discussionId = Number(req.params.discussionId);
+
+    const discussion = await db.query.teamDiscussions.findFirst({ where: eq(schema.teamDiscussions.id, discussionId) });
+    if (!discussion) { res.status(404).json({ message: "Discussion not found" }); return; }
+
+    const allowed = await checkProjectRole(req, discussion.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
     const bodySchema = z.object({ userId: z.number(), canAddNotes: z.boolean().optional().default(false) });
     const data = bodySchema.parse(req.body);
 
@@ -72,10 +79,17 @@ router.post("/:discussionId/participants", async (req: AuthenticatedRequest, res
   } catch (err) { next(err); }
 });
 
-// DELETE /api/discussions/:discussionId/participants/:userId
-router.delete("/:discussionId/participants/:userId", async (req: AuthenticatedRequest, res, next) => {
+// DELETE /api/discussions/:discussionId/participants/:userId — TEST_LEAD only
+router.delete("/discussions/:discussionId/participants/:userId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const discussionId = Number(req.params.discussionId);
+
+    const discussion = await db.query.teamDiscussions.findFirst({ where: eq(schema.teamDiscussions.id, discussionId) });
+    if (!discussion) { res.status(404).json({ message: "Discussion not found" }); return; }
+
+    const allowed = await checkProjectRole(req, discussion.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
     const userId = Number(req.params.userId);
     await db.delete(schema.teamDiscussionParticipants)
       .where(and(
@@ -86,10 +100,17 @@ router.delete("/:discussionId/participants/:userId", async (req: AuthenticatedRe
   } catch (err) { next(err); }
 });
 
-// PATCH /api/discussions/:discussionId/end
-router.patch("/:discussionId/end", async (req: AuthenticatedRequest, res, next) => {
+// PATCH /api/discussions/:discussionId/end — TEST_LEAD only
+router.patch("/discussions/:discussionId/end", async (req: AuthenticatedRequest, res, next) => {
   try {
     const discussionId = Number(req.params.discussionId);
+
+    const discussion = await db.query.teamDiscussions.findFirst({ where: eq(schema.teamDiscussions.id, discussionId) });
+    if (!discussion) { res.status(404).json({ message: "Discussion not found" }); return; }
+
+    const allowed = await checkProjectRole(req, discussion.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
     const [updated] = await db.update(schema.teamDiscussions)
       .set({ is_active: false, ended_at: new Date() })
       .where(eq(schema.teamDiscussions.id, discussionId))
@@ -99,7 +120,7 @@ router.patch("/:discussionId/end", async (req: AuthenticatedRequest, res, next) 
 });
 
 // GET /api/discussions/:discussionId/defects/:defectId
-router.get("/:discussionId/defects/:defectId", async (req: AuthenticatedRequest, res, next) => {
+router.get("/discussions/:discussionId/defects/:defectId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
     const defect = await db.query.defects.findFirst({

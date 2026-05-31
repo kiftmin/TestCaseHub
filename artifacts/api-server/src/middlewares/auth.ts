@@ -15,8 +15,10 @@ export interface AuthenticatedRequest extends Request {
 }
 
 export function authenticate(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+  // Use originalUrl for full mount-aware path matching
+  const fullPath = req.originalUrl || req.url;
   const publicPaths = ["/api/auth/login", "/api/auth/register", "/api/health"];
-  if (publicPaths.includes(req.path)) {
+  if (publicPaths.includes(fullPath)) {
     next();
     return;
   }

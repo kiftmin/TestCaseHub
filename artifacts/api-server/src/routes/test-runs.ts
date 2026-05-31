@@ -3,15 +3,42 @@ import { eq, desc, and, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
+import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
 
 const router = express.Router();
 
-// GET /api/test-runs - list all (filter by projectId query param)
-router.get("/", async (req, res, next) => {
+async function logAudit(params: { entityType: string; entityId: number; changedByUserId: number | null; fromStatus?: string | null; toStatus?: string | null; reason?: string | null }) {
+  await db.insert(schema.statusAuditLog).values({
+    entity_type: params.entityType,
+    entity_id: params.entityId,
+    changed_by_user_id: params.changedByUserId,
+    from_status: params.fromStatus ?? null,
+    to_status: params.toStatus ?? null,
+    reason: params.reason ?? null,
+  });
+}
+
+async function recalculateTestRunCompletion(testRunId: number): Promise<void> {
+  const allUseCases = await db.query.testRunUseCases.findMany({
+    where: eq(schema.testRunUseCases.test_run_id, testRunId),
+  });
+  const terminalStatuses = ["passed", "failed", "passed_by_agreement"];
+  if (allUseCases.length === 0) return;
+  const allTerminal = allUseCases.every(uc => terminalStatuses.includes(uc.status));
+  if (allTerminal) {
+    const allPassed = allUseCases.every(uc => uc.status === "passed" || uc.status === "passed_by_agreement" || uc.free_pass);
+    await db.update(schema.testRuns)
+      .set({ status: "completed", passed: allPassed, updated_at: new Date() })
+      .where(eq(schema.testRuns.id, testRunId));
+  }
+}
+
+// GET /api/projects/:projectId/test-runs
+router.get("/", async (req: AuthenticatedRequest, res, next) => {
   try {
-    const projectId = Number(req.query.projectId);
+    const projectId = Number(req.params.projectId || req.query.projectId);
     if (!projectId) {
-      res.status(400).json({ message: "projectId query parameter is required" });
+      res.status(400).json({ message: "projectId is required" });
       return;
     }
     const data = await db.query.testRuns.findMany({
@@ -23,7 +50,7 @@ router.get("/", async (req, res, next) => {
 });
 
 // GET /api/test-runs/:testRunId
-router.get("/:testRunId", async (req, res, next) => {
+router.get("/:testRunId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
     const testRun = await db.query.testRuns.findFirst({
@@ -40,16 +67,20 @@ router.get("/:testRunId", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/projects/:projectId/test-runs
-router.post("/", async (req, res, next) => {
+// POST /api/projects/:projectId/test-runs — Admin or TEST_LEAD
+router.post("/", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.body.project_id);
     if (!projectId) { res.status(400).json({ message: "project_id is required in body" }); return; }
+
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
 
     const parsed = z.object({
       project_id: z.number(),
       name: z.string(),
       scheduled_at: z.string().optional(),
+      useCaseIds: z.array(z.number()).optional(),
     }).parse(req.body);
 
     const [testRun] = await db.insert(schema.testRuns).values({
@@ -57,6 +88,26 @@ router.post("/", async (req, res, next) => {
       name: parsed.name,
       scheduled_at: parsed.scheduled_at ? new Date(parsed.scheduled_at) : null,
     }).returning();
+
+    // If useCaseIds provided, add those; otherwise add all scenarios
+    if (parsed.useCaseIds && parsed.useCaseIds.length > 0) {
+      for (const useCaseId of parsed.useCaseIds) {
+        await db.insert(schema.testRunUseCases).values({
+          test_run_id: testRun.id,
+          use_case_id: useCaseId,
+        });
+      }
+    } else {
+      const allUseCases = await db.query.useCases.findMany({
+        where: eq(schema.useCases.project_id, projectId),
+      });
+      for (const uc of allUseCases) {
+        await db.insert(schema.testRunUseCases).values({
+          test_run_id: testRun.id,
+          use_case_id: uc.id,
+        });
+      }
+    }
 
     // Auto-seed 5 checklist items
     const defaultItems = [
@@ -73,42 +124,67 @@ router.post("/", async (req, res, next) => {
     }));
     await db.insert(schema.testRunChecklistItems).values(checklistValues);
 
-    // Bump project version
-    await db.update(schema.projects)
-      .set({ version: sql`${schema.projects.version} + 1`, version_date: new Date() })
-      .where(eq(schema.projects.id, projectId));
+    await logAudit({ entityType: "test_run", entityId: testRun.id, changedByUserId: req.user!.userId, toStatus: "created" });
 
     res.status(201).json(testRun);
   } catch (err) { next(err); }
 });
 
-// PATCH /api/test-runs/:testRunId
-router.patch("/:testRunId", async (req, res, next) => {
-  try {
-    const testRunId = Number(req.params.testRunId);
-    const [updated] = await db.update(schema.testRuns)
-      .set({ ...req.body, updated_at: new Date() })
-      .where(eq(schema.testRuns.id, testRunId))
-      .returning();
-    if (!updated) { res.status(404).json({ message: "Not found" }); return; }
-    res.json(updated);
-  } catch (err) { next(err); }
-});
-
-// DELETE /api/test-runs/:testRunId (scheduled only)
-router.delete("/:testRunId", async (req, res, next) => {
+// PATCH /api/test-runs/:testRunId — Admin or TEST_LEAD (with Zod validation)
+router.patch("/:testRunId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
     const existing = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, testRunId) });
     if (!existing) { res.status(404).json({ message: "Not found" }); return; }
+
+    const allowed = await checkProjectRole(req, existing.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const parsed = z.object({
+      name: z.string().optional(),
+      scheduled_at: z.string().nullable().optional(),
+      status: z.enum(["scheduled", "in_progress", "completed"]).optional(),
+    }).parse(req.body);
+
+    const updateData: any = { ...parsed, updated_at: new Date() };
+    if (parsed.scheduled_at) {
+      updateData.scheduled_at = new Date(parsed.scheduled_at);
+    }
+
+    const oldStatus = existing.status;
+    const [updated] = await db.update(schema.testRuns)
+      .set(updateData)
+      .where(eq(schema.testRuns.id, testRunId))
+      .returning();
+    if (!updated) { res.status(404).json({ message: "Not found" }); return; }
+
+    if (parsed.status && parsed.status !== oldStatus) {
+      await logAudit({ entityType: "test_run", entityId: testRunId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: parsed.status });
+    }
+
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/test-runs/:testRunId (scheduled only) — Admin or TEST_LEAD
+router.delete("/:testRunId", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const testRunId = Number(req.params.testRunId);
+    const existing = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, testRunId) });
+    if (!existing) { res.status(404).json({ message: "Not found" }); return; }
+
+    const allowed = await checkProjectRole(req, existing.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
     if (existing.status !== "scheduled") { res.status(400).json({ message: "Only scheduled runs can be deleted" }); return; }
     await db.delete(schema.testRuns).where(eq(schema.testRuns.id, testRunId));
+    await logAudit({ entityType: "test_run", entityId: testRunId, changedByUserId: req.user!.userId, toStatus: "deleted" });
     res.status(204).end();
   } catch (err) { next(err); }
 });
 
-// POST /api/test-runs/:testRunId/re-run
-router.post("/:testRunId/re-run", async (req, res, next) => {
+// POST /api/test-runs/:testRunId/re-run — Admin or TEST_LEAD
+router.post("/:testRunId/re-run", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
     const source = await db.query.testRuns.findFirst({
@@ -116,6 +192,9 @@ router.post("/:testRunId/re-run", async (req, res, next) => {
       with: { useCases: true },
     });
     if (!source) { res.status(404).json({ message: "Source test run not found" }); return; }
+
+    const allowed = await checkProjectRole(req, source.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
 
     const parsed = z.object({ name: z.string(), scheduled_at: z.string().optional(), failedOnly: z.boolean().optional().default(false) }).parse(req.body);
 
@@ -137,7 +216,6 @@ router.post("/:testRunId/re-run", async (req, res, next) => {
       });
     }
 
-    // Auto-seed checklist items
     const defaultItems = [
       "Test environment is deployed and accessible",
       "Test data has been loaded and verified",
@@ -156,50 +234,228 @@ router.post("/:testRunId/re-run", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/test-runs/:testRunId/confirm-entry
-router.post("/:testRunId/confirm-entry", async (req, res, next) => {
+// POST /api/test-runs/:testRunId/confirm-entry — Admin or TEST_LEAD
+router.post("/:testRunId/confirm-entry", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
-    const userId = (req as any).user?.userId;
+    const existing = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, testRunId) });
+    if (!existing) { res.status(404).json({ message: "Not found" }); return; }
+
+    const allowed = await checkProjectRole(req, existing.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
     const [updated] = await db.update(schema.testRuns)
       .set({
         entry_confirmed: true,
-        entry_confirmed_by_user_id: userId,
+        entry_confirmed_by_user_id: req.user!.userId,
         entry_confirmed_at: new Date(),
         updated_at: new Date(),
       })
       .where(eq(schema.testRuns.id, testRunId))
       .returning();
-    if (!updated) { res.status(404).json({ message: "Not found" }); return; }
+
+    await logAudit({ entityType: "test_run", entityId: testRunId, changedByUserId: req.user!.userId, toStatus: "entry_confirmed" });
+
     res.json(updated);
   } catch (err) { next(err); }
 });
 
 // PATCH /api/test-runs/:testRunId/confirm-entry (alternative)
-router.patch("/:testRunId/confirm-entry", async (req, res, next) => {
+router.patch("/:testRunId/confirm-entry", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
-    const userId = (req as any).user?.userId;
+    const existing = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, testRunId) });
+    if (!existing) { res.status(404).json({ message: "Not found" }); return; }
+
+    const allowed = await checkProjectRole(req, existing.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
     const [updated] = await db.update(schema.testRuns)
       .set({
         entry_confirmed: true,
-        entry_confirmed_by_user_id: userId,
+        entry_confirmed_by_user_id: req.user!.userId,
         entry_confirmed_at: new Date(),
         updated_at: new Date(),
       })
       .where(eq(schema.testRuns.id, testRunId))
       .returning();
-    if (!updated) { res.status(404).json({ message: "Not found" }); return; }
+
+    await logAudit({ entityType: "test_run", entityId: testRunId, changedByUserId: req.user!.userId, toStatus: "entry_confirmed" });
+
     res.json(updated);
   } catch (err) { next(err); }
 });
 
-// GET /api/test-runs/:testRunId/access-qr
-router.get("/:testRunId/access-qr", async (req, res, next) => {
+// PATCH /api/test-runs/:testRunId/use-cases/:testRunUseCaseId — assign tester, free pass, status
+router.patch("/:testRunId/use-cases/:testRunUseCaseId", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const testRunId = Number(req.params.testRunId);
+    const testRunUseCaseId = Number(req.params.testRunUseCaseId);
+
+    const existing = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, testRunId) });
+    if (!existing) { res.status(404).json({ message: "Test run not found" }); return; }
+
+    const allowed = await checkProjectRole(req, existing.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const parsed = z.object({
+      assigned_tester_id: z.number().nullable().optional(),
+      free_pass: z.boolean().optional(),
+      status: z.enum(["pending", "in_progress", "passed", "failed", "passed_by_agreement"]).optional(),
+    }).parse(req.body);
+
+    const [updated] = await db.update(schema.testRunUseCases)
+      .set({ ...parsed })
+      .where(eq(schema.testRunUseCases.id, testRunUseCaseId))
+      .returning();
+
+    // Recalculate test run completion if status changed to terminal
+    if (parsed.status) {
+      await recalculateTestRunCompletion(testRunId);
+    }
+
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// POST /api/test-runs/:testRunId/use-cases — add scenario to non-completed run
+router.post("/:testRunId/use-cases", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const testRunId = Number(req.params.testRunId);
+    const existing = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, testRunId) });
+    if (!existing) { res.status(404).json({ message: "Test run not found" }); return; }
+
+    if (existing.status === "completed") { res.status(400).json({ message: "Cannot add scenarios to a completed run" }); return; }
+
+    const allowed = await checkProjectRole(req, existing.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const parsed = z.object({ use_case_id: z.number() }).parse(req.body);
+
+    const [inserted] = await db.insert(schema.testRunUseCases)
+      .values({ test_run_id: testRunId, use_case_id: parsed.use_case_id })
+      .returning();
+
+    res.status(201).json(inserted);
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/test-runs/:testRunId/use-cases/:testRunUseCaseId
+router.delete("/:testRunId/use-cases/:testRunUseCaseId", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const testRunId = Number(req.params.testRunId);
+    const testRunUseCaseId = Number(req.params.testRunUseCaseId);
+
+    const existing = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, testRunId) });
+    if (!existing) { res.status(404).json({ message: "Test run not found" }); return; }
+
+    const allowed = await checkProjectRole(req, existing.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
+    await db.delete(schema.testRunUseCases).where(eq(schema.testRunUseCases.id, testRunUseCaseId));
+    res.status(204).end();
+  } catch (err) { next(err); }
+});
+
+// POST /api/test-runs/:testRunId/use-cases/:useCaseId/sync — recalculate scenario status
+router.post("/:testRunId/use-cases/:useCaseId/sync", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const testRunId = Number(req.params.testRunId);
+    const useCaseId = Number(req.params.useCaseId);
+
+    const testRunUseCase = await db.query.testRunUseCases.findFirst({
+      where: and(
+        eq(schema.testRunUseCases.test_run_id, testRunId),
+        eq(schema.testRunUseCases.use_case_id, useCaseId),
+      ),
+    });
+    if (!testRunUseCase) { res.status(404).json({ message: "Test run use case not found" }); return; }
+
+    // Recalculate status based on executions of related test cases
+    const useCase = await db.query.useCases.findFirst({
+      where: eq(schema.useCases.id, useCaseId),
+      with: { testCases: true },
+    });
+    if (!useCase) { res.status(404).json({ message: "Use case not found" }); return; }
+
+    const testCaseIds = useCase.testCases.map(tc => tc.id);
+    const executions = await db.query.executions.findMany({
+      where: and(
+        eq(schema.executions.test_run_id, testRunId),
+        testCaseIds.length > 0 ? sql`${schema.executions.test_case_id} IN (${sql.join(testCaseIds, sql`,`)})` : sql`1=0`,
+      ),
+    });
+
+    let newStatus = "pending";
+    if (executions.length > 0) {
+      const failed = executions.some(e => e.overall_result === "failed");
+      const allPassed = executions.every(e => e.overall_result === "passed" || e.overall_result === "passed_by_agreement");
+      const inProgress = executions.some(e => e.status === "in_progress");
+      const hasPassedByAgreement = executions.some(e => e.overall_result === "passed_by_agreement");
+
+      if (failed) {
+        newStatus = "failed";
+      } else if (allPassed) {
+        newStatus = hasPassedByAgreement ? "passed_by_agreement" : "passed";
+      } else if (inProgress) {
+        newStatus = "in_progress";
+      }
+    }
+
+    const [updated] = await db.update(schema.testRunUseCases)
+      .set({ status: newStatus })
+      .where(eq(schema.testRunUseCases.id, testRunUseCase.id))
+      .returning();
+
+    await recalculateTestRunCompletion(testRunId);
+
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/test-runs/:testRunId/use-cases/:testRunUseCaseId/tester-sign-off
+router.patch("/:testRunId/use-cases/:testRunUseCaseId/tester-sign-off", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const testRunId = Number(req.params.testRunId);
+    const testRunUseCaseId = Number(req.params.testRunUseCaseId);
+
+    const truc = await db.query.testRunUseCases.findFirst({
+      where: eq(schema.testRunUseCases.id, testRunUseCaseId),
+    });
+    if (!truc) { res.status(404).json({ message: "Test run use case not found" }); return; }
+
+    const testRun = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, testRunId) });
+    if (!testRun) { res.status(404).json({ message: "Test run not found" }); return; }
+
+    // Only assigned TESTER or TEST_LEAD can sign off (spec § 4.3)
+    const isAssignedTester = truc.assigned_tester_id === req.user!.userId;
+    const isTestLead = await checkProjectRole(req, testRun.project_id, ["TEST_LEAD"]);
+    if (!isAssignedTester && !isTestLead && req.user!.role !== "ADMIN") {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
+
+    const [updated] = await db.update(schema.testRunUseCases)
+      .set({
+        tester_sign_off: true,
+        tester_sign_off_at: new Date(),
+      })
+      .where(eq(schema.testRunUseCases.id, testRunUseCaseId))
+      .returning();
+
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// GET /api/test-runs/:testRunId/access-qr — Admin or TEST_LEAD
+router.get("/:testRunId/access-qr", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
     const testRun = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, testRunId) });
     if (!testRun) { res.status(404).json({ message: "Not found" }); return; }
+
+    const allowed = await checkProjectRole(req, testRun.project_id, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
 
     const accessUrl = `${req.protocol}://${req.get("host")}/tester/run/${testRunId}`;
 
@@ -216,7 +472,7 @@ router.get("/:testRunId/access-qr", async (req, res, next) => {
 });
 
 // GET /api/test-runs/:testRunId/full-report
-router.get("/:testRunId/full-report", async (req, res, next) => {
+router.get("/:testRunId/full-report", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
     const testRun = await db.query.testRuns.findFirst({
@@ -239,7 +495,7 @@ router.get("/:testRunId/full-report", async (req, res, next) => {
 });
 
 // GET /api/projects/:projectId/test-runs/analytics
-router.get("/analytics", async (req, res, next) => {
+router.get("/analytics", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.query.projectId);
     if (!projectId) { res.status(400).json({ message: "projectId required" }); return; }

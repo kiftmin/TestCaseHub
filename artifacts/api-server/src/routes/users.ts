@@ -31,7 +31,9 @@ const updatePasswordSchema = z.object({
 
 router.get("/", async (req, res, next) => {
   try {
-    const users = await db.query.users.findMany();
+    const users = await db.query.users.findMany({
+      columns: { password_hash: false },
+    });
     res.json(users);
   } catch (err) {
     next(err);
@@ -44,7 +46,7 @@ router.post("/", async (req, res, next) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const [user] = await db
       .insert(schema.users)
-      .values({ username, password: hashedPassword, name, email, role })
+      .values({ username, password_hash: hashedPassword, name, email, role })
       .returning();
     res.status(201).json(user);
   } catch (err) {
@@ -58,7 +60,7 @@ router.put("/:userId", async (req, res, next) => {
     const [user] = await db
       .update(schema.users)
       .set({ name, email, role })
-      .where(eq(schema.users.id, req.params.userId))
+      .where(eq(schema.users.id, Number(req.params.userId)))
       .returning();
     res.json(user);
   } catch (err) {
@@ -68,10 +70,11 @@ router.put("/:userId", async (req, res, next) => {
 
 router.put("/:userId/suspend", async (req, res, next) => {
   try {
+    const userId = Number(req.params.userId);
     const [user] = await db
       .update(schema.users)
       .set({ is_active: sql`NOT is_active` })
-      .where(eq(schema.users.id, req.params.userId))
+      .where(eq(schema.users.id, userId))
       .returning();
     res.json(user);
   } catch (err) {
@@ -85,8 +88,8 @@ router.put("/:userId/password", async (req, res, next) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const [user] = await db
       .update(schema.users)
-      .set({ password: hashedPassword })
-      .where(eq(schema.users.id, req.params.userId))
+      .set({ password_hash: hashedPassword })
+      .where(eq(schema.users.id, Number(req.params.userId)))
       .returning();
     res.json(user);
   } catch (err) {
@@ -96,8 +99,9 @@ router.put("/:userId/password", async (req, res, next) => {
 
 router.delete("/:userId", async (req, res, next) => {
   try {
+    const userId = Number(req.params.userId);
     const targetUser = await db.query.users.findFirst({
-      where: eq(schema.users.id, req.params.userId),
+      where: eq(schema.users.id, userId),
     });
 
     if (!targetUser) {
@@ -118,7 +122,7 @@ router.delete("/:userId", async (req, res, next) => {
     const [assignmentCountResult] = await db
       .select({ count: sql`COUNT(*)` })
       .from(schema.project_assignments)
-      .where(eq(schema.project_assignments.user_id, req.params.userId));
+      .where(eq(schema.project_assignments.user_id, userId));
 
     const assignmentCount = Number(assignmentCountResult.count);
 
@@ -126,7 +130,7 @@ router.delete("/:userId", async (req, res, next) => {
       return res.status(409).json({ message: "User has project assignments" });
     }
 
-    await db.delete(schema.users).where(eq(schema.users.id, req.params.userId));
+    await db.delete(schema.users).where(eq(schema.users.id, userId));
     res.status(204).send();
   } catch (err) {
     next(err);

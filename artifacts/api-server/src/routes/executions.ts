@@ -18,7 +18,7 @@ async function logAudit(params: { entityType: string; entityId: number; changedB
 }
 
 // GET /api/dashboard/tester/:userId/test-runs
-router.get("/tester/:userId/test-runs", async (req, res, next) => {
+router.get("/dashboard/tester/:userId/test-runs", async (req, res, next) => {
   try {
     const userId = Number(req.params.userId);
 

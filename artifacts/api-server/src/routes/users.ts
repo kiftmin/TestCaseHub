@@ -48,7 +48,8 @@ router.post("/", async (req, res, next) => {
       .insert(schema.users)
       .values({ username, password_hash: hashedPassword, name, email, role })
       .returning();
-    res.status(201).json(user);
+    const { password_hash, ...safeUser } = user;
+    res.status(201).json(safeUser);
   } catch (err) {
     next(err);
   }

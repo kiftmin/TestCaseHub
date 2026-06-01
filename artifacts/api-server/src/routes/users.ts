@@ -63,7 +63,8 @@ router.put("/:userId", async (req, res, next) => {
       .set({ name, email, role })
       .where(eq(schema.users.id, Number(req.params.userId)))
       .returning();
-    res.json(user);
+    const { password_hash, ...safeUser } = user;
+    res.json(safeUser);
   } catch (err) {
     next(err);
   }
@@ -77,7 +78,8 @@ router.put("/:userId/suspend", async (req, res, next) => {
       .set({ is_active: sql`NOT is_active` })
       .where(eq(schema.users.id, userId))
       .returning();
-    res.json(user);
+    const { password_hash, ...safeUser } = user;
+    res.json(safeUser);
   } catch (err) {
     next(err);
   }
@@ -92,7 +94,8 @@ router.put("/:userId/password", async (req, res, next) => {
       .set({ password_hash: hashedPassword })
       .where(eq(schema.users.id, Number(req.params.userId)))
       .returning();
-    res.json(user);
+    const { password_hash, ...safeUser } = user;
+    res.json(safeUser);
   } catch (err) {
     next(err);
   }

@@ -4,7 +4,9 @@ import { db } from "../db.js";
 import { eq } from "drizzle-orm";
 import * as schema from "@workspace/db";
 
-const JWT_SECRET = process.env.SESSION_SECRET || "fallback_secret";
+const SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET) throw new Error("SESSION_SECRET environment variable is required");
+const JWT_SECRET = SESSION_SECRET;
 
 export interface AuthenticatedRequest extends Request {
   user?: {

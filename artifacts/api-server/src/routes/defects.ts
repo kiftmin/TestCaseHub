@@ -64,17 +64,18 @@ router.patch("/:defectId/flag-bug", async (req: AuthenticatedRequest, res, next)
       .returning();
 
     // Create a bug record with auto-increment bug_number using actual project_id
-    const maxBug = await db
-      .select({ max: sql<number>`COALESCE(MAX(${schema.bugs.bug_number}), 0)` })
-      .from(schema.bugs)
-      .where(eq(schema.bugs.project_id, testRun.project_id));
-    const bugNumber = (maxBug[0]?.max || 0) + 1;
-
-    await db.insert(schema.bugs).values({
-      project_id: testRun.project_id,
-      defect_id: defectId,
-      bug_number: bugNumber,
-      status: "OPEN",
+    const [bug] = await db.transaction(async (tx) => {
+      const [maxResult] = await tx
+        .select({ max: sql<number>`COALESCE(MAX(${schema.bugs.bug_number}), 0)` })
+        .from(schema.bugs)
+        .where(eq(schema.bugs.project_id, testRun.project_id));
+      const nextNumber = (maxResult?.max ?? 0) + 1;
+      return tx.insert(schema.bugs).values({
+        project_id: testRun.project_id,
+        defect_id: defectId,
+        bug_number: nextNumber,
+        status: "OPEN",
+      }).returning();
     });
 
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "Submitted to Dev to Fix" });

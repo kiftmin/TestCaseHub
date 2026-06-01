@@ -57,9 +57,6 @@ router.get("/:useCaseId/test-cases", async (req: AuthenticatedRequest, res, next
     res.json(data);
   } catch (err) { next(err); }
 });
-    res.json({ testScenarios: result });
-  } catch (err) { next(err); }
-});
 
 // POST /api/projects/:projectId/use-cases
 router.post("/", async (req: AuthenticatedRequest, res, next) => {

@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Formal UAT Sign-Off Certificate - TestCaseHub</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Geist:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "tertiary-fixed-dim": "#ddb7ff",
+                    "surface-dim": "#dcd9db",
+                    "on-surface-variant": "#45464d",
+                    "surface-container-lowest": "#ffffff",
+                    "inverse-surface": "#303032",
+                    "surface-container": "#f0edef",
+                    "on-tertiary-container": "#ac59fb",
+                    "secondary": "#4648d4",
+                    "on-tertiary-fixed-variant": "#6900b3",
+                    "on-primary-container": "#7c839b",
+                    "on-tertiary": "#ffffff",
+                    "primary-fixed": "#dae2fd",
+                    "on-secondary-fixed": "#07006c",
+                    "on-secondary-container": "#fffbff",
+                    "on-surface": "#1b1b1d",
+                    "background": "#fcf8fa",
+                    "surface-tint": "#565e74",
+                    "primary": "#000000",
+                    "on-primary-fixed": "#131b2e",
+                    "tertiary-fixed": "#f0dbff",
+                    "secondary-container": "#6063ee",
+                    "outline-variant": "#c6c6cd",
+                    "tertiary-container": "#2c0051",
+                    "on-tertiary-fixed": "#2c0051",
+                    "on-secondary": "#ffffff",
+                    "secondary-fixed-dim": "#c0c1ff",
+                    "error": "#ba1a1a",
+                    "surface": "#fcf8fa",
+                    "primary-container": "#131b2e",
+                    "outline": "#76777d",
+                    "on-secondary-fixed-variant": "#2f2ebe",
+                    "on-error": "#ffffff",
+                    "inverse-on-surface": "#f3f0f2",
+                    "surface-container-high": "#eae7e9",
+                    "surface-bright": "#fcf8fa",
+                    "error-container": "#ffdad6",
+                    "on-primary-fixed-variant": "#3f465c",
+                    "tertiary": "#000000",
+                    "surface-container-low": "#f6f3f5",
+                    "inverse-primary": "#bec6e0",
+                    "on-error-container": "#93000a",
+                    "primary-fixed-dim": "#bec6e0",
+                    "surface-variant": "#e4e2e4",
+                    "on-primary": "#ffffff",
+                    "secondary-fixed": "#e1e0ff",
+                    "on-background": "#1b1b1d",
+                    "surface-container-highest": "#e4e2e4"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "xs": "0.25rem",
+                    "xl": "2.5rem",
+                    "sm": "0.5rem",
+                    "md": "1rem",
+                    "gutter": "1rem",
+                    "lg": "1.5rem",
+                    "base": "4px",
+                    "container-max": "1440px"
+            },
+            "fontFamily": {
+                    "label-sm": ["Geist"],
+                    "body-base": ["Inter"],
+                    "title-sm": ["Geist"],
+                    "headline-md": ["Geist"],
+                    "display-lg-mobile": ["Geist"],
+                    "body-sm": ["Inter"],
+                    "label-md": ["Geist"],
+                    "display-lg": ["Geist"]
+            },
+            "fontSize": {
+                    "label-sm": ["12px", {"lineHeight": "16px", "fontWeight": "500"}],
+                    "body-base": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                    "title-sm": ["18px", {"lineHeight": "28px", "fontWeight": "600"}],
+                    "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                    "display-lg-mobile": ["28px", {"lineHeight": "34px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                    "body-sm": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                    "label-md": ["14px", {"lineHeight": "20px", "fontWeight": "500"}],
+                    "display-lg": ["36px", {"lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "700"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        @media print {
+            .no-print { display: none !important; }
+            body { background: white !important; padding: 0 !important; }
+            .print-container { border: 2px solid #000 !important; margin: 0 !important; padding: 40px !important; box-shadow: none !important; }
+            .watermark { 
+                display: block !important; 
+                position: fixed; 
+                top: 50%; 
+                left: 50%; 
+                transform: translate(-50%, -50%) rotate(-45deg); 
+                font-size: 8rem; 
+                color: rgba(0,0,0,0.05); 
+                z-index: -1;
+                font-weight: 900;
+                pointer-events: none;
+            }
+        }
+        .watermark { display: none; }
+        .cert-border {
+            border: 1px solid #e2e8f0;
+            position: relative;
+        }
+        .cert-border::before {
+            content: '';
+            position: absolute;
+            top: 12px; left: 12px; right: 12px; bottom: 12px;
+            border: 1px solid #c6c6cd;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body class="bg-surface-container-low font-body-base text-on-surface min-h-screen pb-12">
+<!-- TopNavBar -->
+<header class="flex justify-between items-center w-full px-lg h-16 sticky top-0 z-50 bg-surface dark:bg-surface-container-low border-b border-outline-variant dark:border-on-surface-variant no-print">
+<div class="flex items-center gap-md">
+<span class="font-headline-md text-headline-md font-bold text-primary dark:text-on-primary-fixed">TestCaseHub</span>
+<nav class="hidden md:flex gap-lg items-center ml-lg">
+<a class="text-on-surface-variant dark:text-surface-variant hover:text-on-surface transition-colors font-label-md text-label-md" href="#">Dashboard</a>
+<a class="text-on-surface-variant dark:text-surface-variant hover:text-on-surface transition-colors font-label-md text-label-md" href="#">Projects</a>
+<a class="text-on-surface-variant dark:text-surface-variant hover:text-on-surface transition-colors font-label-md text-label-md" href="#">Reporting</a>
+<a class="text-secondary font-bold border-b-2 border-secondary pb-2 font-label-md text-label-md" href="#">Sign-off</a>
+</nav>
+</div>
+<div class="flex items-center gap-md">
+<button class="bg-secondary-container text-on-secondary-container px-md py-xs rounded-lg font-label-md text-label-md hover:bg-secondary transition-colors" onclick="window.print()">
+                Print Certificate
+            </button>
+<div class="flex gap-sm">
+<span class="material-symbols-outlined p-sm rounded-full hover:bg-surface-container-low cursor-pointer">notifications</span>
+<span class="material-symbols-outlined p-sm rounded-full hover:bg-surface-container-low cursor-pointer">settings</span>
+</div>
+<img alt="User profile avatar" class="w-8 h-8 rounded-full border border-outline-variant" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDKznEUGBZg3wgZ4tdr0pGgrBWx6XLBy1GGAAjH6nIdWW2AXYAvcWSCzDrZa5w1GA_gnEDtKTgn4h6YQj2UROj8ATxBhdvzZ8j0D1CHeF35M_RWV64JrZAVgjHz994wpPL2hmzEYDYwGXaEyDL32118prkZ_pY1AuBE0qvy488zLlFsZD4g-LXEz1qxqcYmBrZyOGn_vCkiwUsYwqkiqpZmw5fsbWX-zt0ySZ7dhnLSoFf4dxC04kFPqOATEQY3cmkw3XPonWaVM3Mc"/>
+</div>
+</header>
+<main class="max-w-[1000px] mx-auto mt-lg px-md">
+<!-- Certificate Main Container -->
+<div class="bg-white cert-border shadow-sm print-container relative overflow-hidden p-12 md:p-16">
+<div class="watermark">CERTIFIED</div>
+<!-- 1. Header with Logo & Metadata -->
+<div class="flex flex-col md:flex-row justify-between items-start border-b border-outline-variant pb-lg mb-xl">
+<div class="mb-md md:mb-0">
+<h1 class="font-display-lg text-display-lg text-primary mb-xs">UAT Sign-Off Certificate</h1>
+<p class="text-secondary font-semibold font-label-md text-label-md tracking-wider">PROJECT ALPHA • PHASE 2.4</p>
+</div>
+<div class="text-right space-y-1">
+<div class="text-on-surface-variant font-label-sm text-label-sm uppercase tracking-tighter">Document ID</div>
+<div class="font-mono font-bold text-on-surface">UCH-2024-0812-QA</div>
+<div class="text-on-surface-variant font-label-sm text-label-sm uppercase tracking-tighter mt-sm">Release Version</div>
+<div class="font-bold text-on-surface">v2.4.0-stable</div>
+</div>
+</div>
+<!-- 2. Objectives & Scope -->
+<section class="mb-xl">
+<h2 class="font-title-sm text-title-sm text-primary mb-md flex items-center gap-sm">
+<span class="material-symbols-outlined text-secondary">target</span>
+                    Objectives &amp; Scope
+                </h2>
+<div class="grid md:grid-cols-2 gap-lg">
+<div class="bg-surface-container-low p-md rounded-lg">
+<h3 class="font-label-md text-label-md font-bold mb-xs">In-Scope Requirements</h3>
+<ul class="text-body-sm text-body-sm space-y-xs">
+<li class="flex items-start gap-xs">
+<span class="material-symbols-outlined text-secondary text-[16px] mt-1">check_circle</span>
+                                End-to-end payment gateway encryption verification.
+                            </li>
+<li class="flex items-start gap-xs">
+<span class="material-symbols-outlined text-secondary text-[16px] mt-1">check_circle</span>
+                                Multi-factor authentication (MFA) flow for Enterprise users.
+                            </li>
+<li class="flex items-start gap-xs">
+<span class="material-symbols-outlined text-secondary text-[16px] mt-1">check_circle</span>
+                                Real-time reporting engine data accuracy (±0.01% tolerance).
+                            </li>
+</ul>
+</div>
+<div class="space-y-md">
+<p class="text-body-sm text-body-sm text-on-surface-variant leading-relaxed">
+                            The primary objective of this User Acceptance Testing (UAT) was to validate the production readiness of the 'Project Alpha' core modules. Testing focused on critical business paths and high-risk security protocols as defined in the master test plan dated July 15th, 2024.
+                        </p>
+</div>
+</div>
+</section>
+<!-- 3. Out of Scope -->
+<section class="mb-xl">
+<h2 class="font-title-sm text-title-sm text-primary mb-md flex items-center gap-sm">
+<span class="material-symbols-outlined text-outline">visibility_off</span>
+                    Out of Scope
+                </h2>
+<div class="border border-outline-variant p-md rounded-lg bg-surface-bright">
+<p class="text-body-sm text-body-sm text-on-surface-variant">
+                        Legacy database migration scripts (Phase 3), mobile-responsive viewports for Tablet-Mini devices, and third-party API performance stress testing beyond 10k concurrent sessions.
+                    </p>
+</div>
+</section>
+<!-- 4. Entry/Exit Criteria -->
+<section class="mb-xl">
+<div class="grid md:grid-cols-2 gap-xl">
+<div>
+<h2 class="font-label-md text-label-md font-bold text-primary mb-sm uppercase tracking-widest">Entry Criteria</h2>
+<ul class="space-y-sm">
+<li class="flex items-center justify-between border-b border-outline-variant pb-xs">
+<span class="text-body-sm text-body-sm">Unit Testing Complete</span>
+<span class="material-symbols-outlined text-secondary" style="font-variation-settings: 'FILL' 1;">check_box</span>
+</li>
+<li class="flex items-center justify-between border-b border-outline-variant pb-xs">
+<span class="text-body-sm text-body-sm">SIT Sign-off Received</span>
+<span class="material-symbols-outlined text-secondary" style="font-variation-settings: 'FILL' 1;">check_box</span>
+</li>
+<li class="flex items-center justify-between border-b border-outline-variant pb-xs">
+<span class="text-body-sm text-body-sm">Test Data Sanitized</span>
+<span class="material-symbols-outlined text-secondary" style="font-variation-settings: 'FILL' 1;">check_box</span>
+</li>
+</ul>
+</div>
+<div>
+<h2 class="font-label-md text-label-md font-bold text-primary mb-sm uppercase tracking-widest">Exit Criteria</h2>
+<ul class="space-y-sm">
+<li class="flex items-center justify-between border-b border-outline-variant pb-xs">
+<span class="text-body-sm text-body-sm">0 Critical Defects</span>
+<span class="material-symbols-outlined text-secondary" style="font-variation-settings: 'FILL' 1;">check_box</span>
+</li>
+<li class="flex items-center justify-between border-b border-outline-variant pb-xs">
+<span class="text-body-sm text-body-sm">95% Test Case Execution</span>
+<span class="material-symbols-outlined text-secondary" style="font-variation-settings: 'FILL' 1;">check_box</span>
+</li>
+<li class="flex items-center justify-between border-b border-outline-variant pb-xs">
+<span class="text-body-sm text-body-sm">Business Owner Approval</span>
+<span class="material-symbols-outlined text-outline">check_box_outline_blank</span>
+</li>
+</ul>
+</div>
+</div>
+</section>
+<!-- 5. Dual Signature Section -->
+<section class="mb-xl grid md:grid-cols-2 gap-lg">
+<!-- Test Lead Signature (Already Signed) -->
+<div class="relative group p-lg border-2 border-dashed border-outline-variant rounded-xl bg-surface-container-lowest">
+<div class="absolute top-2 right-2 rotate-12 border-4 border-secondary text-secondary font-bold px-md py-sm rounded-lg opacity-80 select-none">
+                        SIGNED
+                    </div>
+<div class="mb-lg">
+<div class="font-label-sm text-label-sm text-on-surface-variant uppercase mb-xs">Test Lead Approval</div>
+<div class="italic font-serif text-display-lg-mobile text-primary opacity-60">Sarah Jenkins</div>
+<div class="h-px bg-on-surface w-full mt-xs"></div>
+</div>
+<div class="flex justify-between items-end">
+<div>
+<div class="font-label-md text-label-md font-bold">Sarah Jenkins</div>
+<div class="text-body-sm text-body-sm text-on-surface-variant">Global QA Director</div>
+</div>
+<div class="text-right">
+<div class="text-body-sm text-body-sm text-on-surface-variant">Signed On</div>
+<div class="font-label-md text-label-md">Aug 11, 2024</div>
+</div>
+</div>
+</div>
+<!-- Business Owner Signature (Pending Interaction) -->
+<div class="relative p-lg border-2 border-secondary rounded-xl bg-secondary-container/5 transition-all hover:bg-secondary-container/10" id="biz-owner-card">
+<div class="mb-lg">
+<div class="font-label-sm text-label-sm text-on-surface-variant uppercase mb-xs">Business Owner Approval</div>
+<div class="flex items-center justify-center h-16 border-b border-on-surface group cursor-pointer" onclick="handleSign()">
+<span class="text-on-surface-variant font-label-md text-label-md group-hover:text-secondary transition-colors" id="sign-text">Click to sign electronically</span>
+<div class="hidden italic font-serif text-display-lg-mobile text-primary" id="signature-actual">Marcus Vane</div>
+</div>
+</div>
+<div class="flex justify-between items-end">
+<div>
+<div class="font-label-md text-label-md font-bold">Marcus Vane</div>
+<div class="text-body-sm text-body-sm text-on-surface-variant">Head of Digital Operations</div>
+</div>
+<div class="text-right" id="date-signed-container">
+<div class="text-body-sm text-body-sm text-on-surface-variant">Status</div>
+<div class="font-label-md text-label-md text-error" id="status-label">Awaiting Signature</div>
+</div>
+</div>
+<div class="hidden absolute top-2 right-2 rotate-12 border-4 border-secondary text-secondary font-bold px-md py-sm rounded-lg opacity-80" id="signed-stamp">
+                        SIGNED
+                    </div>
+</div>
+</section>
+<!-- 6. Status Banner -->
+<footer class="bg-primary text-white p-md rounded-lg flex flex-col md:flex-row justify-between items-center gap-md">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-secondary-fixed">verified_user</span>
+<span class="font-label-md text-label-md uppercase tracking-widest" id="main-status">Document Status: PENDING FINAL APPROVAL</span>
+</div>
+<div class="flex gap-md text-on-primary-container font-label-sm text-label-sm">
+<span>Privacy Policy</span>
+<span>Audit Log</span>
+<span>Terms of Service</span>
+</div>
+</footer>
+</div>
+<div class="mt-lg text-center no-print">
+<p class="text-body-sm text-body-sm text-on-surface-variant">
+                This document is a legally binding electronic record generated by <strong>TestCaseHub Compliance Engine</strong>.
+                <br/>Security Hash: <span class="font-mono">8f2e...4a12</span>
+</p>
+</div>
+</main>
+<script>
+        function handleSign() {
+            const signText = document.getElementById('sign-text');
+            const signatureActual = document.getElementById('signature-actual');
+            const statusLabel = document.getElementById('status-label');
+            const dateSignedContainer = document.getElementById('date-signed-container');
+            const signedStamp = document.getElementById('signed-stamp');
+            const bizCard = document.getElementById('biz-owner-card');
+            const mainStatus = document.getElementById('main-status');
+
+            signText.classList.add('hidden');
+            signatureActual.classList.remove('hidden');
+            
+            // Update UI
+            statusLabel.textContent = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2024' });
+            statusLabel.classList.remove('text-error');
+            statusLabel.classList.add('text-on-surface');
+            dateSignedContainer.querySelector('.text-body-sm').textContent = 'Signed On';
+            
+            signedStamp.classList.remove('hidden');
+            bizCard.classList.remove('border-secondary');
+            bizCard.classList.add('border-outline-variant');
+            bizCard.classList.remove('bg-secondary-container/5');
+            bizCard.classList.add('bg-surface-container-lowest');
+
+            mainStatus.textContent = "Document Status: FULLY EXECUTED & CERTIFIED";
+            
+            // Interaction effect
+            bizCard.classList.add('scale-95');
+            setTimeout(() => bizCard.classList.remove('scale-95'), 200);
+        }
+    </script>
+</body></html>

@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>TestCaseHub - Projects</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Geist:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "secondary": "#4648d4",
+                    "on-surface": "#1b1b1d",
+                    "surface-container-low": "#f6f3f5",
+                    "surface-container-highest": "#e4e2e4",
+                    "on-secondary-fixed-variant": "#2f2ebe",
+                    "tertiary-fixed-dim": "#ddb7ff",
+                    "primary-fixed-dim": "#bec6e0",
+                    "outline": "#76777d",
+                    "on-primary-container": "#7c839b",
+                    "background": "#fcf8fa",
+                    "error-container": "#ffdad6",
+                    "tertiary-container": "#2c0051",
+                    "primary-container": "#131b2e",
+                    "on-surface-variant": "#45464d",
+                    "on-primary-fixed": "#131b2e",
+                    "secondary-container": "#6063ee",
+                    "surface": "#fcf8fa",
+                    "on-tertiary-container": "#ac59fb",
+                    "on-primary-fixed-variant": "#3f465c",
+                    "surface-variant": "#e4e2e4",
+                    "surface-tint": "#565e74",
+                    "inverse-surface": "#303032",
+                    "surface-container-lowest": "#ffffff",
+                    "error": "#ba1a1a",
+                    "tertiary-fixed": "#f0dbff",
+                    "secondary-fixed": "#e1e0ff",
+                    "on-error": "#ffffff",
+                    "inverse-primary": "#bec6e0",
+                    "inverse-on-surface": "#f3f0f2",
+                    "surface-dim": "#dcd9db",
+                    "on-error-container": "#93000a",
+                    "secondary-fixed-dim": "#c0c1ff",
+                    "on-tertiary-fixed-variant": "#6900b3",
+                    "primary": "#000000",
+                    "on-background": "#1b1b1d",
+                    "surface-bright": "#fcf8fa",
+                    "tertiary": "#000000",
+                    "surface-container-high": "#eae7e9",
+                    "on-secondary-container": "#fffbff",
+                    "primary-fixed": "#dae2fd",
+                    "on-secondary-fixed": "#07006c",
+                    "on-secondary": "#ffffff",
+                    "outline-variant": "#c6c6cd",
+                    "on-tertiary": "#ffffff",
+                    "on-tertiary-fixed": "#2c0051",
+                    "on-primary": "#ffffff",
+                    "surface-container": "#f0edef"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "md": "1rem",
+                    "xs": "0.25rem",
+                    "base": "4px",
+                    "xl": "2.5rem",
+                    "sm": "0.5rem",
+                    "lg": "1.5rem",
+                    "gutter": "1rem",
+                    "container-max": "1440px"
+            },
+            "fontFamily": {
+                    "display-lg": ["Geist"],
+                    "title-sm": ["Geist"],
+                    "label-md": ["Geist"],
+                    "body-base": ["Inter"],
+                    "headline-md": ["Geist"],
+                    "label-sm": ["Geist"],
+                    "body-sm": ["Inter"]
+            },
+            "fontSize": {
+                    "display-lg": ["36px", {"lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                    "title-sm": ["18px", {"lineHeight": "28px", "fontWeight": "600"}],
+                    "label-md": ["14px", {"lineHeight": "20px", "fontWeight": "500"}],
+                    "body-base": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                    "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                    "label-sm": ["12px", {"lineHeight": "16px", "fontWeight": "500"}],
+                    "body-sm": ["14px", {"lineHeight": "20px", "fontWeight": "400"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            display: inline-block;
+            vertical-align: middle;
+        }
+        .skeleton {
+            background: linear-gradient(90deg, #f0edef 25%, #e4e2e4 50%, #f0edef 75%);
+            background-size: 200% 100%;
+            animation: loading 1.5s infinite;
+        }
+        @keyframes loading {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        .slide-over-backdrop {
+            background-color: rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(4px);
+            transition: opacity 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface font-body-base min-h-screen">
+<!-- Shell Layout -->
+<div class="flex h-screen overflow-hidden">
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-0 h-full w-[280px] border-r border-outline-variant dark:border-outline bg-surface dark:bg-inverse-surface flex flex-col h-full p-md gap-sm z-50">
+<div class="flex items-center gap-md mb-xl">
+<div class="w-10 h-10 bg-primary rounded-lg flex items-center justify-center text-on-primary">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">terminal</span>
+</div>
+<div>
+<h1 class="font-title-sm text-title-sm text-primary dark:text-on-primary-fixed leading-none">TestCaseHub</h1>
+<p class="text-[10px] text-on-surface-variant uppercase tracking-widest mt-1">Enterprise UAT</p>
+</div>
+</div>
+<nav class="flex-1 flex flex-col gap-xs">
+<a class="flex items-center gap-md text-on-surface-variant dark:text-surface-variant px-md py-sm hover:bg-surface-container-high dark:hover:bg-primary-container hover:text-on-surface transition-colors duration-200 ease-in-out font-label-md text-label-md" href="#">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+                    Dashboard
+                </a>
+<a class="flex items-center gap-md bg-secondary-container dark:bg-on-secondary-fixed-variant text-on-secondary-container dark:text-secondary-fixed rounded-lg px-md py-sm transition-colors duration-200 ease-in-out font-label-md text-label-md" href="#">
+<span class="material-symbols-outlined" data-icon="inventory_2" style="font-variation-settings: 'FILL' 1;">inventory_2</span>
+                    Projects
+                </a>
+<a class="flex items-center gap-md text-on-surface-variant dark:text-surface-variant px-md py-sm hover:bg-surface-container-high dark:hover:bg-primary-container hover:text-on-surface transition-colors duration-200 ease-in-out font-label-md text-label-md" href="#">
+<span class="material-symbols-outlined" data-icon="group">group</span>
+                    Users
+                </a>
+</nav>
+<div class="mt-auto pt-md border-t border-outline-variant">
+<button class="w-full bg-primary text-on-primary py-sm px-md rounded-lg font-label-md text-label-md hover:opacity-90 transition-opacity flex items-center justify-center gap-sm" onclick="toggleSlideOver()">
+<span class="material-symbols-outlined text-[18px]">add</span>
+                    Create Test Case
+                </button>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="flex-1 ml-[280px] flex flex-col overflow-hidden">
+<!-- TopAppBar -->
+<header class="flex justify-between items-center h-16 px-lg w-full sticky top-0 z-40 bg-surface/80 backdrop-blur-md border-b border-outline-variant dark:border-outline">
+<div class="flex items-center gap-md flex-1">
+<div class="relative w-full max-w-md">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-[20px]">search</span>
+<input class="w-full bg-surface-container-low border-none rounded-full py-2 pl-10 pr-4 text-body-sm focus:ring-2 focus:ring-secondary/20" placeholder="Search projects..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-md">
+<button class="p-2 hover:bg-surface-container-low rounded-full transition-colors relative">
+<span class="material-symbols-outlined text-on-surface-variant" data-icon="notifications">notifications</span>
+<span class="absolute top-2 right-2 w-2 h-2 bg-error rounded-full"></span>
+</button>
+<button class="p-2 hover:bg-surface-container-low rounded-full transition-colors">
+<span class="material-symbols-outlined text-on-surface-variant" data-icon="settings">settings</span>
+</button>
+<div class="h-8 w-[1px] bg-outline-variant mx-2"></div>
+<div class="flex items-center gap-sm cursor-pointer active:opacity-80">
+<img alt="User Profile Avatar" class="w-8 h-8 rounded-full border border-outline-variant" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCDv-I8jCtMFqlzoIY3VXSzv-wDSsXHD9mQtEeCGNqefwOFAofAVoYwa76RPmLc-_CdKYwHkEoN-SgnmMtul4baZ1r5Hse4jOuG3Ei5NTgB2ik88utbbV6UbZDGQEYPI5BwsZX86oKVoL3CCF7ZPBGljyjK-yvhDWyHGEpuVHlaEb1DTc1kklAaBffbjEpDe5XyzHopuAndY0-ocWLr6YD-uXvLQhghuI0fnTiN_WEdaImxUWzOTRP0tgrK_PTmFGjilyjplWkPJljj"/>
+<div class="hidden lg:block text-left">
+<p class="font-label-md text-label-md text-on-surface leading-none">Admin User</p>
+<p class="text-[10px] text-on-surface-variant">System Administrator</p>
+</div>
+</div>
+</div>
+</header>
+<!-- Page Content -->
+<div class="flex-1 overflow-y-auto p-lg">
+<div class="max-w-[1200px] mx-auto">
+<!-- Header Section -->
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-md mb-xl">
+<div>
+<h2 class="font-display-lg text-display-lg text-primary tracking-tight">Projects</h2>
+<p class="text-on-surface-variant font-body-base">Manage and monitor your enterprise UAT cycles.</p>
+</div>
+<button class="bg-secondary text-on-secondary px-lg py-sm rounded-lg font-label-md flex items-center gap-sm shadow-sm hover:brightness-110 transition-all" onclick="toggleSlideOver()">
+<span class="material-symbols-outlined">add_circle</span>
+                            New Project
+                        </button>
+</div>
+<!-- Filter Bar -->
+<div class="flex items-center gap-sm mb-lg">
+<span class="text-label-sm text-on-surface-variant font-label-sm uppercase tracking-wider">Filter by:</span>
+<div class="flex gap-xs">
+<button class="px-md py-1.5 rounded-full border border-secondary bg-secondary/10 text-secondary text-label-sm font-label-sm">All Projects</button>
+<button class="px-md py-1.5 rounded-full border border-outline-variant text-on-surface-variant text-label-sm font-label-sm hover:bg-surface-container">In Progress</button>
+<button class="px-md py-1.5 rounded-full border border-outline-variant text-on-surface-variant text-label-sm font-label-sm hover:bg-surface-container">Signed Off</button>
+</div>
+</div>
+<!-- Projects Grid -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-lg" id="projects-grid">
+<!-- Card 1 -->
+<div class="group bg-surface-container-lowest border border-outline-variant rounded-xl p-md cursor-pointer hover:shadow-lg hover:border-secondary/30 transition-all duration-300" onclick="window.location.href='/projects/1'">
+<div class="flex justify-between items-start mb-sm">
+<code class="font-mono text-[11px] px-2 py-1 bg-surface-container-high text-on-surface-variant rounded">TCH-001</code>
+<span class="flex items-center gap-1.5 px-2 py-1 bg-green-100 text-green-700 rounded-full text-[10px] font-bold uppercase tracking-wider">
+<span class="w-1.5 h-1.5 bg-green-500 rounded-full"></span>
+                                    Signed Off
+                                </span>
+</div>
+<h3 class="font-title-sm text-title-sm text-on-surface mb-1 group-hover:text-secondary transition-colors">Customer Portal Redesign</h3>
+<p class="text-body-sm text-on-surface-variant mb-4">Module: Frontend Components</p>
+<div class="flex items-center justify-between pt-md border-t border-outline-variant/50">
+<span class="text-label-sm font-label-sm text-on-surface-variant">v1.2.0</span>
+<div class="flex -space-x-2">
+<img alt="Team" class="w-6 h-6 rounded-full border-2 border-surface" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDaFCKhTd8Pt-se4ugLfJVJskLVJMPHTShclEJThN_TCayZDnLiX-SvuUyuOCYPeZ0ZiUG6w9hY2c2TSexsIxq4DeyPrwP0foARqJNbAXbF0h1zZ8GCGUDsNMqpRh20__YAk2QdDhYz1NNpMOc6lFsB-Z-yyQwY-JD91RHOIgDXrFVMp31iw_S5hDNxVc0AqgU68Qi0yMccAnJyQ7RyckZGh3Eeqjgzt28u-J3NZdwBt5DrrijUdct_Aa_CtBS84trykYIbOM7dQ4fQ"/>
+<img alt="Team" class="w-6 h-6 rounded-full border-2 border-surface" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCTcOAqIC0e1Q8bG9PA7wjNVBbMjPL3MUng9WBly5zgJ9VLFON35jSri3vyWJZDkll9_W5SSDaQtqoa0spKgn9--C34-AtaSse4zrMZ6M039WVYMDsZxQJ7D8NbmhIYuUPZgq1g5ACKlvk1q2mLjfCDL1N2fLHUGTUL4Gs75BvuquKd5q37QKdrcdc-L4ewTSVuxSgunwo390rHaaMhzcp3KT9tBo6a6ABwtOiuvh9AnahX_XSNl-R-pUctYOZL5GVws9_RpAKLCW49"/>
+<div class="w-6 h-6 rounded-full border-2 border-surface bg-surface-container-high flex items-center justify-center text-[10px] font-bold text-on-surface-variant">+3</div>
+</div>
+</div>
+</div>
+<!-- Card 2 -->
+<div class="group bg-surface-container-lowest border border-outline-variant rounded-xl p-md cursor-pointer hover:shadow-lg hover:border-secondary/30 transition-all duration-300" onclick="window.location.href='/projects/2'">
+<div class="flex justify-between items-start mb-sm">
+<code class="font-mono text-[11px] px-2 py-1 bg-surface-container-high text-on-surface-variant rounded">TCH-002</code>
+<span class="flex items-center gap-1.5 px-2 py-1 bg-amber-100 text-amber-700 rounded-full text-[10px] font-bold uppercase tracking-wider">
+<span class="w-1.5 h-1.5 bg-amber-500 rounded-full"></span>
+                                    In Progress
+                                </span>
+</div>
+<h3 class="font-title-sm text-title-sm text-on-surface mb-1 group-hover:text-secondary transition-colors">API Gateway Migration</h3>
+<p class="text-body-sm text-on-surface-variant mb-4">Module: Infrastructure</p>
+<div class="flex items-center justify-between pt-md border-t border-outline-variant/50">
+<span class="text-label-sm font-label-sm text-on-surface-variant">v2.4.1</span>
+<div class="flex -space-x-2">
+<img alt="Team" class="w-6 h-6 rounded-full border-2 border-surface" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDUKW8M2tiTZVyzpcxl6k02fwjvAnTV0aiFdgY0zc1tzda_S_fnMIABhmLZ5gpX-aNV6bXeBUqMv4y13JBXEUhBpVPCfPxXeZdJom492HcYdiKewFitjJ9tCbi4na3dfg6UY5WAYoyXBebxK9uvXaf5Aq_FLRJav15zH16FC9KdkqVRc3V56lxhbtSDgs9DHhX1ux6UtHjQSmU2CYBeihBy-VpkrPHmXoX6nOwCzTbW9T8VOlpOEEKZ2ZWqoE7lxvv4fXSzlcREdXLe"/>
+<img alt="Team" class="w-6 h-6 rounded-full border-2 border-surface" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCS9Z3qbneNGkVSH3jnLG-L-F8IXLkwG8s1iHJ4FGqzdi-f3zZlEvLn8ZfWsspsU-P8RxgHNY-TjHE0sBkMR1WX39wCp5ch0fUZMMSOh-1y_u09AhSehmN7URGlhnlgJ_qzyMgtSNqR90mEHz8CB7XLsAXzR3a-1oS-FUdZyO9gzhwUqVhijjkhdAOlNB0sOKquwYytV7XD_O8KcR2W9m30O6izET5yJyAEPyJDz5kdURKjAAqZ16Pp1SmoUs7GRm-U341vUwXslDNX"/>
+</div>
+</div>
+</div>
+<!-- Card 3 -->
+<div class="group bg-surface-container-lowest border border-outline-variant rounded-xl p-md cursor-pointer hover:shadow-lg hover:border-secondary/30 transition-all duration-300" onclick="window.location.href='/projects/3'">
+<div class="flex justify-between items-start mb-sm">
+<code class="font-mono text-[11px] px-2 py-1 bg-surface-container-high text-on-surface-variant rounded">TCH-043</code>
+<span class="flex items-center gap-1.5 px-2 py-1 bg-amber-100 text-amber-700 rounded-full text-[10px] font-bold uppercase tracking-wider">
+<span class="w-1.5 h-1.5 bg-amber-500 rounded-full"></span>
+                                    In Progress
+                                </span>
+</div>
+<h3 class="font-title-sm text-title-sm text-on-surface mb-1 group-hover:text-secondary transition-colors">Auth0 Integration</h3>
+<p class="text-body-sm text-on-surface-variant mb-4">Module: Security</p>
+<div class="flex items-center justify-between pt-md border-t border-outline-variant/50">
+<span class="text-label-sm font-label-sm text-on-surface-variant">v1.0.0</span>
+<div class="flex -space-x-2">
+<img alt="Team" class="w-6 h-6 rounded-full border-2 border-surface" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDfskXqjoIJVldC3kTDGDUDOOYrV_2kpWNMCJ0xyO8DJ3tHsFofE1ZviZWazlTc8DAYvs2ffymyuR5iMhfm8lbfvVQZ8ryHXKQXGThzg34spUaYT6qRioo0_J9sYU0ewX7C4F1jtR_tpry-91-uvuJvdReX4IUiA3-S8gTwPbfwlAZB9-xVFmVPTZ-xfohdyBXQXLeDS3_c8r-OPbj2FIWiScdV1Amh05KfKUxCkhX0TrF4iGzn_ws7fFVwzFjozHoHnuueBE_gWOCX"/>
+</div>
+</div>
+</div>
+<!-- Skeleton Loader (Hidden by default, shown during 'refresh') -->
+<div class="contents hidden" id="skeleton-container">
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-md">
+<div class="flex justify-between mb-sm">
+<div class="w-16 h-5 skeleton rounded"></div>
+<div class="w-20 h-5 skeleton rounded-full"></div>
+</div>
+<div class="w-3/4 h-6 skeleton rounded mb-2"></div>
+<div class="w-1/2 h-4 skeleton rounded mb-4"></div>
+<div class="pt-md border-t border-outline-variant/50 flex justify-between">
+<div class="w-12 h-4 skeleton rounded"></div>
+<div class="w-16 h-6 skeleton rounded-full"></div>
+</div>
+</div>
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-md">
+<div class="flex justify-between mb-sm">
+<div class="w-16 h-5 skeleton rounded"></div>
+<div class="w-20 h-5 skeleton rounded-full"></div>
+</div>
+<div class="w-3/4 h-6 skeleton rounded mb-2"></div>
+<div class="w-1/2 h-4 skeleton rounded mb-4"></div>
+<div class="pt-md border-t border-outline-variant/50 flex justify-between">
+<div class="w-12 h-4 skeleton rounded"></div>
+<div class="w-16 h-6 skeleton rounded-full"></div>
+</div>
+</div>
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-md">
+<div class="flex justify-between mb-sm">
+<div class="w-16 h-5 skeleton rounded"></div>
+<div class="w-20 h-5 skeleton rounded-full"></div>
+</div>
+<div class="w-3/4 h-6 skeleton rounded mb-2"></div>
+<div class="w-1/2 h-4 skeleton rounded mb-4"></div>
+<div class="pt-md border-t border-outline-variant/50 flex justify-between">
+<div class="w-12 h-4 skeleton rounded"></div>
+<div class="w-16 h-6 skeleton rounded-full"></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+<!-- New Project Slide-over (Drawer) -->
+<div aria-modal="true" class="fixed inset-0 z-[100] hidden overflow-hidden" id="slide-over" role="dialog">
+<div class="absolute inset-0 slide-over-backdrop" onclick="toggleSlideOver()"></div>
+<div class="absolute inset-y-0 right-0 flex max-w-full pl-10">
+<div class="w-screen max-w-xl transform transition-transform duration-500 ease-in-out bg-surface-container-lowest shadow-2xl flex flex-col translate-x-full" id="slide-over-panel">
+<div class="flex items-center justify-between px-lg py-md border-b border-outline-variant bg-surface">
+<h2 class="font-headline-md text-headline-md text-primary">New Project</h2>
+<button class="p-2 hover:bg-surface-container-high rounded-full transition-colors" onclick="toggleSlideOver()">
+<span class="material-symbols-outlined text-on-surface-variant">close</span>
+</button>
+</div>
+<div class="flex-1 overflow-y-auto p-lg space-y-lg">
+<form class="space-y-lg" id="new-project-form">
+<div class="grid grid-cols-2 gap-md">
+<div class="space-y-1">
+<label class="text-label-sm font-label-sm text-on-surface-variant block">Project Code</label>
+<input class="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all font-mono" name="project_code" placeholder="e.g. TCH-001" type="text"/>
+</div>
+<div class="space-y-1">
+<label class="text-label-sm font-label-sm text-on-surface-variant block">Module</label>
+<input class="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all" name="module_name" placeholder="Enter module" type="text"/>
+</div>
+</div>
+<div class="space-y-1">
+<label class="text-label-sm font-label-sm text-on-surface-variant block">Project Name</label>
+<input class="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all font-semibold" name="project_name" placeholder="Project title" type="text"/>
+</div>
+<div class="grid grid-cols-2 gap-md">
+<div class="space-y-1">
+<label class="text-label-sm font-label-sm text-on-surface-variant block">Designed By</label>
+<input class="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all" name="designed_by" placeholder="Full name" type="text"/>
+</div>
+<div class="space-y-1">
+<label class="text-label-sm font-label-sm text-on-surface-variant block">Design Date</label>
+<input class="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all" name="design_date" type="date"/>
+</div>
+</div>
+<div class="space-y-1">
+<label class="text-label-sm font-label-sm text-on-surface-variant block">Test Link (URL)</label>
+<div class="relative">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-[18px]">link</span>
+<input class="w-full bg-surface border border-outline-variant rounded-lg pl-10 pr-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all" name="test_link" placeholder="https://..." type="url"/>
+</div>
+</div>
+<div class="space-y-lg">
+<div class="space-y-1">
+<label class="text-label-sm font-label-sm text-on-surface-variant block">Objectives</label>
+<textarea class="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all resize-none" name="objectives" rows="2"></textarea>
+</div>
+<div class="space-y-1">
+<label class="text-label-sm font-label-sm text-on-surface-variant block">Scope</label>
+<textarea class="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all resize-none" name="scope" rows="2"></textarea>
+</div>
+<div class="space-y-1">
+<label class="text-label-sm font-label-sm text-on-surface-variant block">Out of Scope</label>
+<textarea class="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all resize-none" name="out_of_scope" rows="2"></textarea>
+</div>
+<div class="grid grid-cols-2 gap-md">
+<div class="space-y-1">
+<label class="text-label-sm font-label-sm text-on-surface-variant block">Entry Criteria</label>
+<textarea class="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all resize-none" name="entry_criteria" rows="3"></textarea>
+</div>
+<div class="space-y-1">
+<label class="text-label-sm font-label-sm text-on-surface-variant block">Exit Criteria</label>
+<textarea class="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all resize-none" name="exit_criteria" rows="3"></textarea>
+</div>
+</div>
+</div>
+</form>
+</div>
+<div class="p-lg bg-surface border-t border-outline-variant flex justify-end gap-md">
+<button class="px-lg py-sm rounded-lg border border-outline-variant text-on-surface font-label-md hover:bg-surface-container-low transition-all" onclick="toggleSlideOver()">Cancel</button>
+<button class="px-lg py-sm rounded-lg bg-secondary text-on-secondary font-label-md hover:brightness-110 shadow-md transition-all">Create Project</button>
+</div>
+</div>
+</div>
+</div>
+<script>
+        function toggleSlideOver() {
+            const slideOver = document.getElementById('slide-over');
+            const panel = document.getElementById('slide-over-panel');
+            
+            if (slideOver.classList.contains('hidden')) {
+                slideOver.classList.remove('hidden');
+                setTimeout(() => {
+                    panel.classList.remove('translate-x-full');
+                    panel.classList.add('translate-x-0');
+                }, 10);
+            } else {
+                panel.classList.remove('translate-x-0');
+                panel.classList.add('translate-x-full');
+                setTimeout(() => {
+                    slideOver.classList.add('hidden');
+                }, 500);
+            }
+        }
+
+        // Mock Loading State Effect
+        window.addEventListener('load', () => {
+            const grid = document.getElementById('projects-grid');
+            const skeletons = document.getElementById('skeleton-container');
+            const realCards = Array.from(grid.children).filter(c => c.id !== 'skeleton-container');
+            
+            // Initial loading simulation
+            realCards.forEach(c => c.classList.add('hidden'));
+            skeletons.classList.remove('hidden');
+            
+            setTimeout(() => {
+                skeletons.classList.add('hidden');
+                realCards.forEach(c => c.classList.remove('hidden'));
+            }, 1200);
+        });
+    </script>
+</body></html>

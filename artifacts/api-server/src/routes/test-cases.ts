@@ -30,7 +30,7 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
     if (!useCaseId) { res.status(400).json({ message: "useCaseId is required" }); return; }
     const data = await db.query.testCases.findMany({
       where: eq(schema.testCases.use_case_id, useCaseId),
-      orderBy: desc(schema.testCases.created_at),
+      orderBy: schema.testCases.sort_order,
     });
     res.json(data);
   } catch (err) { next(err); }
@@ -82,7 +82,12 @@ router.post("/", async (req: AuthenticatedRequest, res, next) => {
       acceptance_criteria: z.string().optional(),
     }).parse(req.body);
 
-    const [inserted] = await db.insert(schema.testCases).values({ ...parsed, use_case_id: useCaseId }).returning();
+    const maxSort = await db.select({ max: sql<number>`MAX(${schema.testCases.sort_order})` })
+      .from(schema.testCases)
+      .where(eq(schema.testCases.use_case_id, useCaseId));
+    const nextSort = (maxSort[0]?.max ?? -1) + 1;
+
+    const [inserted] = await db.insert(schema.testCases).values({ ...parsed, use_case_id: useCaseId, sort_order: nextSort }).returning();
 
     await bumpProjectVersion(useCase.project_id);
     await logAudit({ entityType: "test_case", entityId: inserted.id, changedByUserId: req.user!.userId, toStatus: "created" });
@@ -110,6 +115,7 @@ router.put("/:testCaseId", async (req: AuthenticatedRequest, res, next) => {
       test_type: z.string().nullable().optional(),
       estimated_minutes: z.number().nullable().optional(),
       acceptance_criteria: z.string().nullable().optional(),
+      sort_order: z.number().optional(),
     }).parse(req.body);
 
     const [updated] = await db.update(schema.testCases)

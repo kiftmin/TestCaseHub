@@ -5,7 +5,7 @@ import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 // GET /api/test-runs/:testRunId/checklist
 router.get("/", async (req: AuthenticatedRequest, res, next) => {

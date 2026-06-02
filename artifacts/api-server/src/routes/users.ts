@@ -2,7 +2,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { eq, sql } from "drizzle-orm";
-import { db } from "../db.js";
+import { db, pool } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, AuthenticatedRequest } from "../middlewares/auth.js";
 
@@ -112,23 +112,15 @@ router.delete("/:userId", async (req, res, next) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const [adminCountResult] = await db
-      .select({ count: sql`COUNT(*)` })
-      .from(schema.users)
-      .where(eq(schema.users.role, "ADMIN"));
-
-    const adminCount = Number(adminCountResult.count);
+    const adminResult = await pool.query("SELECT COUNT(*) FROM users WHERE role = $1", ["ADMIN"]);
+    const adminCount = Number(adminResult.rows[0].count);
 
     if (adminCount === 1 && targetUser.role === "ADMIN") {
       return res.status(403).json({ message: "Cannot delete last admin" });
     }
 
-    const [assignmentCountResult] = await db
-      .select({ count: sql`COUNT(*)` })
-      .from(schema.project_assignments)
-      .where(eq(schema.project_assignments.user_id, userId));
-
-    const assignmentCount = Number(assignmentCountResult.count);
+    const assignmentResult = await pool.query("SELECT COUNT(*) FROM project_assignments WHERE user_id = $1", [userId]);
+    const assignmentCount = Number(assignmentResult.rows[0].count);
 
     if (assignmentCount > 0) {
       return res.status(409).json({ message: "User has project assignments" });

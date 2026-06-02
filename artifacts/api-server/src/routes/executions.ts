@@ -24,18 +24,10 @@ router.get("/dashboard/tester/:userId/test-runs", async (req, res, next) => {
 
     const assignedUseCases = await db.query.testRunUseCases.findMany({
       where: eq(schema.testRunUseCases.assigned_tester_id, userId),
-      with: { testRun: true, useCase: true },
+      with: { testRun: { with: { project: true } }, useCase: true },
     });
 
-    const testRunIds = [...new Set(assignedUseCases.map((uc) => uc.test_run_id))];
-
-    const testRuns = await db.query.testRuns.findMany({
-      where: (tr, { inArray }) => inArray(tr.id, testRunIds),
-      with: { project: true },
-      orderBy: desc(schema.testRuns.created_at),
-    });
-
-    res.json(testRuns);
+    res.json(assignedUseCases);
   } catch (err) {
     next(err);
   }

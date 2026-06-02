@@ -71,8 +71,7 @@ router.get("/users/:userId/projects", async (req: AuthenticatedRequest, res, nex
       where: eq(schema.projectAssignments.user_id, userId),
       with: { project: true },
     });
-    const projects = assignments.map(a => a.project);
-    res.json(projects);
+    res.json(assignments);
   } catch (err) { next(err); }
 });
 

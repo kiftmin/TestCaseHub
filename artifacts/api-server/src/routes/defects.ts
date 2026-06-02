@@ -31,7 +31,7 @@ router.get("/test-runs/:testRunId/defects", async (req: AuthenticatedRequest, re
 });
 
 // GET /api/defects/:defectId
-router.get("/:defectId", async (req: AuthenticatedRequest, res, next) => {
+router.get("/defects/:defectId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
     const defect = await db.query.defects.findFirst({
@@ -44,7 +44,7 @@ router.get("/:defectId", async (req: AuthenticatedRequest, res, next) => {
 });
 
 // PATCH /api/defects/:defectId/flag-bug — TEST_LEAD only
-router.patch("/:defectId/flag-bug", async (req: AuthenticatedRequest, res, next) => {
+router.patch("/defects/:defectId/flag-bug", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
@@ -85,7 +85,7 @@ router.patch("/:defectId/flag-bug", async (req: AuthenticatedRequest, res, next)
 });
 
 // PATCH /api/defects/:defectId/flag-retest — TEST_LEAD only
-router.patch("/:defectId/flag-retest", async (req: AuthenticatedRequest, res, next) => {
+router.patch("/defects/:defectId/flag-retest", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
     const bodySchema = z.object({ reason: z.string() });
@@ -115,7 +115,7 @@ router.patch("/:defectId/flag-retest", async (req: AuthenticatedRequest, res, ne
 });
 
 // PATCH /api/defects/:defectId/flag-accepted-by-business — TEST_LEAD only
-router.patch("/:defectId/flag-accepted-by-business", async (req: AuthenticatedRequest, res, next) => {
+router.patch("/defects/:defectId/flag-accepted-by-business", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
@@ -136,7 +136,7 @@ router.patch("/:defectId/flag-accepted-by-business", async (req: AuthenticatedRe
 });
 
 // PATCH /api/defects/:defectId/business-accept — BUSINESS_OWNER only
-router.patch("/:defectId/business-accept", async (req: AuthenticatedRequest, res, next) => {
+router.patch("/defects/:defectId/business-accept", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
     const bodySchema = z.object({ note: z.string() });
@@ -161,7 +161,7 @@ router.patch("/:defectId/business-accept", async (req: AuthenticatedRequest, res
 });
 
 // PATCH /api/defects/:defectId/business-reject — BUSINESS_OWNER only
-router.patch("/:defectId/business-reject", async (req: AuthenticatedRequest, res, next) => {
+router.patch("/defects/:defectId/business-reject", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
     const bodySchema = z.object({ reason: z.string().optional() });
@@ -187,7 +187,7 @@ router.patch("/:defectId/business-reject", async (req: AuthenticatedRequest, res
 });
 
 // PATCH /api/defects/:defectId/classify — TEST_LEAD only
-router.patch("/:defectId/classify", async (req: AuthenticatedRequest, res, next) => {
+router.patch("/defects/:defectId/classify", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
     const bodySchema = z.object({
@@ -212,7 +212,7 @@ router.patch("/:defectId/classify", async (req: AuthenticatedRequest, res, next)
 });
 
 // POST /api/defects/:defectId/notes — TEST_LEAD, BUSINESS_OWNER, or participant
-router.post("/:defectId/notes", async (req: AuthenticatedRequest, res, next) => {
+router.post("/defects/:defectId/notes", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
     const bodySchema = z.object({ note: z.string() });
@@ -255,7 +255,7 @@ router.post("/:defectId/notes", async (req: AuthenticatedRequest, res, next) => 
 });
 
 // GET /api/defects/:defectId/retests
-router.get("/:defectId/retests", async (req: AuthenticatedRequest, res, next) => {
+router.get("/defects/:defectId/retests", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
     const retests = await db.query.defectRetests.findMany({

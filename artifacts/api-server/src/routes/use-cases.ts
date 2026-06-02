@@ -40,9 +40,10 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
     }
     const result = await db.query.useCases.findMany({
       where: eq(schema.useCases.project_id, projectId),
+      orderBy: schema.useCases.sort_order,
       with: { testCases: { with: { steps: true } } },
     });
-    res.json({ testScenarios: result });
+    res.json(result);
   } catch (err) { next(err); }
 });
 
@@ -77,8 +78,13 @@ router.post("/", async (req: AuthenticatedRequest, res, next) => {
     });
     const data = bodySchema.parse(req.body);
 
+    const maxSort = await db.select({ max: sql<number>`MAX(${schema.useCases.sort_order})` })
+      .from(schema.useCases)
+      .where(eq(schema.useCases.project_id, projectId));
+    const nextSort = (maxSort[0]?.max ?? -1) + 1;
+
     const [useCase] = await db.insert(schema.useCases)
-      .values({ project_id: projectId, code: data.code, name: data.name, priority: data.priority ?? null, category: data.category ?? null })
+      .values({ project_id: projectId, code: data.code, name: data.name, priority: data.priority ?? null, category: data.category ?? null, sort_order: nextSort })
       .returning();
 
     await bumpProjectVersion(projectId);
@@ -102,6 +108,7 @@ router.put("/:useCaseId", async (req: AuthenticatedRequest, res, next) => {
       name: z.string().optional(),
       priority: z.string().nullable().optional(),
       category: z.string().nullable().optional(),
+      sort_order: z.number().optional(),
     }).parse(req.body);
 
     const [updated] = await db.update(schema.useCases)

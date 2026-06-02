@@ -1,5 +1,5 @@
 import express from "express";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, asc, desc, and, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
@@ -56,13 +56,25 @@ router.get("/:testRunId", async (req: AuthenticatedRequest, res, next) => {
     const testRun = await db.query.testRuns.findFirst({
       where: eq(schema.testRuns.id, testRunId),
       with: {
-        checklistItems: true,
+        checklistItems: { orderBy: [asc(schema.testRunChecklistItems.sort_order)] },
         executions: true,
-        useCases: { with: { useCase: true, tester: true } },
+        useCases: {
+          with: {
+            useCase: {
+              with: {
+                testCases: { orderBy: [asc(schema.testCases.sort_order)] },
+              },
+            },
+            tester: true,
+          },
+        },
         project: true,
       },
     });
     if (!testRun) { res.status(404).json({ message: "Test run not found" }); return; }
+    if (testRun.useCases) {
+      testRun.useCases.sort((a, b) => (a.useCase?.sort_order ?? 0) - (b.useCase?.sort_order ?? 0));
+    }
     res.json(testRun);
   } catch (err) { next(err); }
 });

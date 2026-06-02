@@ -13,9 +13,6 @@
     "api:dev": "pnpm --filter api-server dev",
     "api:build": "pnpm --filter api-server build",
     "api:start": "pnpm --filter api-server start",
-    "client:dev": "pnpm --filter uat-manager dev",
-    "client:build": "pnpm --filter uat-manager build",
-    "client:preview": "pnpm --filter uat-manager preview",
     "lint": "pnpm -r lint"
   },
   "devDependencies": {
@@ -23,5 +20,9 @@
   },
   "engines": {
     "node": ">=20.0.0"
-  }
+  },
+  "workspaces": [
+    "lib/*",
+    "artifacts/*"
+  ]
 }

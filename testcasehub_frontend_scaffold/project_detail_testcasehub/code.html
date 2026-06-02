@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Project Alpha - Project Detail | UAT Manager</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Geist:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-error": "#ffffff",
+                        "on-tertiary-fixed-variant": "#6900b3",
+                        "surface-container-high": "#eae7e9",
+                        "primary-fixed-dim": "#bec6e0",
+                        "on-tertiary-fixed": "#2c0051",
+                        "on-surface": "#1b1b1d",
+                        "on-tertiary-container": "#ac59fb",
+                        "on-secondary": "#ffffff",
+                        "surface-variant": "#e4e2e4",
+                        "surface-container-highest": "#e4e2e4",
+                        "surface-bright": "#fcf8fa",
+                        "outline": "#76777d",
+                        "inverse-primary": "#bec6e0",
+                        "on-primary-fixed-variant": "#3f465c",
+                        "on-primary": "#ffffff",
+                        "surface-container": "#f0edef",
+                        "on-primary-fixed": "#131b2e",
+                        "surface": "#fcf8fa",
+                        "background": "#fcf8fa",
+                        "secondary-fixed": "#e1e0ff",
+                        "error": "#ba1a1a",
+                        "tertiary": "#000000",
+                        "on-secondary-container": "#fffbff",
+                        "tertiary-fixed": "#f0dbff",
+                        "outline-variant": "#c6c6cd",
+                        "on-primary-container": "#7c839b",
+                        "primary-fixed": "#dae2fd",
+                        "on-surface-variant": "#45464d",
+                        "on-secondary-fixed-variant": "#2f2ebe",
+                        "on-error-container": "#93000a",
+                        "surface-container-low": "#f6f3f5",
+                        "secondary-fixed-dim": "#c0c1ff",
+                        "secondary": "#4648d4",
+                        "inverse-surface": "#303032",
+                        "surface-tint": "#565e74",
+                        "on-secondary-fixed": "#07006c",
+                        "on-tertiary": "#ffffff",
+                        "surface-container-lowest": "#ffffff",
+                        "on-background": "#1b1b1d",
+                        "primary-container": "#131b2e",
+                        "tertiary-container": "#2c0051",
+                        "error-container": "#ffdad6",
+                        "primary": "#000000",
+                        "tertiary-fixed-dim": "#ddb7ff",
+                        "surface-dim": "#dcd9db",
+                        "secondary-container": "#6063ee",
+                        "inverse-on-surface": "#f3f0f2"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "sm": "0.5rem",
+                        "container-max": "1440px",
+                        "base": "4px",
+                        "xs": "0.25rem",
+                        "lg": "1.5rem",
+                        "gutter": "1rem",
+                        "xl": "2.5rem",
+                        "md": "1rem"
+                    },
+                    "fontFamily": {
+                        "title-sm": ["Geist"],
+                        "label-sm": ["Geist"],
+                        "display-lg": ["Geist"],
+                        "body-base": ["Inter"],
+                        "body-sm": ["Inter"],
+                        "display-lg-mobile": ["Geist"],
+                        "label-md": ["Geist"],
+                        "headline-md": ["Geist"]
+                    },
+                    "fontSize": {
+                        "title-sm": ["18px", {"lineHeight": "28px", "fontWeight": "600"}],
+                        "label-sm": ["12px", {"lineHeight": "16px", "fontWeight": "500"}],
+                        "display-lg": ["36px", {"lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                        "body-base": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                        "body-sm": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                        "display-lg-mobile": ["28px", {"lineHeight": "34px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                        "label-md": ["14px", {"lineHeight": "20px", "fontWeight": "500"}],
+                        "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        body { font-family: 'Inter', sans-serif; }
+        .font-geist { font-family: 'Geist', sans-serif; }
+    </style>
+</head>
+<body class="bg-background text-on-surface">
+<!-- TopNavBar -->
+<header class="fixed top-0 z-50 flex justify-between items-center w-full px-md h-16 bg-surface dark:bg-surface-dim border-b border-outline-variant dark:border-outline">
+<div class="flex items-center gap-xl">
+<span class="font-headline-md text-headline-md font-bold text-primary dark:text-primary-fixed">UAT Manager</span>
+<nav class="hidden md:flex gap-lg">
+<a class="font-title-sm text-title-sm text-on-surface-variant hover:text-primary transition-colors cursor-pointer active:opacity-80" href="#">Dashboard</a>
+<a class="font-title-sm text-title-sm text-secondary dark:text-secondary-fixed-dim border-b-2 border-secondary dark:border-secondary-fixed-dim pb-1 transition-colors cursor-pointer active:opacity-80" href="#">Projects</a>
+<a class="font-title-sm text-title-sm text-on-surface-variant hover:text-primary transition-colors cursor-pointer active:opacity-80" href="#">Templates</a>
+<a class="font-title-sm text-title-sm text-on-surface-variant hover:text-primary transition-colors cursor-pointer active:opacity-80" href="#">Reports</a>
+</nav>
+</div>
+<div class="flex items-center gap-md">
+<button class="material-symbols-outlined text-on-surface-variant hover:text-primary transition-colors">notifications</button>
+<button class="material-symbols-outlined text-on-surface-variant hover:text-primary transition-colors">help_outline</button>
+<img alt="User profile" class="w-8 h-8 rounded-full border border-outline-variant" data-alt="A professional headshot of a software QA engineer in a bright, modern office setting. The lighting is soft and natural, emphasizing a clean corporate aesthetic with a blurred background of glass partitions and minimalist furniture. The style is high-fidelity and executive." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAkxBJDnnSF143wA2rw0HRV4MjDz-K_oq9-T6LeChlX6jrnWjijZ_OLyaBoM2sRKBHQ8r1kgFO6XAWXFrvlGENs2kMWCBbHtxgnN0CZ8ih0da1bRnckRGm1kwC7aMcgDkCVQ941Zde9jlxx2hnXpci2mJUitvluo2pZrrL5p8udNfDwjXCyTZUmiDjnvvCzPLopR2G062jltuOHkCMOyRWneE1lgt3Vucu77A1q4FeQl-yKucoyfrlMvyQXLyMkzzRBk3koxaU7wwIR"/>
+</div>
+</header>
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-16 h-[calc(100vh-64px)] w-[280px] bg-surface-container-low dark:bg-surface-container-high border-r border-outline-variant dark:border-outline flex flex-col p-md gap-sm">
+<div class="mb-lg px-sm">
+<div class="flex items-center gap-sm">
+<div class="w-10 h-10 bg-primary-container rounded flex items-center justify-center text-on-primary-container">
+<span class="material-symbols-outlined">account_tree</span>
+</div>
+<div>
+<h2 class="font-headline-md text-label-md font-bold text-primary">Project Alpha</h2>
+<p class="text-xs text-on-surface-variant">UAT Phase 2</p>
+</div>
+</div>
+</div>
+<nav class="flex-1 flex flex-col gap-xs">
+<a class="flex items-center gap-sm px-md py-sm text-on-surface-variant hover:bg-surface-variant transition-all duration-200 ease-in-out font-label-md text-label-md" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+                Overview
+            </a>
+<a class="flex items-center gap-sm px-md py-sm bg-secondary-container dark:bg-secondary text-on-secondary-container dark:text-on-secondary rounded-lg font-label-md text-label-md duration-200 ease-in-out" href="#">
+<span class="material-symbols-outlined">account_tree</span>
+                Test Plan
+            </a>
+<a class="flex items-center gap-sm px-md py-sm text-on-surface-variant hover:bg-surface-variant transition-all duration-200 ease-in-out font-label-md text-label-md" href="#">
+<span class="material-symbols-outlined">groups</span>
+                Team
+            </a>
+<a class="flex items-center gap-sm px-md py-sm text-on-surface-variant hover:bg-surface-variant transition-all duration-200 ease-in-out font-label-md text-label-md" href="#">
+<span class="material-symbols-outlined">play_circle</span>
+                Test Runs
+            </a>
+<a class="flex items-center gap-sm px-md py-sm text-on-surface-variant hover:bg-surface-variant transition-all duration-200 ease-in-out font-label-md text-label-md" href="#">
+<span class="material-symbols-outlined">settings</span>
+                Settings
+            </a>
+</nav>
+<div class="mt-auto flex flex-col gap-xs pt-md border-t border-outline-variant">
+<button class="mb-md bg-secondary text-on-secondary py-sm px-md rounded-lg font-label-md text-label-md flex items-center justify-center gap-sm hover:opacity-90 active:scale-[0.98] transition-all">
+<span class="material-symbols-outlined">add</span>
+                New Run
+            </button>
+<a class="flex items-center gap-sm px-md py-sm text-on-surface-variant hover:bg-surface-variant transition-all font-label-md text-label-md" href="#">
+<span class="material-symbols-outlined">archive</span>
+                Archive
+            </a>
+<a class="flex items-center gap-sm px-md py-sm text-on-surface-variant hover:bg-surface-variant transition-all font-label-md text-label-md" href="#">
+<span class="material-symbols-outlined">contact_support</span>
+                Support
+            </a>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="ml-[280px] mt-16 p-lg bg-background min-h-[calc(100vh-64px)]">
+<div class="max-w-6xl mx-auto space-y-lg">
+<!-- Tab Navigation (Internal Content Only) -->
+<div class="flex gap-lg border-b border-outline-variant">
+<button class="px-md py-sm font-label-md text-label-md text-secondary border-b-2 border-secondary -mb-[1px]">Test Plan</button>
+<button class="px-md py-sm font-label-md text-label-md text-on-surface-variant hover:text-on-surface transition-colors">Team</button>
+<button class="px-md py-sm font-label-md text-label-md text-on-surface-variant hover:text-on-surface transition-colors">Test Runs</button>
+</div>
+<!-- Header Card (Collapsible) -->
+<section class="bg-surface border border-outline-variant rounded-lg overflow-hidden group">
+<div class="p-md flex items-center justify-between cursor-pointer hover:bg-surface-container-low transition-colors" onclick="this.parentElement.querySelector('.collapsible-content').classList.toggle('hidden')">
+<div class="flex items-center gap-md">
+<span class="px-sm py-1 bg-surface-container text-on-surface-variant font-label-sm text-label-sm rounded">TCH-001</span>
+<h1 class="font-title-sm text-title-sm">Customer Portal Redesign</h1>
+<span class="px-sm py-1 bg-secondary-fixed text-on-secondary-fixed font-label-sm text-label-sm rounded">v1.2.0</span>
+<span class="flex items-center gap-xs px-sm py-1 bg-outline-variant/20 text-on-surface-variant font-label-sm text-label-sm rounded">
+<span class="w-2 h-2 rounded-full bg-secondary animate-pulse"></span>
+                            IN PROGRESS
+                        </span>
+</div>
+<div class="flex items-center gap-md">
+<button class="flex items-center gap-sm text-secondary font-label-md text-label-md border border-secondary px-md py-1 rounded-lg hover:bg-secondary/5 transition-all">
+<span class="material-symbols-outlined text-sm">edit</span>
+                            Edit Project
+                        </button>
+<span class="material-symbols-outlined text-on-surface-variant transition-transform group-focus:rotate-180">expand_more</span>
+</div>
+</div>
+<div class="collapsible-content p-md pt-0 grid grid-cols-1 md:grid-cols-3 gap-lg border-t border-outline-variant/50 bg-surface-container-lowest">
+<div class="mt-md">
+<p class="text-xs text-on-surface-variant uppercase tracking-wider font-bold mb-xs">Designed By</p>
+<div class="flex items-center gap-sm">
+<div class="w-6 h-6 rounded-full bg-primary text-on-primary flex items-center justify-center text-[10px]">JD</div>
+<p class="font-label-md text-label-md">John Doe</p>
+</div>
+</div>
+<div class="mt-md">
+<p class="text-xs text-on-surface-variant uppercase tracking-wider font-bold mb-xs">Module</p>
+<p class="font-label-md text-label-md">Frontend</p>
+</div>
+<div class="mt-md">
+<p class="text-xs text-on-surface-variant uppercase tracking-wider font-bold mb-xs">Created Date</p>
+<p class="font-label-md text-label-md">2023-10-25</p>
+</div>
+</div>
+</section>
+<!-- Tree View: Test Plan -->
+<section class="space-y-sm">
+<!-- Scenario Level -->
+<div class="bg-surface border border-outline-variant rounded-lg">
+<div class="p-md flex items-center justify-between group hover:bg-surface-container-low transition-colors">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer">arrow_drop_down</span>
+<span class="font-label-md text-label-md text-error font-bold">[CRITICAL]</span>
+<h3 class="font-title-sm text-title-sm text-on-surface">[UC-001] User Authentication</h3>
+</div>
+<div class="flex items-center gap-md opacity-0 group-hover:opacity-100 transition-opacity">
+<button class="material-symbols-outlined text-on-surface-variant hover:text-secondary">add_box</button>
+<button class="material-symbols-outlined text-on-surface-variant hover:text-secondary">edit</button>
+<button class="material-symbols-outlined text-on-surface-variant hover:text-error">delete</button>
+</div>
+</div>
+<!-- Test Case Level (Expanded) -->
+<div class="ml-xl border-l border-outline-variant">
+<div class="p-md py-sm flex items-center justify-between group hover:bg-surface-container-low transition-colors">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer">arrow_drop_down</span>
+<span class="font-label-md text-label-md text-secondary font-bold">[FUNCTIONAL]</span>
+<h4 class="font-label-md text-label-md text-on-surface">[TC-001.1] Successful Login with Valid Credentials</h4>
+</div>
+<div class="flex items-center gap-md opacity-0 group-hover:opacity-100 transition-opacity">
+<button class="material-symbols-outlined text-on-surface-variant hover:text-secondary">playlist_add</button>
+<button class="material-symbols-outlined text-on-surface-variant hover:text-secondary">edit</button>
+<button class="material-symbols-outlined text-on-surface-variant hover:text-error">delete</button>
+</div>
+</div>
+<!-- Step Level (Expanded) -->
+<div class="ml-xl space-y-[1px]">
+<!-- Edit Mode Row -->
+<div class="p-md py-sm bg-surface-container flex items-center justify-between group relative">
+<div class="flex items-center gap-md flex-1">
+<span class="font-label-md text-label-md text-on-surface-variant">1.</span>
+<div class="relative flex-1 max-w-lg">
+<input class="w-full bg-surface border border-secondary rounded px-sm py-1 font-body-sm text-body-sm focus:ring-1 focus:ring-secondary focus:outline-none" type="text" value="Enter valid username and password."/>
+<div class="absolute -top-8 right-0 bg-inverse-surface text-inverse-on-surface text-[10px] px-sm py-1 rounded flex items-center gap-xs shadow-md animate-bounce">
+                                            Saved <span class="material-symbols-outlined text-[12px]">check</span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-md">
+<button class="material-symbols-outlined text-secondary">check_circle</button>
+<button class="material-symbols-outlined text-on-surface-variant">close</button>
+</div>
+</div>
+<!-- Regular Step -->
+<div class="p-md py-sm bg-surface flex items-center justify-between group hover:bg-surface-container-low transition-colors">
+<div class="flex items-center gap-md">
+<span class="font-label-md text-label-md text-on-surface-variant">2.</span>
+<p class="font-body-sm text-body-sm text-on-surface">Verify user is redirected to Dashboard.</p>
+</div>
+<div class="flex items-center gap-md opacity-0 group-hover:opacity-100 transition-opacity">
+<button class="material-symbols-outlined text-on-surface-variant hover:text-secondary">edit</button>
+<button class="material-symbols-outlined text-on-surface-variant hover:text-error">delete</button>
+</div>
+</div>
+</div>
+<div class="ml-xl p-sm">
+<button class="text-secondary font-label-sm text-label-sm flex items-center gap-xs hover:underline">
+<span class="material-symbols-outlined text-sm">add</span>
+                                Add Step
+                            </button>
+</div>
+</div>
+</div>
+<button class="w-full py-md border-2 border-dashed border-outline-variant rounded-lg flex items-center justify-center gap-sm text-on-surface-variant hover:bg-surface-container hover:text-primary transition-all font-label-md text-label-md">
+<span class="material-symbols-outlined">add_circle</span>
+                    Add Scenario
+                </button>
+</section>
+<!-- Bottom Sections (Horizontal Layout for Team and Runs summary) -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-lg">
+<!-- Team Card -->
+<div class="bg-surface border border-outline-variant rounded-lg p-md">
+<div class="flex items-center justify-between mb-md">
+<h3 class="font-title-sm text-title-sm">Assigned Team</h3>
+<button class="bg-primary text-on-primary font-label-sm text-label-sm px-md py-1 rounded-lg hover:opacity-90">Add Member</button>
+</div>
+<div class="space-y-sm">
+<div class="flex items-center justify-between p-sm hover:bg-surface-container-low rounded-lg transition-colors">
+<div class="flex items-center gap-md">
+<img alt="Alex Rivera" class="w-8 h-8 rounded-full" data-alt="A portrait of a male tech executive with a confident expression, wearing a navy polo shirt. He has short dark hair and is set against a brightly lit, modern architectural background with clean lines and soft daylight. Professional corporate photography style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCEkli5VdWnNHNeZvNjiYkN-pRZ1N_RMjG3NwneA7Q39glfH10kwjE3jrbzTa3fXsFZLO0wjGZ5aUbcoBlfZekrWqD0m2wnu_-6p9cdjTPN8f8BorIiqteqTRYCOeVnW9nMCdV26ieY9S8GmzNnOHbbDQXcFCNstV5k_5sg_SO1ElhH9z3TdlB5cnwilMzqPcSnzW7GGAada0gRrLfByxEzFtcEAAR05KyBqUi_FiVwYfjoeBdzIGRnyExb3vb9xR9JLZdqin--P6xh"/>
+<div>
+<p class="font-label-md text-label-md">Alex Rivera</p>
+<p class="text-[10px] text-secondary font-bold uppercase tracking-tighter">TEST_LEAD</p>
+</div>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer">more_vert</span>
+</div>
+<div class="flex items-center justify-between p-sm hover:bg-surface-container-low rounded-lg transition-colors">
+<div class="flex items-center gap-md">
+<img alt="Sarah Chen" class="w-8 h-8 rounded-full" data-alt="A portrait of a female software developer with glasses, smiling warmly. She is wearing a modern grey blazer. The background is a blurred high-end tech office with lush green plants and natural light. Professional corporate photography style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDweaee-TEgU5UZK3rG8gp6RtFIiMA8_NrXWTz5mx4uZwIl30ltjIiCCfLr3GuYhz5pNpHO8ClwhNQZD9y09iTahp_1GhbRxVdJrDMP7hifCJf-YoWHzH_u1mFiZymZAXNag6F9I9m9tGaOk6_bzR5KfXioQlM9hyRV8IW_LOu5QZuwbCw7EqZFGYisorpzmoi3l01ir3-b_AJoCWCXfrxic9uqnxYB_jVMMXkG6tFjBYISC31Do0aIyZM8lBJoOUBkDoOTK7Kvn7Vc"/>
+<div>
+<p class="font-label-md text-label-md">Sarah Chen</p>
+<p class="text-[10px] text-on-tertiary-container font-bold uppercase tracking-tighter">TEST_AUTHOR</p>
+</div>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer">more_vert</span>
+</div>
+<div class="flex items-center justify-between p-sm hover:bg-surface-container-low rounded-lg transition-colors">
+<div class="flex items-center gap-md">
+<img alt="Marcus Knight" class="w-8 h-8 rounded-full" data-alt="A portrait of a young professional male in a white shirt, looking directly at the camera with a neutral, professional expression. He is in a clean, minimalist studio setting with soft grey background tones. Professional corporate photography style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCndJYaaW0drE0Z0uGRL74QVqSe-sIwyviJyoxBfFfnjwI9SjuPh8Ts8sY0xWTxBQq-8KA_P2jMbZ5meicYxGnB_sTt7p3BBZOseQT5LnNew1yZT5fDfxYltWh60Z-XgSVgntxBa3idooVm-ZL_uR1bYS67b8eSjFCFA75rfGDIoI-beWtTtdyWaZMrweau7mvDpXN3UOqkqFqtLIljiImNUvgnKgDX_vVnkjnwEzhXWm9DPJ6ss15CM9jdH6ff_uTxgVTVRbyTTHCw"/>
+<div>
+<p class="font-label-md text-label-md">Marcus Knight</p>
+<p class="text-[10px] text-on-surface-variant font-bold uppercase tracking-tighter">TESTER</p>
+</div>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer">more_vert</span>
+</div>
+</div>
+</div>
+<!-- Test Runs Card -->
+<div class="bg-surface border border-outline-variant rounded-lg p-md">
+<div class="flex items-center justify-between mb-md">
+<h3 class="font-title-sm text-title-sm">Recent Test Runs</h3>
+<button class="bg-secondary text-on-secondary font-label-sm text-label-sm px-md py-1 rounded-lg hover:opacity-90">New Test Run</button>
+</div>
+<div class="space-y-sm">
+<div class="border border-outline-variant rounded-lg p-md hover:border-secondary transition-all cursor-pointer group">
+<div class="flex items-center justify-between mb-xs">
+<h4 class="font-label-md text-label-md">Phase 2 Regression</h4>
+<span class="text-[10px] bg-outline-variant/30 text-on-surface-variant px-sm py-1 rounded font-bold uppercase">COMPLETED</span>
+</div>
+<div class="flex items-center gap-md">
+<div class="flex-1 bg-surface-container h-1.5 rounded-full overflow-hidden">
+<div class="bg-secondary h-full w-full"></div>
+</div>
+<span class="text-[10px] text-on-surface-variant font-bold">100%</span>
+</div>
+</div>
+<div class="border border-outline-variant rounded-lg p-md hover:border-secondary transition-all cursor-pointer group">
+<div class="flex items-center justify-between mb-xs">
+<h4 class="font-label-md text-label-md">Mobile Compatibility</h4>
+<span class="text-[10px] bg-secondary-container text-on-secondary-container px-sm py-1 rounded font-bold uppercase">IN PROGRESS</span>
+</div>
+<div class="flex items-center gap-md">
+<div class="flex-1 bg-surface-container h-1.5 rounded-full overflow-hidden">
+<div class="bg-secondary h-full w-[45%]"></div>
+</div>
+<span class="text-[10px] text-on-surface-variant font-bold">45%</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+<script>
+        // Simple micro-interaction for tooltip appearance
+        setTimeout(() => {
+            const tooltip = document.querySelector('.animate-bounce');
+            if (tooltip) {
+                tooltip.style.opacity = '0';
+                tooltip.style.transition = 'opacity 1s ease-out';
+                setTimeout(() => tooltip.classList.add('hidden'), 1000);
+            }
+        }, 3000);
+    </script>
+</body></html>

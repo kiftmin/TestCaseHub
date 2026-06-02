@@ -118,10 +118,14 @@ router.get("/:projectId", async (req: AuthenticatedRequest, res, next) => {
       with: {
         testLead: true,
         useCases: {
+          orderBy: schema.useCases.sort_order,
           with: {
             testCases: {
+              orderBy: schema.testCases.sort_order,
               with: {
-                steps: true,
+                steps: {
+                  orderBy: sql`CAST(${schema.testSteps.step_number} AS INTEGER)`,
+                },
               },
             },
           },
@@ -316,11 +320,11 @@ router.get("/:projectId/uat-summary", async (req: AuthenticatedRequest, res, nex
   } catch (err) { next(err); }
 });
 
-// GET /api/projects/:projectId/audit-log — filter by entity_type = 'project'
+// GET /api/projects/:projectId/audit-log
 router.get("/:projectId/audit-log", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
-    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD", "ADMIN"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
     const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
@@ -328,12 +332,15 @@ router.get("/:projectId/audit-log", async (req: AuthenticatedRequest, res, next)
 
     const limit = Number(req.query.limit) || 100;
     const offset = Number(req.query.offset) || 0;
+    const entityType = req.query.entityType as string | undefined;
+
+    const whereConditions = entityType
+      ? and(eq(schema.statusAuditLog.entity_type, entityType), eq(schema.statusAuditLog.entity_id, projectId))
+      : eq(schema.statusAuditLog.entity_id, projectId);
 
     const logs = await db.query.statusAuditLog.findMany({
-      where: and(
-        eq(schema.statusAuditLog.entity_type, "project"),
-        eq(schema.statusAuditLog.entity_id, projectId),
-      ),
+      where: whereConditions,
+      with: { changedBy: true },
       orderBy: desc(schema.statusAuditLog.changed_at),
       limit,
       offset,

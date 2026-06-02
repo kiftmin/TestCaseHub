@@ -32,6 +32,8 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
   const [severityFilter, setSeverityFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [sortField, setSortField] = useState<string>("id");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const canManage = role === "TEST_LEAD" || user?.role === "ADMIN";
   const isBusinessOwner = role === "BUSINESS_OWNER" || user?.role === "ADMIN";
@@ -65,7 +67,40 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     });
   }, [allDefects, runFilter, statusFilter, severityFilter, search]);
 
-  const sorted = useMemo(() => [...filtered].sort((a, b) => b.id - a.id), [filtered]);
+  const handleSort = (field: string) => {
+    if (sortField === field) {
+      setSortDir(sortDir === "asc" ? "desc" : "asc");
+    } else {
+      setSortField(field);
+      setSortDir("asc");
+    }
+  };
+
+  const sorted = useMemo(() => [...filtered].sort((a, b) => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    switch (sortField) {
+      case "status": return a.status.localeCompare(b.status) * dir;
+      case "severity": {
+        const order = ["Cosmetic", "Minor", "Major", "Critical"];
+        const sa = order.indexOf(a.severity ?? "");
+        const sb = order.indexOf(b.severity ?? "");
+        return (sa - sb) * dir;
+      }
+      case "priority": {
+        const order = ["P4", "P3", "P2", "P1"];
+        const pa = order.indexOf(a.priority ?? "");
+        const pb = order.indexOf(b.priority ?? "");
+        return (pa - pb) * dir;
+      }
+      case "created_at": return (new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) * dir;
+      case "test_case": {
+        const ta = a.testCase?.title ?? "";
+        const tb = b.testCase?.title ?? "";
+        return ta.localeCompare(tb) * dir;
+      }
+      default: return (a.id - b.id) * dir;
+    }
+  }), [filtered, sortField, sortDir]);
 
   return (
     <div className="space-y-lg">
@@ -139,12 +174,13 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
           <table className="w-full text-left border-collapse">
             <thead className="bg-surface-container-low border-b border-outline-variant">
               <tr>
-                <th className="p-md text-xs font-bold text-outline uppercase">ID</th>
-                <th className="p-md text-xs font-bold text-outline uppercase">Test Case</th>
-                <th className="p-md text-xs font-bold text-outline uppercase">Status</th>
-                <th className="p-md text-xs font-bold text-outline uppercase">Severity</th>
-                <th className="p-md text-xs font-bold text-outline uppercase">Priority</th>
-                <th className="p-md text-xs font-bold text-outline uppercase text-right">Actions</th>
+                <SortTh field="id" label="ID" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="test_case" label="Test Case" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="severity" label="Severity" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="priority" label="Priority" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="created_at" label="Created" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <th className="p-md text-xs font-bold text-outline uppercase text-right whitespace-nowrap">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-outline-variant">
@@ -160,9 +196,9 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
                   onMutated={() => { /* parent owns cache invalidation */ }}
                 />
               ))}
-              {sorted.length === 0 && (
+                {sorted.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="p-lg text-center text-on-surface-variant font-body-sm">
+                  <td colSpan={7} className="p-lg text-center text-on-surface-variant font-body-sm">
                     No defects found
                   </td>
                 </tr>
@@ -253,7 +289,7 @@ function DefectRow({
 
   const addNoteMut = useMutation({
     mutationFn: (note: string) => customFetch(`/defects/${defect.id}/notes`, { method: "POST", body: JSON.stringify({ note }) }),
-    onSuccess: () => { invalidateProject(); toast.success("Note added"); setNoteOpen(false); },
+    onSuccess: () => { invalidateProject(); toast.success("Comment added"); setNoteOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -290,6 +326,9 @@ function DefectRow({
           {defect.severity ?? "—"}
         </td>
         <td className="p-md font-body-sm text-body-sm">{defect.priority ?? "—"}</td>
+        <td className="p-md font-body-sm text-body-sm text-on-surface-variant whitespace-nowrap">
+          {new Date(defect.created_at).toLocaleDateString()}
+        </td>
         <td className="p-md text-right" onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-end gap-1 opacity-40 group-hover:opacity-100 transition-opacity">
             {canManage && isNew && (
@@ -323,14 +362,14 @@ function DefectRow({
                 Record Retest
               </button>
             )}
-            <button onClick={() => setNoteOpen(true)} className="p-1.5 hover:bg-surface-container-high rounded text-on-surface-variant transition-colors" title="Add Note">
-              <span className="material-symbols-outlined text-sm">note_add</span>
-            </button>
+                <button onClick={() => setNoteOpen(true)} className="p-1.5 hover:bg-surface-container-high rounded text-on-surface-variant transition-colors" title="Add Comment">
+                  <span className="material-symbols-outlined text-sm">comment</span>
+                </button>
           </div>
         </td>
       </tr>
       <tr className={`bg-surface-container-lowest ${expanded ? "" : "hidden"}`}>
-        <td className="p-0" colSpan={6}>
+        <td className="p-0" colSpan={7}>
           <div className={`p-lg border-l-4 ${isNew ? "border-error" : isSubmitted ? "border-amber-400" : isReady ? "border-blue-500" : "border-green-500"} ml-md my-sm space-y-md`}>
             <div className="grid grid-cols-2 gap-xl">
               <div>
@@ -379,11 +418,11 @@ function DefectRow({
                 )}
               </div>
             </div>
-            {/* Notes Thread */}
+            {/* Comments Thread */}
             {defect.notes && defect.notes.length > 0 && (
               <div className="border-t border-outline-variant pt-md mt-md">
                 <h4 className="text-xs font-bold text-outline uppercase mb-sm">
-                  Notes ({defect.notes.length})
+                  Comments ({defect.notes.length})
                 </h4>
                 <div className="space-y-sm max-h-48 overflow-y-auto">
                   {defect.notes.map((n) => (
@@ -434,9 +473,9 @@ function DefectRow({
         </Dialog>
       )}
 
-      {/* Add Note Dialog */}
+      {/* Add Comment Dialog */}
       {noteOpen && (
-        <Dialog onClose={() => setNoteOpen(false)} title="Add Note">
+        <Dialog onClose={() => setNoteOpen(false)} title="Add Comment">
           <NoteForm
             onSave={(note) => addNoteMut.mutate(note)}
             loading={addNoteMut.isPending}
@@ -529,13 +568,30 @@ function RetestForm({ onSave, loading }: { onSave: (d: { retestResult: string; r
   );
 }
 
+function SortTh({ field, label, sortField, sortDir, onSort }: { field: string; label: string; sortField: string; sortDir: string; onSort: (f: string) => void }) {
+  const isActive = sortField === field;
+  return (
+    <th
+      className="p-md text-xs font-bold text-outline uppercase cursor-pointer select-none whitespace-nowrap hover:text-on-surface transition-colors"
+      onClick={() => onSort(field)}
+    >
+      <div className="flex items-center gap-1">
+        {label}
+        <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 1" }}>
+          {isActive ? (sortDir === "asc" ? "arrow_upward_alt" : "arrow_downward_alt") : "unfold_more"}
+        </span>
+      </div>
+    </th>
+  );
+}
+
 function NoteForm({ onSave, loading }: { onSave: (note: string) => void; loading: boolean }) {
   const [note, setNote] = useState("");
   return (
     <form onSubmit={(e) => { e.preventDefault(); if (note.trim()) onSave(note.trim()); }} className="space-y-md">
-      <textarea value={note} onChange={(e) => setNote(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Enter your note..." required />
+      <textarea value={note} onChange={(e) => setNote(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Enter your comment..." required />
       <button type="submit" disabled={loading || !note.trim()} className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
-        {loading ? "Saving..." : "Add Note"}
+        {loading ? "Saving..." : "Add Comment"}
       </button>
     </form>
   );

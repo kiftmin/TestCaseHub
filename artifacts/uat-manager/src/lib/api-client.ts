@@ -2,6 +2,7 @@ import { customFetch as libCustomFetch, setAuthTokenGetter, setUnauthorizedHandl
 import { getToken, removeToken, removeStoredUser } from "./auth";
 
 const BASE = "http://localhost:3000/api";
+export const API_ORIGIN = "http://localhost:3000";
 
 setAuthTokenGetter(getToken);
 setUnauthorizedHandler(() => {

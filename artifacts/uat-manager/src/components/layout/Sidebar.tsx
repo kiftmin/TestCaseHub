@@ -41,7 +41,7 @@ export function Sidebar({
 
   const isActive = (href: string) => {
     if (href === "/dashboard") return location === "/dashboard";
-    if (href === "/projects") return location === "/projects" || (isProjectPage && !projectSubLinks.some((s) => location.includes(s.href)));
+    if (href === "/projects") return location === "/projects" || (isProjectPage && !projectSubLinks.some((s) => s.href && location.includes(s.href)));
     return location.startsWith(href);
   };
 
@@ -112,7 +112,9 @@ export function Sidebar({
             </p>
             {projectSubLinks.map((sub) => {
               const href = `${baseProjectPath}${sub.href}`;
-              const active = location === href || location.startsWith(href + "/");
+              const active = sub.href === ""
+                ? location === baseProjectPath
+                : location === href || location.startsWith(href + "/");
               return (
                 <a
                   key={sub.href}

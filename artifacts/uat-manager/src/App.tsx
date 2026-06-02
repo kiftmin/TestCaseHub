@@ -122,6 +122,16 @@ export default function App() {
             <TestRunReportPage params={params as { runId: string }} />
           </ProtectedRoute>
         )} />
+        <Route path="/projects/:id/team" component={({ params }) => (
+          <ProtectedRoute>
+            <ProjectDetailPage params={params as { id: string }} />
+          </ProtectedRoute>
+        )} />
+        <Route path="/projects/:id/test-runs" component={({ params }) => (
+          <ProtectedRoute>
+            <ProjectDetailPage params={params as { id: string }} />
+          </ProtectedRoute>
+        )} />
         <Route path="/projects/:id" component={({ params }) => (
           <ProtectedRoute>
             <ProjectDetailPage params={params as { id: string }} />

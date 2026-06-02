@@ -336,10 +336,11 @@ export const bugs = pgTable("bugs", {
   updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-export const bugsRelations = relations(bugs, ({ one }) => ({
+export const bugsRelations = relations(bugs, ({ one, many }) => ({
   project: one(projects, { fields: [bugs.project_id], references: [projects.id] }),
   defect: one(defects, { fields: [bugs.defect_id], references: [defects.id] }),
   developer: one(users, { fields: [bugs.assigned_developer_id], references: [users.id] }),
+  notes: many(bugNotes),
 }));
 
 // 16. status_audit_log
@@ -406,4 +407,18 @@ export const defectNotesRelations = relations(defectNotes, ({ one }) => ({
   defect: one(defects, { fields: [defectNotes.defect_id], references: [defects.id] }),
   discussion: one(teamDiscussions, { fields: [defectNotes.discussion_id], references: [teamDiscussions.id] }),
   addedBy: one(users, { fields: [defectNotes.added_by_user_id], references: [users.id] }),
+}));
+
+// 20. bug_notes
+export const bugNotes = pgTable("bug_notes", {
+  id: serial("id").primaryKey(),
+  bug_id: integer("bug_id").notNull().references(() => bugs.id, { onDelete: "cascade" }),
+  added_by_user_id: integer("added_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  note: text("note").notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const bugNotesRelations = relations(bugNotes, ({ one }) => ({
+  bug: one(bugs, { fields: [bugNotes.bug_id], references: [bugs.id] }),
+  addedBy: one(users, { fields: [bugNotes.added_by_user_id], references: [users.id] }),
 }));

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { customFetch } from "../lib/api-client";
+import { customFetch, API_ORIGIN } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
 import { TeamDiscussionModal } from "../components/TeamDiscussionModal";
@@ -531,10 +531,12 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
       {/* Execution Modal */}
       {execModal && (
         <ExecutionModal
+          key={execModal.testCase.id}
           testRunId={testRunId}
           testCase={execModal.testCase}
           testRunUseCase={execModal.testRunUseCase}
           entryConfirmed={testRun.entry_confirmed}
+          readOnly={isCompleted}
           onClose={() => setExecModal(null)}
         />
       )}
@@ -692,12 +694,14 @@ function ExecutionModal({
   testCase,
   testRunUseCase,
   entryConfirmed,
+  readOnly,
   onClose,
 }: {
   testRunId: number;
   testCase: TestCase;
   testRunUseCase: TestRunUseCase;
   entryConfirmed: boolean;
+  readOnly?: boolean;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -710,6 +714,7 @@ function ExecutionModal({
   const [submitting, setSubmitting] = useState(false);
   const [offlineBanner, setOfflineBanner] = useState(false);
   const [proofImages, setProofImages] = useState<Record<number, string>>({});
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const handleProofUpload = async (stepId: number, file: File) => {
     try {
@@ -734,7 +739,7 @@ function ExecutionModal({
         });
       }
 
-      setProofImages((prev) => ({ ...prev, [stepId]: uploadRes.fileUrl }));
+      setProofImages((prev) => ({ ...prev, [stepId]: `${API_ORIGIN}${uploadRes.fileUrl}` }));
       toast.success("Proof uploaded");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "An error occurred");
@@ -747,7 +752,17 @@ function ExecutionModal({
   });
 
   useEffect(() => {
+    setExecution(null);
+    setResults({});
+    setOverallResult("");
+    setTesterNotes("");
+    setCurrentStep(0);
+    setProofImages({});
+    setOfflineBanner(false);
+
     if (!entryConfirmed) return;
+    let cancelled = false;
+
     const initExec = async () => {
       try {
         const user = getStoredUser();
@@ -757,12 +772,15 @@ function ExecutionModal({
           method: "POST",
           body: JSON.stringify({ tester_id: user.userId }),
         });
-        setExecution(created);
+        if (!cancelled) setExecution(created);
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
-        if (errMsg.toLowerCase().includes("already been executed")) {
+        if (errMsg.toLowerCase().includes("already been executed") || errMsg.toLowerCase().includes("completed test run")) {
           try {
-            const fullReport = await customFetch<TestRunFullReport>(`/test-runs/${testRunId}/full-report`);
+            const fullReport = await customFetch<TestRunFullReport>(`/test-runs/${testRunId}/full-report`, {
+              cache: "no-store",
+            });
+            if (cancelled) return;
             const existing = fullReport.executions?.find((ex) => ex.test_case_id === testCase.id);
             if (existing) {
               setExecution(existing as Execution);
@@ -772,6 +790,21 @@ function ExecutionModal({
                   map[sr.step_id] = { passed: sr.passed, actual_result: sr.actual_result ?? "", comments: sr.comments ?? "" };
                 });
                 setResults(map);
+              }
+              // Load attachment/proof images independently
+              const attachments = await customFetch<{ id: number; field: string; file_url: string }[]>(
+                `/attachments/execution/${existing.id}`
+              ).catch(() => [] as { id: number; field: string; file_url: string }[]);
+              if (cancelled) return;
+              if (attachments.length > 0) {
+                const imgMap: Record<number, string> = {};
+                attachments.forEach((a) => {
+                  if (a.field?.startsWith("step_")) {
+                    const stepId = Number(a.field.replace("step_", ""));
+                    if (!isNaN(stepId)) imgMap[stepId] = `${API_ORIGIN}${a.file_url}`;
+                  }
+                });
+                if (Object.keys(imgMap).length > 0) setProofImages(imgMap);
               }
             }
           } catch (e2) {
@@ -784,6 +817,7 @@ function ExecutionModal({
       }
     };
     initExec();
+    return () => { cancelled = true; };
   }, [entryConfirmed, testRunId, testCase.id]);
 
   const stepList = steps ?? [];
@@ -913,10 +947,56 @@ function ExecutionModal({
           <button onClick={onClose} className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md">
             Close
           </button>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  title,
+  message,
+  confirmLabel,
+  onConfirm,
+  onCancel,
+  loading,
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center">
+      <div
+        className="absolute inset-0"
+        style={{ backgroundColor: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)" }}
+        onClick={onCancel}
+      />
+      <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-md mx-4 p-lg">
+        <h3 className="font-headline-md text-headline-md text-primary mb-sm">{title}</h3>
+        <p className="font-body-base text-on-surface-variant mb-lg">{message}</p>
+        <div className="flex gap-md justify-end">
+          <button
+            onClick={onCancel}
+            disabled={loading}
+            className="px-lg py-sm border border-outline-variant rounded-lg font-label-md hover:bg-surface-container-low transition-colors disabled:opacity-30"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={loading}
+            className="px-lg py-sm rounded-lg bg-secondary text-on-secondary font-label-md hover:brightness-110 transition-all disabled:opacity-50"
+          >
+            {loading ? "Processing..." : confirmLabel}
+          </button>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
@@ -987,16 +1067,30 @@ function ExecutionModal({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-lg">
+          {readOnly && !execution && totalSteps > 0 && (
+            <div className="mb-md bg-surface-container-high border border-outline-variant rounded-lg p-md flex items-center gap-md">
+              <span className="material-symbols-outlined text-on-surface-variant">info</span>
+              <p className="text-body-sm text-on-surface-variant">This test case was not executed during this run.</p>
+            </div>
+          )}
           {mode === "guided" ? (
             <GuidedMode
               step={stepList[currentStep]}
               totalSteps={totalSteps}
               result={results[stepList[currentStep]?.id] ?? { passed: null, actual_result: "", comments: "" }}
-              onResult={(r) => setResults((prev) => ({ ...prev, [stepList[currentStep].id]: { ...prev[stepList[currentStep].id], ...r } }))}
-              onSubmit={(passed, actual, comments) => {
-                if (stepList[currentStep]) {
-                  submitStepResult(stepList[currentStep].id, passed, actual, comments);
+              readOnly={readOnly}
+              onResult={(r) => {
+                const s = stepList[currentStep];
+                if (!s) return;
+                setResults((prev) => ({ ...prev, [s.id]: { ...prev[s.id], ...r } }));
+                if (r.passed !== undefined && r.passed !== null) {
+                  submitStepResult(s.id, r.passed, r.actual_result ?? "", r.comments ?? "");
                 }
+              }}
+              onSubmit={(passed, actual_result, comments) => {
+                const s = stepList[currentStep];
+                if (!s) return;
+                submitStepResult(s.id, passed, actual_result, comments);
               }}
               proofImage={stepList[currentStep] ? proofImages[stepList[currentStep].id] : undefined}
               onProofUpload={(file) => {
@@ -1009,20 +1103,21 @@ function ExecutionModal({
             <QuickMode
               steps={stepList}
               results={results}
+              readOnly={readOnly}
               onResult={(stepId, r) => {
                 setResults((prev) => ({ ...prev, [stepId]: { ...prev[stepId], ...r } }));
                 submitStepResult(stepId, r.passed ?? false, r.actual_result ?? "", r.comments ?? "");
               }}
               overallResult={overallResult}
-              onOverallResult={setOverallResult}
+              onOverallResult={readOnly ? undefined : setOverallResult}
               testerNotes={testerNotes}
-              onTesterNotes={setTesterNotes}
+              onTesterNotes={readOnly ? undefined : setTesterNotes}
             />
           )}
         </div>
 
         {/* Guided mode footer */}
-        {mode === "guided" && (
+        {mode === "guided" && !readOnly && (
           <div className="px-lg py-md border-t border-outline-variant flex items-center justify-between bg-surface-container-low">
             <button
               disabled={currentStep === 0}
@@ -1051,7 +1146,7 @@ function ExecutionModal({
                 </>
               ) : (
                 <button
-                  onClick={completeExecution}
+                  onClick={() => setShowConfirm(true)}
                   disabled={submitting}
                   className="px-lg py-sm rounded-lg bg-secondary text-on-secondary font-label-md text-label-md hover:brightness-110 transition-all disabled:opacity-50"
                 >
@@ -1062,12 +1157,37 @@ function ExecutionModal({
           </div>
         )}
 
+        {/* Guided mode footer — read-only navigation */}
+        {mode === "guided" && readOnly && totalSteps > 1 && (
+          <div className="px-lg py-md border-t border-outline-variant flex items-center justify-between bg-surface-container-low">
+            <button
+              disabled={currentStep === 0}
+              onClick={() => setCurrentStep((s) => Math.max(0, s - 1))}
+              className="px-lg py-sm rounded-lg border border-outline-variant font-label-md text-label-md text-on-surface flex items-center gap-sm hover:bg-surface-container-high transition-all disabled:opacity-30"
+            >
+              <span className="material-symbols-outlined">arrow_back</span>
+              Previous
+            </button>
+            <span className="font-label-sm text-label-sm text-on-surface-variant">
+              Step {currentStep + 1} of {totalSteps}
+            </span>
+            <button
+              disabled={currentStep >= totalSteps - 1}
+              onClick={() => setCurrentStep((s) => s + 1)}
+              className="px-lg py-sm rounded-lg border border-outline-variant font-label-md text-label-md text-on-surface flex items-center gap-sm hover:bg-surface-container-high transition-all disabled:opacity-30"
+            >
+              Next
+              <span className="material-symbols-outlined">arrow_forward</span>
+            </button>
+          </div>
+        )}
+
         {/* Quick mode footer */}
-        {mode === "quick" && (
+        {mode === "quick" && !readOnly && (
           <div className="px-lg py-md border-t border-outline-variant flex items-center justify-between bg-surface-container-low">
             <div />
             <button
-              onClick={completeExecution}
+              onClick={() => setShowConfirm(true)}
               disabled={submitting}
               className="px-lg py-sm rounded-lg bg-secondary text-on-secondary font-label-md text-label-md hover:brightness-110 transition-all disabled:opacity-50"
             >
@@ -1076,6 +1196,17 @@ function ExecutionModal({
           </div>
         )}
       </div>
+
+      {showConfirm && (
+        <ConfirmDialog
+          title="Complete Execution"
+          message="Are you sure you want to complete this execution? The results will be final and no further changes can be made."
+          confirmLabel="Complete Execution"
+          onConfirm={() => { setShowConfirm(false); completeExecution(); }}
+          onCancel={() => setShowConfirm(false)}
+          loading={submitting}
+        />
+      )}
     </div>
   );
 }
@@ -1086,6 +1217,7 @@ function GuidedMode({
   step,
   totalSteps,
   result,
+  readOnly,
   onResult,
   onSubmit,
   proofImage,
@@ -1094,6 +1226,7 @@ function GuidedMode({
   step: TestStep | undefined;
   totalSteps: number;
   result: { passed: boolean | null; actual_result: string; comments: string };
+  readOnly?: boolean;
   onResult: (r: { passed?: boolean | null; actual_result?: string; comments?: string }) => void;
   onSubmit: (passed: boolean, actual_result: string, comments: string) => void;
   proofImage: string | undefined;
@@ -1129,47 +1262,80 @@ function GuidedMode({
           </div>
         </div>
         {/* Pass/Fail buttons */}
-        <div className="flex gap-md">
-          <button
-            onClick={() => onSubmit(true, result.actual_result, result.comments)}
-            className={`flex-1 py-md rounded-xl font-label-md text-label-md font-bold flex items-center justify-center gap-sm transition-all ${
+        {readOnly ? (
+          <div className="flex gap-md">
+            <div className={`flex-1 py-md rounded-xl font-label-md text-label-md font-bold flex items-center justify-center gap-sm ${
               result.passed === true
-                ? "bg-green-600 text-white shadow-md"
-                : "bg-surface border border-outline-variant text-on-surface hover:bg-green-50 hover:border-green-300"
-            }`}
-          >
-            <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>check_circle</span>
-            Pass
-          </button>
-          <button
-            onClick={() => onSubmit(false, result.actual_result, result.comments)}
-            className={`flex-1 py-md rounded-xl font-label-md text-label-md font-bold flex items-center justify-center gap-sm transition-all ${
+                ? "bg-green-100 text-green-800 border border-green-300"
+                : "bg-surface-container-low text-on-surface-variant border border-outline-variant"
+            }`}>
+              <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>check_circle</span>
+              Pass
+            </div>
+            <div className={`flex-1 py-md rounded-xl font-label-md text-label-md font-bold flex items-center justify-center gap-sm ${
               result.passed === false
-                ? "bg-red-600 text-white shadow-md"
-                : "bg-surface border border-outline-variant text-on-surface hover:bg-red-50 hover:border-red-300"
-            }`}
-          >
-            <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>cancel</span>
-            Fail
-          </button>
-        </div>
+                ? "bg-red-100 text-red-800 border border-red-300"
+                : "bg-surface-container-low text-on-surface-variant border border-outline-variant"
+            }`}>
+              <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>cancel</span>
+              Fail
+            </div>
+          </div>
+        ) : (
+          <div className="flex gap-md">
+            <button
+              onClick={() => onSubmit(true, result.actual_result, result.comments)}
+              className={`flex-1 py-md rounded-xl font-label-md text-label-md font-bold flex items-center justify-center gap-sm transition-all ${
+                result.passed === true
+                  ? "bg-green-600 text-white shadow-md"
+                  : "bg-surface border border-outline-variant text-on-surface hover:bg-green-50 hover:border-green-300"
+              }`}
+            >
+              <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>check_circle</span>
+              Pass
+            </button>
+            <button
+              onClick={() => onSubmit(false, result.actual_result, result.comments)}
+              className={`flex-1 py-md rounded-xl font-label-md text-label-md font-bold flex items-center justify-center gap-sm transition-all ${
+                result.passed === false
+                  ? "bg-red-600 text-white shadow-md"
+                  : "bg-surface border border-outline-variant text-on-surface hover:bg-red-50 hover:border-red-300"
+              }`}
+            >
+              <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>cancel</span>
+              Fail
+            </button>
+          </div>
+        )}
         <div className="space-y-sm">
           <label className="font-label-md text-label-md text-on-surface">Actual Result</label>
-          <textarea
-            className="w-full h-24 bg-surface border border-outline-variant focus:border-secondary focus:ring-0 rounded-lg p-md font-body-sm text-body-sm resize-none transition-all"
-            placeholder="Document any observed deviations or notes here..."
-            value={result.actual_result}
-            onChange={(e) => onResult({ actual_result: e.target.value })}
-          />
+          {readOnly ? (
+            <p className="w-full min-h-[6rem] bg-surface-container-low border border-outline-variant rounded-lg p-md font-body-sm text-body-sm">
+              {result.actual_result || <span className="text-on-surface-variant italic">No result recorded</span>}
+            </p>
+          ) : (
+            <textarea
+              className="w-full h-24 bg-surface border border-outline-variant focus:border-secondary focus:ring-0 rounded-lg p-md font-body-sm text-body-sm resize-none transition-all"
+              placeholder="Document any observed deviations or notes here..."
+              value={result.actual_result}
+              onChange={(e) => onResult({ actual_result: e.target.value })}
+            />
+          )}
         </div>
         <div className="space-y-sm">
           <label className="font-label-md text-label-md text-on-surface">Comments (optional)</label>
-          <textarea
-            className="w-full h-20 bg-surface border border-outline-variant focus:border-secondary focus:ring-0 rounded-lg p-md font-body-sm text-body-sm resize-none transition-all"
-            placeholder="Additional notes..."
-            value={result.comments}
-            onChange={(e) => onResult({ comments: e.target.value })}
-          />
+          {readOnly ? (
+            <p className="w-full min-h-[5rem] bg-surface-container-low border border-outline-variant rounded-lg p-md font-body-sm text-body-sm">
+              {result.comments || <span className="text-on-surface-variant italic">No comments</span>}
+            </p>
+          ) : (
+            <textarea
+              className="w-full h-20 bg-surface border border-outline-variant focus:border-secondary focus:ring-0 rounded-lg p-md font-body-sm text-body-sm resize-none transition-all"
+              placeholder="Additional notes..."
+              value={result.comments}
+              onChange={(e) => onResult({ comments: e.target.value })}
+            />
+          )}
         </div>
       </div>
       <div className="md:col-span-5 space-y-md">
@@ -1183,26 +1349,28 @@ function GuidedMode({
             </div>
           )}
         </div>
-        <div className="space-y-sm">
-          <input
-            type="file"
-            accept="image/*"
-            capture="environment"
-            id={`proof-${step.id}`}
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) onProofUpload(file);
-            }}
-          />
-          <label
-            htmlFor={`proof-${step.id}`}
-            className="w-full py-md rounded-xl border border-outline-variant hover:bg-surface-container-high flex flex-col items-center justify-center transition-all group cursor-pointer"
-          >
-            <span className="material-symbols-outlined text-on-surface-variant mb-xs">cloud_upload</span>
-            <span className="font-label-sm text-label-sm text-on-surface-variant">Attach Proof (Image/Logs)</span>
-          </label>
-        </div>
+        {!readOnly && (
+          <div className="space-y-sm">
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              id={`proof-${step.id}`}
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) onProofUpload(file);
+              }}
+            />
+            <label
+              htmlFor={`proof-${step.id}`}
+              className="w-full py-md rounded-xl border border-outline-variant hover:bg-surface-container-high flex flex-col items-center justify-center transition-all group cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-on-surface-variant mb-xs">cloud_upload</span>
+              <span className="font-label-sm text-label-sm text-on-surface-variant">Attach Proof (Image/Logs)</span>
+            </label>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1213,6 +1381,7 @@ function GuidedMode({
 function QuickMode({
   steps,
   results,
+  readOnly,
   onResult,
   overallResult,
   onOverallResult,
@@ -1221,11 +1390,12 @@ function QuickMode({
 }: {
   steps: TestStep[];
   results: Record<number, { passed: boolean | null; actual_result: string; comments: string }>;
+  readOnly?: boolean;
   onResult: (stepId: number, r: { passed?: boolean | null; actual_result?: string; comments?: string }) => void;
   overallResult: string;
-  onOverallResult: (v: string) => void;
+  onOverallResult: ((v: string) => void) | undefined;
   testerNotes: string;
-  onTesterNotes: (v: string) => void;
+  onTesterNotes: ((v: string) => void) | undefined;
 }) {
   return (
     <div className="space-y-md">
@@ -1247,36 +1417,59 @@ function QuickMode({
                 )}
               </div>
               <div className="flex gap-sm shrink-0">
-                <button
-                  onClick={() => onResult(step.id, { passed: true })}
-                  className={`px-md py-1 rounded-lg text-label-sm font-bold transition-all ${
-                    r.passed === true
-                      ? "bg-green-600 text-white"
-                      : "bg-surface border border-outline-variant text-on-surface hover:bg-green-50"
-                  }`}
-                >
-                  Pass
-                </button>
-                <button
-                  onClick={() => onResult(step.id, { passed: false })}
-                  className={`px-md py-1 rounded-lg text-label-sm font-bold transition-all ${
-                    r.passed === false
-                      ? "bg-red-600 text-white"
-                      : "bg-surface border border-outline-variant text-on-surface hover:bg-red-50"
-                  }`}
-                >
-                  Fail
-                </button>
+                {readOnly ? (
+                  <>
+                    <span className={`px-md py-1 rounded-lg text-label-sm font-bold ${
+                      r.passed === true
+                        ? "bg-green-100 text-green-800 border border-green-300"
+                        : "bg-surface-container-low text-on-surface-variant border border-outline-variant"
+                    }`}>Pass</span>
+                    <span className={`px-md py-1 rounded-lg text-label-sm font-bold ${
+                      r.passed === false
+                        ? "bg-red-100 text-red-800 border border-red-300"
+                        : "bg-surface-container-low text-on-surface-variant border border-outline-variant"
+                    }`}>Fail</span>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => onResult(step.id, { passed: true })}
+                      className={`px-md py-1 rounded-lg text-label-sm font-bold transition-all ${
+                        r.passed === true
+                          ? "bg-green-600 text-white"
+                          : "bg-surface border border-outline-variant text-on-surface hover:bg-green-50"
+                      }`}
+                    >
+                      Pass
+                    </button>
+                    <button
+                      onClick={() => onResult(step.id, { passed: false })}
+                      className={`px-md py-1 rounded-lg text-label-sm font-bold transition-all ${
+                        r.passed === false
+                          ? "bg-red-600 text-white"
+                          : "bg-surface border border-outline-variant text-on-surface hover:bg-red-50"
+                      }`}
+                    >
+                      Fail
+                    </button>
+                  </>
+                )}
               </div>
             </div>
             {r.passed === false && (
-              <textarea
-                className="w-full mt-sm bg-surface border border-outline-variant rounded p-sm text-body-sm resize-none"
-                rows={2}
-                placeholder="Actual result (required if failed)..."
-                value={r.actual_result}
-                onChange={(e) => onResult(step.id, { actual_result: e.target.value })}
-              />
+              readOnly ? (
+                <p className="w-full mt-sm bg-surface-container-low border border-outline-variant rounded p-sm text-body-sm">
+                  {r.actual_result || <span className="text-on-surface-variant italic">No result recorded</span>}
+                </p>
+              ) : (
+                <textarea
+                  className="w-full mt-sm bg-surface border border-outline-variant rounded p-sm text-body-sm resize-none"
+                  rows={2}
+                  placeholder="Actual result (required if failed)..."
+                  value={r.actual_result}
+                  onChange={(e) => onResult(step.id, { actual_result: e.target.value })}
+                />
+              )
             )}
           </div>
         );
@@ -1285,26 +1478,38 @@ function QuickMode({
       <div className="border-t border-outline-variant pt-md space-y-sm">
         <div>
           <label className="font-label-md text-label-md text-on-surface">Overall Result</label>
-          <select
-            className="w-full mt-xs bg-surface border border-outline-variant rounded-lg px-md py-sm font-body-base"
-            value={overallResult}
-            onChange={(e) => onOverallResult(e.target.value)}
-          >
-            <option value="">Select result...</option>
-            <option value="passed">Passed</option>
-            <option value="failed">Failed</option>
-            <option value="passed_by_agreement">Passed by Agreement</option>
-          </select>
+          {readOnly ? (
+            <p className="mt-xs bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm font-body-base">
+              {overallResult || <span className="text-on-surface-variant italic">Not set</span>}
+            </p>
+          ) : (
+            <select
+              className="w-full mt-xs bg-surface border border-outline-variant rounded-lg px-md py-sm font-body-base"
+              value={overallResult}
+              onChange={(e) => onOverallResult?.(e.target.value)}
+            >
+              <option value="">Select result...</option>
+              <option value="passed">Passed</option>
+              <option value="failed">Failed</option>
+              <option value="passed_by_agreement">Passed by Agreement</option>
+            </select>
+          )}
         </div>
         <div>
           <label className="font-label-md text-label-md text-on-surface">Notes</label>
-          <textarea
-            className="w-full mt-xs bg-surface border border-outline-variant rounded-lg p-md font-body-sm text-body-sm resize-none"
-            rows={3}
-            placeholder="Execution notes..."
-            value={testerNotes}
-            onChange={(e) => onTesterNotes(e.target.value)}
-          />
+          {readOnly ? (
+            <p className="w-full mt-xs bg-surface-container-low border border-outline-variant rounded-lg p-md font-body-sm text-body-sm">
+              {testerNotes || <span className="text-on-surface-variant italic">No notes</span>}
+            </p>
+          ) : (
+            <textarea
+              className="w-full mt-xs bg-surface border border-outline-variant rounded-lg p-md font-body-sm text-body-sm resize-none"
+              rows={3}
+              placeholder="Execution notes..."
+              value={testerNotes}
+              onChange={(e) => onTesterNotes?.(e.target.value)}
+            />
+          )}
         </div>
       </div>
     </div>

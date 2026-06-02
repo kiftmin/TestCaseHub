@@ -1,8 +1,8 @@
-import { useState, useCallback, useEffect } from "react";
-import { useLocation } from "wouter";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { useLocation, useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { customFetch } from "../lib/api-client";
+import { customFetch, API_ORIGIN } from "../lib/api-client";
 import { useProjectRole } from "../hooks/useProjectRole";
 import type {
   Project,
@@ -28,13 +28,34 @@ export function ProjectDetailPage({
   params: { id: string };
 }) {
   const projectId = Number(params.id);
-  const [tab, setTab] = useState<"plan" | "team" | "runs">("plan");
+  const [, setLocation] = useLocation();
+  const [, teamRoute] = useRoute("/projects/:id/team");
+  const [, runsRoute] = useRoute("/projects/:id/test-runs");
+
+  const routeTab = teamRoute ? "team" : runsRoute ? "runs" : "plan";
+  const [tab, setTab] = useState<"plan" | "team" | "runs">(routeTab);
 
   useEffect(() => { document.title = "Project | TestCaseHub"; }, []);
 
+  useEffect(() => {
+    const current = teamRoute ? "team" : runsRoute ? "runs" : "plan";
+    if (current !== tab) setTab(current);
+  }, [teamRoute, runsRoute]);
+
+  const handleTab = (t: "plan" | "team" | "runs") => {
+    setTab(t);
+    if (t === "team") {
+      setLocation(`/projects/${projectId}/team`, { replace: true });
+    } else if (t === "runs") {
+      setLocation(`/projects/${projectId}/test-runs`, { replace: true });
+    } else {
+      setLocation(`/projects/${projectId}`, { replace: true });
+    }
+  };
+
   return (
     <div className="space-y-lg">
-      <TabNav tab={tab} onTab={setTab} projectId={projectId} />
+      <TabNav tab={tab} onTab={handleTab} projectId={projectId} />
       <ProjectHeader projectId={projectId} />
       {tab === "plan" && <TestPlanTab projectId={projectId} />}
       {tab === "team" && <TeamTab projectId={projectId} />}
@@ -1020,10 +1041,49 @@ function StepRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [instruction, setInstruction] = useState(step.instruction);
+  const [testData, setTestData] = useState(step.test_data ?? "");
+  const [expectedResult, setExpectedResult] = useState(step.expected_result ?? "");
   const [saved, setSaved] = useState(false);
+  const [stepImages, setStepImages] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!step.id) return;
+    customFetch<{ id: number; file_url: string }[]>(`/attachments/test_step/${step.id}`)
+      .then((data) => setStepImages(data.map((a) => a.file_url)))
+      .catch(() => {});
+  }, [step.id]);
+
+  const handleImageUpload = async (file: File) => {
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const uploadRes = await customFetch<{ fileUrl: string }>("/upload", {
+        method: "POST",
+        body: formData,
+      });
+      await customFetch("/attachments", {
+        method: "POST",
+        body: JSON.stringify({
+          entity_type: "test_step",
+          entity_id: step.id,
+          file_url: uploadRes.fileUrl,
+          file_name: file.name,
+          file_type: file.type,
+        }),
+      });
+      setStepImages((prev) => [...prev, uploadRes.fileUrl]);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const save = () => {
-    onUpdate({ instruction, test_data: step.test_data ?? "", expected_result: step.expected_result ?? "" });
+    onUpdate({ instruction, test_data: testData, expected_result: expectedResult });
     setEditing(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -1033,37 +1093,82 @@ function StepRow({
 
   return (
     <div
-      className={`p-md py-sm ${bg} flex items-center justify-between group relative`}
+      className={`p-md py-sm ${bg} flex items-start justify-between group relative`}
     >
-      <div className="flex items-center gap-md flex-1 min-w-0">
-        <span className="font-label-md text-label-md text-on-surface-variant">
+      <div className="flex items-start gap-md flex-1 min-w-0">
+        <span className="font-label-md text-label-md text-on-surface-variant pt-0.5">
           {index}.
         </span>
-        {editing ? (
-          <div className="relative flex-1 max-w-lg">
-            <input
-              className="w-full bg-surface border border-secondary rounded px-sm py-1 font-body-sm text-body-sm focus:ring-1 focus:ring-secondary focus:outline-none"
-              value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
-              autoFocus
-              onBlur={save}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") save();
-                if (e.key === "Escape") setEditing(false);
-              }}
-            />
-            {saved && (
-              <div className="absolute -top-8 right-0 bg-inverse-surface text-inverse-on-surface text-[10px] px-sm py-1 rounded flex items-center gap-xs shadow-md">
-                Saved <span className="material-symbols-outlined text-[12px]">check</span>
+        <div className="flex-1 min-w-0 space-y-1">
+          {editing ? (
+            <div className="relative max-w-lg mb-sm">
+              <input
+                className="w-full bg-surface border border-secondary rounded px-sm py-1 font-body-sm text-body-sm focus:ring-1 focus:ring-secondary focus:outline-none"
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") save();
+                  if (e.key === "Escape") setEditing(false);
+                }}
+              />
+              {saved && (
+                <div className="absolute -top-8 right-0 bg-inverse-surface text-inverse-on-surface text-[10px] px-sm py-1 rounded flex items-center gap-xs shadow-md">
+                  Saved <span className="material-symbols-outlined text-[12px]">check</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="font-body-sm text-body-sm text-on-surface">{step.instruction}</p>
+          )}
+          {editing ? (
+            <div className="flex gap-sm">
+              <input
+                className="flex-1 border-b border-outline-variant px-1 py-0.5 bg-transparent font-body-sm text-body-sm outline-none focus:border-secondary"
+                placeholder="Test data (optional)"
+                value={testData}
+                onChange={(e) => setTestData(e.target.value)}
+              />
+              <input
+                className="flex-1 border-b border-outline-variant px-1 py-0.5 bg-transparent font-body-sm text-body-sm outline-none focus:border-secondary"
+                placeholder="Expected result (optional)"
+                value={expectedResult}
+                onChange={(e) => setExpectedResult(e.target.value)}
+              />
+            </div>
+          ) : (
+            <div className="space-y-sm">
+              <div className="flex gap-sm flex-wrap">
+                {step.test_data && (
+                  <span className="inline-block bg-amber-50 border border-amber-200 rounded px-sm py-0.5 text-[11px] text-amber-900">
+                    Data: {step.test_data}
+                  </span>
+                )}
+                {step.expected_result && (
+                  <span className="inline-block bg-blue-50 border border-blue-200 rounded px-sm py-0.5 text-[11px] text-blue-900">
+                    Expected: {step.expected_result}
+                  </span>
+                )}
               </div>
-            )}
-          </div>
-        ) : (
-          <p className="font-body-sm text-body-sm text-on-surface">{step.instruction}</p>
-        )}
+              {stepImages.length > 0 && (
+                <div className="flex gap-sm flex-wrap">
+                  {stepImages.map((url, i) => (
+                    <img
+                      key={i}
+                      src={`${API_ORIGIN}${url}`}
+                      alt="Step reference"
+                      className="w-16 h-16 object-cover rounded border border-outline-variant cursor-pointer hover:opacity-80"
+                      onClick={() => window.open(`${API_ORIGIN}${url}`, "_blank")}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
       {canEdit && (
-        <div className="flex items-center gap-md">
+        <div className="flex items-center gap-md shrink-0">
           {editing ? (
             <>
               <button onClick={save} className="material-symbols-outlined text-secondary">
@@ -1074,10 +1179,30 @@ function StepRow({
               </button>
             </>
           ) : (
-            <div className="flex items-center gap-md opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex items-center gap-md opacity-0 group-hover:opacity-100 transition-opacity pt-0.5">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                className="material-symbols-outlined text-on-surface-variant hover:text-secondary"
+              >
+                {uploading ? "hourglass_top" : "image"}
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleImageUpload(file);
+                  e.target.value = "";
+                }}
+              />
               <button
                 onClick={() => {
                   setInstruction(step.instruction);
+                  setTestData(step.test_data ?? "");
+                  setExpectedResult(step.expected_result ?? "");
                   setEditing(true);
                 }}
                 className="material-symbols-outlined text-on-surface-variant hover:text-secondary"
@@ -1236,46 +1361,59 @@ function AddStepForm({
   onCancel: () => void;
 }) {
   const [instruction, setInstruction] = useState("");
+  const [testData, setTestData] = useState("");
+  const [expectedResult, setExpectedResult] = useState("");
+
+  const save = () => {
+    if (!instruction) return;
+    onSave({
+      test_case_id: testCaseId,
+      step_number: String(nextNumber),
+      instruction,
+      test_data: testData,
+      expected_result: expectedResult,
+    });
+  };
 
   return (
-    <div className="p-md py-sm flex items-center gap-2 bg-surface-container-low">
-      <span className="font-label-md text-label-md text-on-surface-variant">{nextNumber}.</span>
-      <input
-        className="flex-1 border-b border-outline-variant px-1 py-0.5 bg-transparent font-body-sm outline-none focus:border-secondary"
-        placeholder="Step instruction"
-        value={instruction}
-        onChange={(e) => setInstruction(e.target.value)}
-        autoFocus
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && instruction) {
-            onSave({
-              test_case_id: testCaseId,
-              step_number: String(nextNumber),
-              instruction,
-              test_data: "",
-              expected_result: "",
-            });
-          }
-        }}
-      />
-      <button
-        disabled={!instruction}
-        onClick={() => {
-          onSave({
-            test_case_id: testCaseId,
-            step_number: String(nextNumber),
-            instruction,
-            test_data: "",
-            expected_result: "",
-          });
-        }}
-        className="font-label-sm text-secondary hover:underline disabled:opacity-30"
-      >
-        Save
-      </button>
-      <button onClick={onCancel} className="font-label-sm text-on-surface-variant hover:underline">
-        Cancel
-      </button>
+    <div className="p-md bg-surface-container-low border-b border-outline-variant">
+      <div className="flex items-center gap-2 mb-sm">
+        <span className="font-label-md text-label-md text-on-surface-variant">{nextNumber}.</span>
+        <input
+          className="flex-1 border-b border-outline-variant px-1 py-0.5 bg-transparent font-body-sm outline-none focus:border-secondary"
+          placeholder="Step instruction"
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+          }}
+        />
+        <button
+          disabled={!instruction}
+          onClick={save}
+          className="font-label-sm text-secondary hover:underline disabled:opacity-30"
+        >
+          Save
+        </button>
+        <button onClick={onCancel} className="font-label-sm text-on-surface-variant hover:underline">
+          Cancel
+        </button>
+      </div>
+      <div className="flex gap-sm ml-lg">
+        <input
+          className="flex-1 border-b border-outline-variant px-1 py-0.5 bg-transparent font-body-sm text-body-sm outline-none focus:border-secondary"
+          placeholder="Test data (optional)"
+          value={testData}
+          onChange={(e) => setTestData(e.target.value)}
+        />
+        <input
+          className="flex-1 border-b border-outline-variant px-1 py-0.5 bg-transparent font-body-sm text-body-sm outline-none focus:border-secondary"
+          placeholder="Expected result (optional)"
+          value={expectedResult}
+          onChange={(e) => setExpectedResult(e.target.value)}
+        />
+      </div>
     </div>
   );
 }

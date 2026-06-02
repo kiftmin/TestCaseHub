@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
-import type { Bug, User } from "../types/api";
+import type { Bug, User, ProjectAssignment } from "../types/api";
 
 const statusBadge: Record<string, string> = {
   OPEN: "bg-error-container text-on-error-container",
@@ -25,6 +26,8 @@ export function BugListPage({ params }: { params: { id: string } }) {
   const [statusFilter, setStatusFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [sortField, setSortField] = useState<string>("id");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const isTestLead = role === "TEST_LEAD" || user?.role === "ADMIN";
   const isDeveloper = role === "DEVELOPER";
@@ -34,13 +37,16 @@ export function BugListPage({ params }: { params: { id: string } }) {
     queryFn: () => customFetch<Bug[]>(`/projects/${projectId}/bugs${statusFilter !== "all" ? `?status=${statusFilter}` : ""}`),
   });
 
-  const { data: users } = useQuery({
-    queryKey: ["users"],
-    queryFn: () => customFetch<User[]>("/users"),
+  const { data: assignments } = useQuery({
+    queryKey: ["project-users", projectId],
+    queryFn: () => customFetch<ProjectAssignment[]>(`/projects/${projectId}/users`),
     enabled: isTestLead,
   });
 
-  const developers = users?.filter((u) => u.role === "USER") ?? [];
+  const developers: User[] = (assignments ?? [])
+    .filter((a) => a.role === "DEVELOPER" || a.role === "TEST_LEAD")
+    .map((a) => a.user)
+    .filter((u): u is User => !!u);
 
   const filtered = (bugs ?? []).filter((b) => {
     if (search) {
@@ -55,7 +61,34 @@ export function BugListPage({ params }: { params: { id: string } }) {
     return true;
   });
 
-  const sorted = [...filtered].sort((a, b) => b.id - a.id);
+  const handleSort = (field: string) => {
+    if (sortField === field) {
+      setSortDir(sortDir === "asc" ? "desc" : "asc");
+    } else {
+      setSortField(field);
+      setSortDir("asc");
+    }
+  };
+
+  const sorted = [...filtered].sort((a, b) => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    switch (sortField) {
+      case "bug_number": return (a.bug_number - b.bug_number) * dir;
+      case "status": return (a.status.localeCompare(b.status)) * dir;
+      case "created_at": return (new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) * dir;
+      case "developer": {
+        const na = a.developer?.name ?? "";
+        const nb = b.developer?.name ?? "";
+        return na.localeCompare(nb) * dir;
+      }
+      case "defect": {
+        const ta = a.defect?.testCase?.title ?? "";
+        const tb = b.defect?.testCase?.title ?? "";
+        return ta.localeCompare(tb) * dir;
+      }
+      default: return (a.id - b.id) * dir;
+    }
+  });
 
   return (
     <div className="space-y-lg">
@@ -108,15 +141,17 @@ export function BugListPage({ params }: { params: { id: string } }) {
 
       {/* Bug Table */}
       <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm">
+        <div className="overflow-x-auto">
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-surface-container-low border-b border-outline-variant">
-              <th className="px-lg py-md font-label-md text-label-md text-on-surface-variant">Bug #</th>
-              <th className="px-lg py-md font-label-md text-label-md text-on-surface-variant">Linked Defect</th>
-              <th className="px-lg py-md font-label-md text-label-md text-on-surface-variant">Status</th>
-              <th className="px-lg py-md font-label-md text-label-md text-on-surface-variant">Assigned Developer</th>
-              <th className="px-lg py-md font-label-md text-label-md text-on-surface-variant">Support Ticket</th>
-              <th className="px-lg py-md font-label-md text-label-md text-on-surface-variant text-right">Actions</th>
+              <SortTh field="bug_number" label="Bug #" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+              <SortTh field="defect" label="Linked Defect" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+              <SortTh field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+              <SortTh field="created_at" label="Created" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+              <SortTh field="developer" label="Assigned Developer" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+              <SortTh field="support_ticket_number" label="Support Ticket" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+              <th className="px-lg py-md font-label-md text-label-md text-on-surface-variant text-right whitespace-nowrap">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-outline-variant">
@@ -130,11 +165,12 @@ export function BugListPage({ params }: { params: { id: string } }) {
                 isDeveloper={isDeveloper}
                 currentUserId={user?.userId}
                 developers={developers}
+                projectId={projectId}
               />
             ))}
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-lg py-md text-center text-on-surface-variant font-body-sm">
+                <td colSpan={7} className="px-lg py-md text-center text-on-surface-variant font-body-sm">
                   No bugs found
                 </td>
               </tr>
@@ -144,8 +180,26 @@ export function BugListPage({ params }: { params: { id: string } }) {
         <div className="px-lg py-md bg-surface-container-low border-t border-outline-variant flex justify-between items-center">
           <span className="font-body-sm text-outline">Showing {sorted.length} of {bugs?.length ?? 0} bugs</span>
         </div>
+        </div>
       </div>
     </div>
+  );
+}
+
+function SortTh({ field, label, sortField, sortDir, onSort }: { field: string; label: string; sortField: string; sortDir: string; onSort: (f: string) => void }) {
+  const isActive = sortField === field;
+  return (
+    <th
+      className="px-lg py-md font-label-md text-label-md text-on-surface-variant cursor-pointer select-none whitespace-nowrap hover:text-on-surface transition-colors"
+      onClick={() => onSort(field)}
+    >
+      <div className="flex items-center gap-1">
+        {label}
+        <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 1" }}>
+          {isActive ? (sortDir === "asc" ? "arrow_upward_alt" : "arrow_downward_alt") : "unfold_more"}
+        </span>
+      </div>
+    </th>
   );
 }
 
@@ -157,6 +211,7 @@ function BugRow({
   isDeveloper,
   currentUserId,
   developers,
+  projectId,
 }: {
   bug: Bug;
   expanded: boolean;
@@ -165,7 +220,9 @@ function BugRow({
   isDeveloper: boolean;
   currentUserId: number | undefined;
   developers: User[];
+  projectId: number;
 }) {
+  const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
   const [assignOpen, setAssignOpen] = useState(false);
   const [resolveOpen, setResolveOpen] = useState(false);
@@ -173,6 +230,7 @@ function BugRow({
   const [notesOpen, setNotesOpen] = useState(false);
   const [notesText, setNotesText] = useState("");
   const [reassignOpen, setReassignOpen] = useState(false);
+  const [addNoteOpen, setAddNoteOpen] = useState(false);
 
   const isMyBug = bug.assigned_developer_id === currentUserId;
 
@@ -209,13 +267,27 @@ function BugRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const addNoteMut = useMutation({
+    mutationFn: (note: string) =>
+      customFetch(`/bugs/${bug.id}/notes`, { method: "POST", body: JSON.stringify({ note }) }),
+    onSuccess: () => { invalidateBugs(); toast.success("Comment added"); setAddNoteOpen(false); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const isClosed = bug.status === "CLOSED";
 
   return (
     <>
       <tr className={`hover:bg-surface-container-low transition-colors group cursor-pointer ${isClosed ? "opacity-60" : ""}`} onClick={onToggle}>
         <td className="px-lg py-md font-label-md text-primary font-semibold">#BUG-{bug.bug_number}</td>
-        <td className="px-lg py-md font-body-sm text-on-surface">{bug.defect?.testCase?.title ?? `Defect #${bug.defect_id}`}</td>
+        <td className="px-lg py-md font-body-sm text-on-surface">
+          <button
+            onClick={(e) => { e.stopPropagation(); setLocation(`/projects/${projectId}/defects`); }}
+            className="hover:underline cursor-pointer text-left"
+          >
+            {bug.defect?.testCase?.title ?? `Defect #${bug.defect_id}`}
+          </button>
+        </td>
         <td className="px-lg py-md">
           <span className={`inline-flex items-center px-sm py-1 rounded-full text-xs font-bold gap-1 ${statusBadge[bug.status] ?? ""}`}>
             <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 1" }}>
@@ -223,6 +295,9 @@ function BugRow({
             </span>
             {bug.status}
           </span>
+        </td>
+        <td className="px-lg py-md font-body-sm text-on-surface-variant whitespace-nowrap">
+          {new Date(bug.created_at).toLocaleDateString()}
         </td>
         <td className="px-lg py-md">
           {bug.developer ? (
@@ -269,28 +344,55 @@ function BugRow({
               Reassign
             </button>
           )}
-          <button onClick={() => setNotesOpen(true)} className="p-1.5 hover:bg-surface-container-high rounded text-on-surface-variant transition-colors ml-1" title="View/Edit Notes">
+          <button onClick={() => setNotesOpen(true)} className="p-1.5 hover:bg-surface-container-high rounded text-on-surface-variant transition-colors ml-1" title="Update Notes">
             <span className="material-symbols-outlined text-sm">note</span>
+          </button>
+          <button onClick={() => setAddNoteOpen(true)} className="p-1.5 hover:bg-surface-container-high rounded text-on-surface-variant transition-colors" title="Add Comment">
+            <span className="material-symbols-outlined text-sm">comment</span>
           </button>
         </td>
       </tr>
       <tr className={`bg-surface-container-lowest ${expanded ? "" : "hidden"}`}>
-        <td className="p-0" colSpan={6}>
-          <div className="p-lg border-l-4 border-secondary ml-md my-sm">
-            <h4 className="text-xs font-bold text-outline uppercase mb-sm">Developer Notes</h4>
-            <p className="font-body-sm text-body-sm text-on-surface leading-relaxed">
-              {bug.developer_notes ?? "No developer notes yet."}
-            </p>
+        <td className="p-0" colSpan={7}>
+          <div className="p-lg border-l-4 border-secondary ml-md my-sm space-y-md">
+            <div>
+              <h4 className="text-xs font-bold text-outline uppercase mb-sm">Developer Notes</h4>
+              <p className="font-body-sm text-body-sm text-on-surface leading-relaxed">
+                {bug.developer_notes ?? "No developer notes yet."}
+              </p>
+              <div className="flex items-center gap-lg mt-sm text-xs text-on-surface-variant">
+                <span>Created: {new Date(bug.created_at).toLocaleString()}</span>
+                <span>Updated: {new Date(bug.updated_at).toLocaleString()}</span>
+              </div>
+            </div>
             {bug.failed_to_resolve_reason && (
-              <div className="mt-sm">
+              <div>
                 <h4 className="text-xs font-bold text-outline uppercase mb-sm">Failed to Resolve Reason</h4>
                 <p className="font-body-sm text-body-sm text-error">{bug.failed_to_resolve_reason}</p>
               </div>
             )}
             {bug.root_cause_category && (
-              <div className="mt-sm">
+              <div>
                 <h4 className="text-xs font-bold text-outline uppercase mb-sm">Root Cause Category</h4>
                 <p className="font-body-sm text-body-sm text-on-surface">{bug.root_cause_category}</p>
+              </div>
+            )}
+            {/* Comments Thread */}
+            {bug.notes && bug.notes.length > 0 && (
+              <div className="border-t border-outline-variant pt-md">
+                <h4 className="text-xs font-bold text-outline uppercase mb-sm">
+                  Comments ({bug.notes.length})
+                </h4>
+                <div className="space-y-sm max-h-48 overflow-y-auto">
+                  {bug.notes.map((n) => (
+                    <div key={n.id} className="bg-surface-container-low rounded-lg p-sm text-sm">
+                      <p className="text-on-surface">{n.note}</p>
+                      <p className="text-xs text-on-surface-variant mt-1">
+                        {new Date(n.created_at).toLocaleString()}
+                      </p>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -358,7 +460,29 @@ function BugRow({
           </form>
         </Dialog>
       )}
+
+      {/* Add Comment Dialog */}
+      {addNoteOpen && (
+        <Dialog onClose={() => setAddNoteOpen(false)} title="Add Comment">
+          <BugNoteForm
+            onSave={(note) => addNoteMut.mutate(note)}
+            loading={addNoteMut.isPending}
+          />
+        </Dialog>
+      )}
     </>
+  );
+}
+
+function BugNoteForm({ onSave, loading }: { onSave: (note: string) => void; loading: boolean }) {
+  const [note, setNote] = useState("");
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (note.trim()) onSave(note.trim()); }} className="space-y-md">
+      <textarea value={note} onChange={(e) => setNote(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Enter your comment..." required />
+      <button type="submit" disabled={loading || !note.trim()} className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
+        {loading ? "Saving..." : "Add Comment"}
+      </button>
+    </form>
   );
 }
 

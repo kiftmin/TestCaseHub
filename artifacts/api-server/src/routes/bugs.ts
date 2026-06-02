@@ -20,7 +20,7 @@ router.get("/projects/:projectId/bugs", async (req: AuthenticatedRequest, res, n
 
     const result = await db.query.bugs.findMany({
       where: and(...conditions),
-      with: { defect: true, developer: true },
+      with: { defect: true, developer: true, notes: true },
       orderBy: desc(schema.bugs.created_at),
     });
     res.json(result);
@@ -33,7 +33,7 @@ router.get("/bugs/:bugId", async (req: AuthenticatedRequest, res, next) => {
     const bugId = Number(req.params.bugId);
     const bug = await db.query.bugs.findFirst({
       where: eq(schema.bugs.id, bugId),
-      with: { defect: true, developer: true },
+      with: { defect: true, developer: true, notes: true },
     });
     if (!bug) { res.status(404).json({ message: "Not found" }); return; }
     res.json(bug);
@@ -169,6 +169,31 @@ router.patch("/bugs/:bugId/reassign", async (req: AuthenticatedRequest, res, nex
     await logAudit({ entityType: "bug", entityId: bugId, changedByUserId: req.user!.userId, toStatus: "ASSIGNED" });
 
     res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// POST /api/bugs/:bugId/notes — TEST_LEAD, assigned DEVELOPER, or ADMIN
+router.post("/bugs/:bugId/notes", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const bugId = Number(req.params.bugId);
+    const bodySchema = z.object({ note: z.string() });
+    const data = bodySchema.parse(req.body);
+
+    const bug = await db.query.bugs.findFirst({ where: eq(schema.bugs.id, bugId) });
+    if (!bug) { res.status(404).json({ message: "Not found" }); return; }
+
+    const isTestLead = await checkProjectRole(req, bug.project_id, ["TEST_LEAD"]);
+    const isAssignedDev = bug.assigned_developer_id === req.user!.userId;
+    if (!isTestLead && !isAssignedDev && req.user!.role !== "ADMIN") {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
+
+    const [note] = await db.insert(schema.bugNotes)
+      .values({ bug_id: bugId, added_by_user_id: req.user!.userId, note: data.note })
+      .returning();
+
+    res.status(201).json(note);
   } catch (err) { next(err); }
 });
 

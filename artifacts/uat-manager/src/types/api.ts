@@ -223,6 +223,15 @@ export interface Bug {
   defect?: Defect;
   project?: Project;
   developer?: User;
+  notes?: BugNote[];
+}
+
+export interface BugNote {
+  id: number;
+  bug_id: number;
+  added_by_user_id: number | null;
+  note: string;
+  created_at: string;
 }
 
 export interface StatusAuditLog {

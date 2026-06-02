@@ -1046,6 +1046,7 @@ function StepRow({
               value={instruction}
               onChange={(e) => setInstruction(e.target.value)}
               autoFocus
+              onBlur={save}
               onKeyDown={(e) => {
                 if (e.key === "Enter") save();
                 if (e.key === "Escape") setEditing(false);
@@ -1644,16 +1645,23 @@ function NewTestRunDialog({
 }) {
   const [name, setName] = useState("");
   const [scheduledAt, setScheduledAt] = useState("");
-  const [selected, setSelected] = useState<number[]>(useCases.map((u) => u.id));
+  const [selected, setSelected] = useState<Set<number>>(() => new Set(useCases.map((u) => u.id)));
+  const [initialized, setInitialized] = useState(false);
 
   useEffect(() => {
-    setSelected(useCases.map((u) => u.id));
-  }, [useCases]);
+    if (!initialized && useCases.length > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSelected(new Set(useCases.map((u) => u.id)));
+      setInitialized(true);
+    }
+  }, [useCases, initialized]);
 
   const toggle = (id: number) => {
-    setSelected((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   };
 
   return (
@@ -1693,7 +1701,7 @@ function NewTestRunDialog({
               >
                 <input
                   type="checkbox"
-                  checked={selected.includes(uc.id)}
+                  checked={selected.has(uc.id)}
                   onChange={() => toggle(uc.id)}
                   className="w-4 h-4 rounded border-outline-variant text-secondary focus:ring-secondary"
                 />
@@ -1714,7 +1722,7 @@ function NewTestRunDialog({
           <button
             disabled={!name || saving}
             onClick={() =>
-              onSave({ name, scheduled_at: scheduledAt, useCaseIds: selected })
+              onSave({ name, scheduled_at: scheduledAt, useCaseIds: Array.from(selected) })
             }
             className="px-lg py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 transition-all disabled:opacity-50"
           >

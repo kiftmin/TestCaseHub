@@ -27,8 +27,13 @@ import discussionRoutes from "./routes/discussions.js";
 import attachmentRoutes from "./routes/attachments.js";
 
 const app: Express = express();
-app.use(cors());
-app.use(helmet());
+app.use(
+  cors({
+    origin: process.env.CORS_ORIGIN?.split(",") ?? ["http://localhost:5173", "http://localhost:3001"],
+    credentials: true,
+  }),
+);
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(express.json());
 app.use(pinoHttp({ logger }));
 app.use("/uploads", express.static("uploads"));

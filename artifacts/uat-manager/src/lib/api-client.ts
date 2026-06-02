@@ -1,44 +1,21 @@
-import { getToken } from "./auth";
+import { customFetch as libCustomFetch, setAuthTokenGetter, setUnauthorizedHandler } from "@workspace/api-client-react";
+import { getToken, removeToken, removeStoredUser } from "./auth";
 
 const BASE = "http://localhost:3000/api";
+
+setAuthTokenGetter(getToken);
+setUnauthorizedHandler(() => {
+  if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+    removeToken();
+    removeStoredUser();
+    const redirect = encodeURIComponent(window.location.pathname + window.location.search);
+    window.location.assign(`/login?redirect=${redirect}`);
+  }
+});
 
 export async function customFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const token = getToken();
-  const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string>),
-  };
-
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
-  const isFormData = options.body instanceof FormData;
-  if (!isFormData) {
-    headers["Content-Type"] = "application/json";
-  }
-
-  const res = await fetch(`${BASE}${path}`, {
-    ...options,
-    headers,
-  });
-
-  if (!res.ok) {
-    let message = `HTTP ${res.status}`;
-    try {
-      const data = await res.json();
-      message = data.message || message;
-    } catch {
-      // ignore parse errors
-    }
-    throw new Error(message);
-  }
-
-  if (res.status === 204) {
-    return undefined as T;
-  }
-
-  return res.json() as Promise<T>;
+  return libCustomFetch<T>(`${BASE}${path}`, options);
 }

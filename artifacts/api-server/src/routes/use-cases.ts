@@ -4,28 +4,9 @@ import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { bumpProjectVersion, logAudit } from "../utils/project.js";
 
 const router = express.Router();
-
-async function bumpProjectVersion(projectId: number): Promise<void> {
-  await db
-    .update(schema.projects)
-    .set({
-      version: sql`${schema.projects.version} + 1`,
-      version_date: new Date(),
-    })
-    .where(eq(schema.projects.id, projectId));
-}
-
-async function logAudit(params: { entityType: string; entityId: number; changedByUserId: number | null; fromStatus?: string | null; toStatus?: string | null }) {
-  await db.insert(schema.statusAuditLog).values({
-    entity_type: params.entityType,
-    entity_id: params.entityId,
-    changed_by_user_id: params.changedByUserId,
-    from_status: params.fromStatus ?? null,
-    to_status: params.toStatus ?? null,
-  });
-}
 
 // These routes are mounted at /api/use-cases and /api/projects/:projectId/use-cases
 // We handle the project-based route differently - note that Express router params work from the mount point
@@ -55,6 +36,24 @@ router.get("/:useCaseId/test-cases", async (req: AuthenticatedRequest, res, next
       where: eq(schema.testCases.use_case_id, useCaseId),
       orderBy: desc(schema.testCases.created_at),
     });
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+// GET /api/use-cases/:useCaseId — scenario detail with test cases and steps
+router.get("/:useCaseId", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const useCaseId = Number(req.params.useCaseId);
+    const data = await db.query.useCases.findFirst({
+      where: eq(schema.useCases.id, useCaseId),
+      with: {
+        testCases: {
+          orderBy: schema.testCases.sort_order,
+          with: { steps: { orderBy: sql`CAST(${schema.testSteps.step_number} AS INTEGER)` } },
+        },
+      },
+    });
+    if (!data) { res.status(404).json({ message: "Not found" }); return; }
     res.json(data);
   } catch (err) { next(err); }
 });

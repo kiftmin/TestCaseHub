@@ -2,10 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
-import { useProjectRole } from "../hooks/useProjectRole";
 import { useAuth } from "../hooks/useAuth";
-import type { DashboardSummary, Bug, ProjectAssignment } from "../types/api";
-import { useState, useEffect } from "react";
+import type { DashboardSummary, Bug, ProjectAssignment, TestRunUseCase } from "../types/api";
+import { useState, useEffect, useMemo } from "react";
 
 const severityColors: Record<string, string> = {
   Critical: "text-error",
@@ -19,15 +18,48 @@ const bugStatusColors: Record<string, string> = {
   ASSIGNED: "bg-amber-100 text-amber-700",
   IN_PROGRESS: "bg-blue-100 text-blue-700",
   RESOLVED: "bg-green-100 text-green-700",
+  TEST: "bg-purple-100 text-purple-700",
+  FAILED_TO_RESOLVE: "bg-red-100 text-red-700",
   CLOSED: "bg-surface-container-high text-on-surface-variant",
+  REOPENED: "bg-amber-100 text-amber-700",
 };
 
-const ucStatusColors: Record<string, string> = {
-  passed: "bg-green-100 text-green-700 border-green-200",
-  failed: "bg-red-100 text-red-700 border-red-200",
-  in_progress: "bg-amber-100 text-amber-700 border-amber-200",
-  pending: "bg-surface-container-high text-on-surface-variant border-outline-variant",
-};
+interface RecentExecution {
+  id: number;
+  overall_result: string | null;
+  executed_at: string | null;
+  testCase?: { title: string };
+  testRun?: { name: string };
+}
+interface RecentDefect {
+  id: number;
+  status: string;
+  severity: string | null;
+  created_at: string;
+  testCase?: { title: string };
+}
+interface RecentBug {
+  id: number;
+  bug_number: number;
+  status: string;
+  created_at: string;
+  developer?: { name: string };
+  defect?: { testCase?: { title: string } };
+}
+interface ActivityResponse {
+  recentExecutions?: RecentExecution[];
+  recentDefects?: RecentDefect[];
+  recentBugs?: RecentBug[];
+}
+interface TesterRun {
+  id: number;
+  name: string;
+  status: string;
+  updated_at?: string;
+  scheduled_at?: string | null;
+  project?: { name: string };
+  useCases?: TestRunUseCase[];
+}
 
 export function DashboardPage() {
   const user = getStoredUser();
@@ -42,7 +74,7 @@ export function DashboardPage() {
 
   const { data: activity } = useQuery({
     queryKey: ["recentActivity"],
-    queryFn: () => customFetch<{ recentExecutions: any[]; recentDefects: any[]; recentBugs: any[] }>("/dashboard/recent-activity"),
+    queryFn: () => customFetch<ActivityResponse>("/dashboard/recent-activity"),
   });
 
   const { data: assignments } = useQuery({
@@ -51,11 +83,17 @@ export function DashboardPage() {
     enabled: !!user?.userId,
   });
 
-  const topRole = assignments?.[0]?.role ?? null;
+  const topRole = useMemo(() => assignments?.[0]?.role ?? null, [assignments]);
 
   useEffect(() => {
-    if (topRole && !currentRole) setCurrentRole(topRole);
-  }, [topRole]);
+    if (!currentRole && topRole) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setCurrentRole(topRole);
+    } else if (currentRole && !assignments?.some((a) => a.role === currentRole)) {
+      // currentRole is stale; fall back to top role if any, else null
+      setCurrentRole(topRole);
+    }
+  }, [topRole, currentRole, assignments]);
 
   const { data: myBugs } = useQuery({
     queryKey: ["myBugs", user?.userId],
@@ -65,7 +103,7 @@ export function DashboardPage() {
 
   const { data: myRuns } = useQuery({
     queryKey: ["testerRuns", user?.userId],
-    queryFn: () => customFetch<any[]>(`/dashboard/tester/${user!.userId}/test-runs`),
+    queryFn: () => customFetch<TesterRun[]>(`/dashboard/tester/${user!.userId}/test-runs`),
     enabled: currentRole === "TESTER" && !!user?.userId,
   });
 
@@ -79,43 +117,64 @@ export function DashboardPage() {
     document.title = "Dashboard | TestCaseHub";
   }, []);
 
-  const myOpenBugs = myBugs?.filter(b => b.status !== "CLOSED" && b.status !== "RESOLVED") ?? [];
-  const myInProgress = myBugs?.filter(b => b.status === "IN_PROGRESS" || b.status === "ASSIGNED") ?? [];
-  const myResolved = myBugs?.filter(b => b.status === "RESOLVED" || b.status === "CLOSED") ?? [];
+  const myOpenBugs = useMemo(
+    () => myBugs?.filter(b => b.status !== "CLOSED" && b.status !== "RESOLVED") ?? [],
+    [myBugs],
+  );
+  const myInProgress = useMemo(
+    () => myBugs?.filter(b => b.status === "IN_PROGRESS" || b.status === "ASSIGNED") ?? [],
+    [myBugs],
+  );
+  const myResolved = useMemo(
+    () => myBugs?.filter(b => b.status === "RESOLVED" || b.status === "CLOSED") ?? [],
+    [myBugs],
+  );
 
-  const testerRunStats = myRuns
-    ? {
-        assigned: myRuns.length,
-        completedToday: myRuns.filter((r: any) => r.status === "completed" && new Date(r.updated_at).toDateString() === new Date().toDateString()).length,
-        openDefectsFound: 0,
-      }
-    : null;
+  const testerRunStats = useMemo(() => {
+    if (!myRuns) return null;
+    return {
+      assigned: myRuns.length,
+      completedToday: myRuns.filter(
+        (r) => r.status === "completed" && r.updated_at && new Date(r.updated_at).toDateString() === new Date().toDateString(),
+      ).length,
+      openDefectsFound: 0,
+    };
+  }, [myRuns]);
 
-  const recentEvents = [
-    ...(activity?.recentExecutions?.map((e: any) => ({
-      icon: e.overall_result === "passed" ? "check_circle" : "cancel",
-      iconBg: e.overall_result === "passed" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700",
-      description: `Execution #${e.id} ${e.overall_result === "passed" ? "passed" : "failed"} for test case "${e.testCase?.title ?? ""}"`,
-      timestamp: e.executed_at,
-      detail: e.testRun?.name ?? "",
-    })) ?? []),
-    ...(activity?.recentDefects?.map((d: any) => ({
-      icon: "warning",
-      iconBg: "bg-amber-100 text-amber-700",
-      description: `Defect #${d.id} ${d.status} — ${d.severity ?? ""}`,
-      timestamp: d.created_at,
-      detail: d.testCase?.title ?? "",
-    })) ?? []),
-    ...(activity?.recentBugs?.map((b: any) => ({
-      icon: "bug_report",
-      iconBg: "bg-blue-100 text-blue-700",
-      description: `Bug #${b.bug_number} ${b.status} — assigned to ${b.developer?.name ?? "unassigned"}`,
-      timestamp: b.created_at,
-      detail: b.defect?.testCase?.title ?? "",
-    })) ?? []),
-  ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 10);
+  const recentEvents = useMemo(() => {
+    const events: Array<{ icon: string; iconBg: string; description: string; timestamp: string; detail: string }> = [];
+    activity?.recentExecutions?.forEach((e) => {
+      events.push({
+        icon: e.overall_result === "passed" ? "check_circle" : "cancel",
+        iconBg: e.overall_result === "passed" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700",
+        description: `Execution #${e.id} ${e.overall_result === "passed" ? "passed" : "failed"} for test case "${e.testCase?.title ?? ""}"`,
+        timestamp: e.executed_at ?? new Date().toISOString(),
+        detail: e.testRun?.name ?? "",
+      });
+    });
+    activity?.recentDefects?.forEach((d) => {
+      events.push({
+        icon: "warning",
+        iconBg: "bg-amber-100 text-amber-700",
+        description: `Defect #${d.id} ${d.status} — ${d.severity ?? ""}`,
+        timestamp: d.created_at,
+        detail: d.testCase?.title ?? "",
+      });
+    });
+    activity?.recentBugs?.forEach((b) => {
+      events.push({
+        icon: "bug_report",
+        iconBg: "bg-blue-100 text-blue-700",
+        description: `Bug #${b.bug_number} ${b.status} — assigned to ${b.developer?.name ?? "unassigned"}`,
+        timestamp: b.created_at,
+        detail: b.defect?.testCase?.title ?? "",
+      });
+    });
+    return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 10);
+  }, [activity]);
 
   function timeAgo(dateStr: string) {
+    // eslint-disable-next-line react-hooks/purity -- display helper, fine to use Date.now
     const diff = Date.now() - new Date(dateStr).getTime();
     const mins = Math.floor(diff / 60000);
     if (mins < 1) return "Just now";
@@ -144,8 +203,8 @@ export function DashboardPage() {
           <h1 className="font-display-lg text-display-lg text-primary">Dashboard</h1>
           <p className="font-body-base text-body-base text-on-surface-variant">
             {currentRole === "DEVELOPER" ? "System Health: Stable. Track your assigned bugs." :
-             currentRole === "TESTER" ? `Good ${new Date().getHours() < 12 ? "morning" : "afternoon"}, ${user?.name?.split(" ")[0] ?? "Tester"}.` :
-             `Welcome back, ${user?.name?.split(" ")[0] ?? "User"}. Here is your operational overview.`}
+             currentRole === "TESTER" ? `Good ${new Date().getHours() < 12 ? "morning" : "afternoon"}, ${user?.username?.split(" ")[0] ?? "Tester"}.` :
+             `Welcome back, ${user?.username?.split(" ")[0] ?? "User"}. Here is your operational overview.`}
           </p>
         </div>
         <div className="flex gap-xs bg-surface-container p-xs rounded-lg">
@@ -238,7 +297,7 @@ export function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-outline-variant font-body-sm text-body-sm">
-                  {myBugs.sort((a, b) => new Date(b.opened_at).getTime() - new Date(a.opened_at).getTime()).map((bug) => (
+                  {[...myBugs].sort((a, b) => new Date(b.opened_at).getTime() - new Date(a.opened_at).getTime()).map((bug) => (
                     <tr key={bug.id} className="hover:bg-surface-container-low transition-colors cursor-pointer"
                       onClick={() => navigate(`/projects/${bug.project_id}/bugs`)}
                     >
@@ -272,9 +331,9 @@ export function DashboardPage() {
       ) : currentRole === "TESTER" ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-lg">
           {myRuns && myRuns.length > 0 ? (
-            myRuns.map((run: any) => {
+            myRuns.map((run) => {
               const total = run.useCases?.length ?? 0;
-              const done = run.useCases?.filter((uc: any) => uc.status !== "pending").length ?? 0;
+              const done = run.useCases?.filter((uc) => uc.status !== "pending").length ?? 0;
               const progress = total > 0 ? Math.round((done / total) * 100) : 0;
               return (
                 <div key={run.id} className="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden">

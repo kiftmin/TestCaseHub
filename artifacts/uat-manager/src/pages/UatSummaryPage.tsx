@@ -1,9 +1,17 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useRoute } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
 import { customFetch } from "../lib/api-client";
 import type { TestRun, TestRunUseCase } from "../types/api";
+
+interface ExecutionWithDefects {
+  id: number;
+  defects?: Array<{
+    id: number;
+    bugs?: Array<{ id: number; status: string }>;
+  }>;
+}
 
 interface UatSummary {
   totalScenarios: number;
@@ -53,9 +61,9 @@ function DonutLabel({ total }: { total: number }) {
   );
 }
 
-export function UatSummaryPage() {
-  const [, params] = useRoute<{ projectId: string }>("/projects/:projectId/uat-summary");
-  const projectId = params ? Number(params.projectId) : null;
+export function UatSummaryPage({ params: propParams }: { params?: { id?: string } } = {}) {
+  const [, routeParams] = useRoute<{ id: string }>("/projects/:id/uat-summary");
+  const projectId = propParams?.id ? Number(propParams.id) : routeParams ? Number(routeParams.id) : null;
 
   useEffect(() => {
     document.title = "UAT Summary | TestCaseHub";
@@ -75,30 +83,34 @@ export function UatSummaryPage() {
 
   const isLoading = summaryLoading || runsLoading;
 
-  const totalDefects = summary
-    ? Object.values(summary.defectsByStatus).reduce((sum, v) => sum + v, 0)
-    : 0;
+  const totalDefects = useMemo(
+    () => (summary ? Object.values(summary.defectsByStatus).reduce((sum, v) => sum + v, 0) : 0),
+    [summary],
+  );
 
-  const openBugs = testRuns
-    ? testRuns.reduce((count, run) => {
-        const executions = (run as any).executions ?? [];
-        return count + executions.reduce((ec: number, exec: any) => {
-          const defects = exec.defects ?? [];
-          return ec + defects.reduce((dc: number, def: any) => {
-            const bugs = def.bugs ?? [];
-            return dc + bugs.filter((b: any) => b.status === "OPEN").length;
-          }, 0);
+  const openBugs = useMemo(() => {
+    if (!testRuns) return 0;
+    return testRuns.reduce((count, run) => {
+      const executions = ((run as TestRun & { executions?: ExecutionWithDefects[] }).executions) ?? [];
+      return count + executions.reduce((ec, exec) => {
+        const defects = (exec as ExecutionWithDefects).defects ?? [];
+        return ec + defects.reduce((dc, def) => {
+          const bugs = def.bugs ?? [];
+          return dc + bugs.filter((b) => b.status === "OPEN").length;
         }, 0);
-      }, 0)
-    : 0;
+      }, 0);
+    }, 0);
+  }, [testRuns]);
 
-  const donutData = summary
-    ? Object.entries(summary.defectsByStatus).map(([name, value]) => ({ name, value }))
-    : [];
+  const donutData = useMemo(
+    () => (summary ? Object.entries(summary.defectsByStatus).map(([name, value]) => ({ name, value })) : []),
+    [summary],
+  );
 
-  const severityData = summary
-    ? Object.entries(summary.defectsBySeverity).map(([name, value]) => ({ name, value }))
-    : [];
+  const severityData = useMemo(
+    () => (summary ? Object.entries(summary.defectsBySeverity).map(([name, value]) => ({ name, value })) : []),
+    [summary],
+  );
 
   const getDonutColor = (name: string) => DEFECT_STATUS_COLORS[name] ?? OTHER_DEFECT_COLOR;
 
@@ -241,7 +253,7 @@ export function UatSummaryPage() {
                   </thead>
                   <tbody className="divide-y divide-outline-variant font-body-sm text-body-sm">
                     {testRuns.map((run) => {
-                      const useCases = (run as any).useCases as TestRunUseCase[] | undefined ?? [];
+                      const useCases: TestRunUseCase[] = (run.useCases as TestRunUseCase[] | undefined) ?? [];
                       const passed = useCases.filter((uc) => uc.status === "passed" || uc.status === "passed_by_agreement").length;
                       const failed = useCases.filter((uc) => uc.status === "failed").length;
                       const isFailed = run.status === "completed" && run.passed === false;

@@ -169,9 +169,8 @@ export interface Defect {
     | "New Defect"
     | "Submitted to Dev to Fix"
     | "Ready for Testing"
-    | "Closed - Passed"
-    | "Closed - Accepted by Business"
-    | "Closed - Rejected";
+    | "Accepted by Business"
+    | "Passed by Agreement";
   retest_reason: string | null;
   accepted_by_business_note: string | null;
   rejection_log: string | null;
@@ -182,6 +181,7 @@ export interface Defect {
   testCase?: TestCase;
   retests?: DefectRetest[];
   bugs?: Bug[];
+  notes?: DefectNote[];
 }
 
 export interface DefectRetest {
@@ -208,6 +208,7 @@ export interface Bug {
     | "ASSIGNED"
     | "IN_PROGRESS"
     | "RESOLVED"
+    | "TEST"
     | "FAILED_TO_RESOLVE"
     | "CLOSED"
     | "REOPENED";

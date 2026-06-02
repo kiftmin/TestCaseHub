@@ -7,6 +7,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
+import { authenticate } from "../middlewares/auth.js";
 
 const router = express.Router();
 
@@ -51,8 +52,8 @@ const upload = multer({
   },
 });
 
-// POST /api/upload
-router.post("/upload", upload.single("file"), (req, res, next) => {
+// POST /api/upload — authenticated
+router.post("/upload", authenticate, upload.single("file"), (req, res, next) => {
   try {
     if (!req.file) {
       res.status(400).json({ message: "No file uploaded" });

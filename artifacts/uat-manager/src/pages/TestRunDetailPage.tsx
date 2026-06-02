@@ -31,11 +31,29 @@ const ucStatusColors: Record<string, string> = {
   passed_by_agreement: "bg-purple-100 text-purple-700 border-purple-200",
 };
 
+interface TestRunFullReport {
+  executions?: Array<{
+    id: number;
+    test_case_id: number;
+    test_run_id: number;
+    tester_id: number;
+    executed_at: string | null;
+    overall_result: "passed" | "failed" | "passed_by_agreement" | null;
+    stepResults?: Array<{
+      id: number;
+      step_id: number;
+      actual_result: string | null;
+      comments: string | null;
+      passed: boolean | null;
+    }>;
+  }>;
+}
+
 export function TestRunDetailPage({ params }: { params: { id: string } }) {
   const testRunId = Number(params.id);
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
-  const { data: testRun, isLoading } = useQuery({
+  const { data: testRun, isLoading, isError } = useQuery({
     queryKey: ["test-run", testRunId],
     queryFn: () => customFetch<TestRun>(`/test-runs/${testRunId}`),
   });
@@ -52,7 +70,8 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
   });
 
   const role = useProjectRole(testRun?.project_id ?? null);
-  const canManage = role === "TEST_LEAD" || role === "ADMIN";
+  const isCompleted = testRun?.status === "completed";
+  const canManage = (role === "TEST_LEAD" || role === "ADMIN") && !isCompleted;
 
   useEffect(() => {
     document.title = `${testRun?.name ?? "Test Run"} | TestCaseHub`;
@@ -71,7 +90,10 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
   const [discussionOpen, setDiscussionOpen] = useState(false);
 
   useEffect(() => {
-    if (checklist) setChecklistItems(checklist);
+    if (checklist) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- sync from query
+      setChecklistItems(checklist);
+    }
   }, [checklist]);
 
   const checkedCount = checklistItems.filter((i) => i.is_checked).length;
@@ -147,8 +169,22 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
     );
   }
 
-  if (!testRun) {
-    return <p className="text-error font-body-base">Test run not found</p>;
+  if (isError || !testRun) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 text-center space-y-md">
+        <span className="material-symbols-outlined text-5xl text-on-surface-variant">search_off</span>
+        <p className="font-body-lg text-body-lg text-on-surface">Test run not found</p>
+        <p className="font-body-sm text-body-sm text-on-surface-variant max-w-xs">
+          The test run you're looking for could not be loaded. It may have been deleted or you may not have access.
+        </p>
+        <button
+          onClick={() => navigate("/projects")}
+          className="bg-secondary text-on-secondary px-lg py-sm rounded-lg font-label-md hover:brightness-110 transition-all"
+        >
+          Back to Projects
+        </button>
+      </div>
+    );
   }
 
   const useCases = (testRun as TestRun & { useCases?: TestRunUseCase[] })?.useCases ?? [];
@@ -176,6 +212,15 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
       <div className="flex items-start justify-between">
         <div>
           <div className="flex items-center gap-sm text-on-surface-variant text-label-sm mb-xs">
+            <button
+              onClick={() => navigate(`/projects/${testRun.project_id}`)}
+              className="flex items-center gap-1 text-on-surface-variant hover:text-on-surface transition-colors mr-1"
+              title="Back to Project"
+            >
+              <span className="material-symbols-outlined text-sm">arrow_back</span>
+              <span className="text-xs font-medium">Back</span>
+            </button>
+            <span className="material-symbols-outlined text-[14px] text-outline-variant">chevron_right</span>
             <a
               onClick={(e) => { e.preventDefault(); navigate(`/projects/${testRun.project_id}`); }}
               href={`/projects/${testRun.project_id}`}
@@ -219,6 +264,12 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
               <span className={`w-2 h-2 rounded-full ${testRun.status === "in_progress" ? "bg-amber-500 animate-pulse" : ""}`} />
               {testRun.status.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}
             </span>
+            {isCompleted && (
+              <span className="inline-flex items-center gap-1 px-sm py-xs rounded-full bg-surface-container-high text-on-surface-variant text-label-sm font-bold border border-outline-variant">
+                <span className="material-symbols-outlined text-[14px]">lock</span>
+                Read Only
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-md mt-sm text-body-sm text-on-surface-variant">
             {testRun.scheduled_at && (
@@ -685,8 +736,8 @@ function ExecutionModal({
 
       setProofImages((prev) => ({ ...prev, [stepId]: uploadRes.fileUrl }));
       toast.success("Proof uploaded");
-    } catch (e: any) {
-      toast.error(e.message);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "An error occurred");
     }
   };
 
@@ -707,26 +758,28 @@ function ExecutionModal({
           body: JSON.stringify({ tester_id: user.userId }),
         });
         setExecution(created);
-      } catch (e: any) {
-        if (e.message?.toLowerCase().includes("already been executed")) {
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        if (errMsg.toLowerCase().includes("already been executed")) {
           try {
-            const fullReport = await customFetch<any>(`/test-runs/${testRunId}/full-report`);
-            const existing = fullReport.executions?.find((ex: any) => ex.test_case_id === testCase.id);
+            const fullReport = await customFetch<TestRunFullReport>(`/test-runs/${testRunId}/full-report`);
+            const existing = fullReport.executions?.find((ex) => ex.test_case_id === testCase.id);
             if (existing) {
-              setExecution(existing);
+              setExecution(existing as Execution);
               if (existing.stepResults) {
                 const map: Record<number, { passed: boolean | null; actual_result: string; comments: string }> = {};
-                existing.stepResults.forEach((sr: any) => {
+                existing.stepResults.forEach((sr) => {
                   map[sr.step_id] = { passed: sr.passed, actual_result: sr.actual_result ?? "", comments: sr.comments ?? "" };
                 });
                 setResults(map);
               }
             }
-          } catch (e2: any) {
-            toast.error(e2.message);
+          } catch (e2) {
+            const msg = e2 instanceof Error ? e2.message : "An error occurred";
+            toast.error(msg);
           }
         } else {
-          toast.error(e.message);
+          toast.error(errMsg);
         }
       }
     };
@@ -737,7 +790,7 @@ function ExecutionModal({
   const totalSteps = stepList.length;
 
   /* Offline draft support */
-  const draftKey = `draft_execution_${execution?.id}`;
+  const draftKey = `draft_step_${testRunId}_${testCase.id}_${execution?.id ?? "pending"}`;
 
   useEffect(() => {
     if (!execution?.id) return;
@@ -746,6 +799,7 @@ function ExecutionModal({
       try {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- reading from external session storage
           setOfflineBanner(true);
         }
       } catch { /* ignore */ }
@@ -795,8 +849,8 @@ function ExecutionModal({
       });
       setResults((prev) => ({ ...prev, [stepId]: { passed, actual_result, comments } }));
       queryClient.invalidateQueries({ queryKey: ["steps", testCase.id] });
-    } catch (e: any) {
-      toast.error(e.message);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "An error occurred");
     }
   };
 
@@ -814,7 +868,7 @@ function ExecutionModal({
     const result = overallResult || (Object.values(results).every((r) => r.passed === true) ? "passed" : "failed");
 
     try {
-      const res = await customFetch<Execution & { defect?: any }>(`/executions/${execution.id}`, {
+      const res = await customFetch<Execution & { defect?: { id: number } }>(`/executions/${execution.id}`, {
         method: "PATCH",
         body: JSON.stringify({
           status: "completed",
@@ -835,8 +889,8 @@ function ExecutionModal({
 
       queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
       onClose();
-    } catch (e: any) {
-      toast.error(e.message);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "An error occurred");
     } finally {
       setSubmitting(false);
     }

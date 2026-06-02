@@ -32,8 +32,22 @@ router.post("/test-runs/:testRunId/discussions", async (req: AuthenticatedReques
       })
       .returning();
 
+    // Determine can_add_notes per-participant based on project role and meeting type
+    // Spec §7.13: defect_review → developers are viewers (no notes); post_mortem → business owners can add notes.
+    const projectAssignments = await db.query.projectAssignments.findMany({
+      where: eq(schema.projectAssignments.project_id, testRun.project_id),
+    });
+    const roleByUserId = new Map<number, string>();
+    for (const pa of projectAssignments) {
+      roleByUserId.set(pa.user_id, pa.role);
+    }
+
     for (const userId of data.participantIds) {
-      const canAddNotes = data.meetingType === "post_mortem";
+      const userRole = roleByUserId.get(userId);
+      let canAddNotes = false;
+      if (data.meetingType === "post_mortem" && userRole === "BUSINESS_OWNER") {
+        canAddNotes = true;
+      }
       await db.insert(schema.teamDiscussionParticipants)
         .values({ discussion_id: discussion.id, user_id: userId, can_add_notes: canAddNotes });
     }

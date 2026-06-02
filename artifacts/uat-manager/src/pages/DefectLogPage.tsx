@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
@@ -10,9 +10,8 @@ const statusBadge: Record<string, string> = {
   "New Defect": "bg-error-container text-on-error-container border-error/20",
   "Submitted to Dev to Fix": "bg-amber-100 text-amber-800 border-amber-200",
   "Ready for Testing": "bg-blue-100 text-blue-800 border-blue-200",
-  "Closed - Passed": "bg-green-100 text-green-800 border-green-200",
-  "Closed - Accepted by Business": "bg-green-100 text-green-800 border-green-200",
-  "Closed - Rejected": "bg-surface-container-highest text-on-surface-variant border-outline-variant",
+  "Accepted by Business": "bg-green-100 text-green-800 border-green-200",
+  "Passed by Agreement": "bg-purple-100 text-purple-800 border-purple-200",
 };
 
 const severityColors: Record<string, string> = {
@@ -43,38 +42,30 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     queryFn: () => customFetch<TestRun[]>(`/projects/${projectId}/test-runs`),
   });
 
-  const runIds = testRuns?.map((r) => r.id) ?? [];
   const { data: allDefects } = useQuery({
-    queryKey: ["project-defects", projectId, runIds],
-    queryFn: async () => {
-      const results: Defect[] = [];
-      for (const id of runIds) {
-        try {
-          const defects = await customFetch<Defect[]>(`/test-runs/${id}/defects`);
-          results.push(...defects);
-        } catch { /* skip */ }
+    queryKey: ["project-defects", projectId],
+    queryFn: () => customFetch<Defect[]>(`/projects/${projectId}/defects`),
+    enabled: !!projectId,
+  });
+
+  const filtered = useMemo(() => {
+    return (allDefects ?? []).filter((d) => {
+      if (runFilter !== "all" && d.test_run_id !== Number(runFilter)) return false;
+      if (statusFilter !== "all" && d.status !== statusFilter) return false;
+      if (severityFilter !== "all" && d.severity !== severityFilter) return false;
+      if (search) {
+        const q = search.toLowerCase();
+        const match =
+          `DEF-${d.id}`.toLowerCase().includes(q) ||
+          d.testCase?.title?.toLowerCase().includes(q) ||
+          d.tester_notes?.toLowerCase().includes(q);
+        if (!match) return false;
       }
-      return results;
-    },
-    enabled: runIds.length > 0,
-  });
+      return true;
+    });
+  }, [allDefects, runFilter, statusFilter, severityFilter, search]);
 
-  const filtered = (allDefects ?? []).filter((d) => {
-    if (runFilter !== "all" && d.test_run_id !== Number(runFilter)) return false;
-    if (statusFilter !== "all" && d.status !== statusFilter) return false;
-    if (severityFilter !== "all" && d.severity !== severityFilter) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      const match =
-        `DEF-${d.id}`.toLowerCase().includes(q) ||
-        d.testCase?.title?.toLowerCase().includes(q) ||
-        d.tester_notes?.toLowerCase().includes(q);
-      if (!match) return false;
-    }
-    return true;
-  });
-
-  const sorted = [...filtered].sort((a, b) => b.id - a.id);
+  const sorted = useMemo(() => [...filtered].sort((a, b) => b.id - a.id), [filtered]);
 
   return (
     <div className="space-y-lg">
@@ -166,6 +157,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
                   canManage={canManage}
                   isBusinessOwner={isBusinessOwner}
                   isTester={isTester}
+                  onMutated={() => { /* parent owns cache invalidation */ }}
                 />
               ))}
               {sorted.length === 0 && (
@@ -195,6 +187,7 @@ function DefectRow({
   canManage,
   isBusinessOwner,
   isTester,
+  onMutated,
 }: {
   defect: Defect;
   expanded: boolean;
@@ -202,6 +195,7 @@ function DefectRow({
   canManage: boolean;
   isBusinessOwner: boolean;
   isTester: boolean;
+  onMutated: () => void;
 }) {
   const queryClient = useQueryClient();
   const [classifyOpen, setClassifyOpen] = useState(false);
@@ -212,48 +206,54 @@ function DefectRow({
   const isNew = defect.status === "New Defect";
   const isSubmitted = defect.status === "Submitted to Dev to Fix";
   const isReady = defect.status === "Ready for Testing";
-  const isClosed = defect.status.startsWith("Closed -");
+  const isClosed = defect.status === "Accepted by Business" || defect.status === "Passed by Agreement";
+
+  const invalidateProject = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["project-defects"] });
+    queryClient.invalidateQueries({ queryKey: ["project-runs"] });
+    onMutated();
+  }, [queryClient, onMutated]);
 
   const classifyMut = useMutation({
     mutationFn: (data: { severity: string; priority: string }) =>
       customFetch(`/defects/${defect.id}/classify`, { method: "PATCH", body: JSON.stringify(data) }),
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Defect classified"); setClassifyOpen(false); },
+    onSuccess: () => { invalidateProject(); toast.success("Defect classified"); setClassifyOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const flagBugMut = useMutation({
     mutationFn: () => customFetch(`/defects/${defect.id}/flag-bug`, { method: "PATCH" }),
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Flagged for bug"); },
+    onSuccess: () => { invalidateProject(); toast.success("Flagged for bug"); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const flagRetestMut = useMutation({
     mutationFn: () => customFetch(`/defects/${defect.id}/flag-retest`, { method: "PATCH", body: JSON.stringify({ reason: "Flagged for retest" }) }),
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Flagged for retest"); },
+    onSuccess: () => { invalidateProject(); toast.success("Flagged for retest"); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const flagAcceptBizMut = useMutation({
     mutationFn: () => customFetch(`/defects/${defect.id}/flag-accepted-by-business`, { method: "PATCH" }),
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Accepted by business"); },
+    onSuccess: () => { invalidateProject(); toast.success("Accepted by business"); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const bizAcceptMut = useMutation({
     mutationFn: (note: string) => customFetch(`/defects/${defect.id}/business-accept`, { method: "PATCH", body: JSON.stringify({ note }) }),
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Defect accepted"); },
+    onSuccess: () => { invalidateProject(); toast.success("Defect accepted"); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const bizRejectMut = useMutation({
     mutationFn: (reason: string) => customFetch(`/defects/${defect.id}/business-reject`, { method: "PATCH", body: JSON.stringify({ reason }) }),
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Defect rejected"); setRejectOpen(false); },
+    onSuccess: () => { invalidateProject(); toast.success("Defect rejected"); setRejectOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const addNoteMut = useMutation({
     mutationFn: (note: string) => customFetch(`/defects/${defect.id}/notes`, { method: "POST", body: JSON.stringify({ note }) }),
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Note added"); setNoteOpen(false); },
+    onSuccess: () => { invalidateProject(); toast.success("Note added"); setNoteOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -263,7 +263,7 @@ function DefectRow({
       if (!retestId) throw new Error("No retest record found");
       return customFetch(`/defect-retests/${retestId}`, { method: "PATCH", body: JSON.stringify(data) });
     },
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Retest recorded"); setRetestOpen(false); },
+    onSuccess: () => { invalidateProject(); toast.success("Retest recorded"); setRetestOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -338,6 +338,10 @@ function DefectRow({
                 <p className="font-body-sm text-body-sm text-on-surface leading-relaxed">
                   {defect.tester_notes ?? "No tester notes."}
                 </p>
+                <div className="flex items-center gap-lg mt-sm text-xs text-on-surface-variant">
+                  <span>Created: {new Date(defect.created_at).toLocaleString()}</span>
+                  <span>Updated: {new Date(defect.updated_at).toLocaleString()}</span>
+                </div>
               </div>
               <div>
                 {defect.accepted_by_business_note && (
@@ -375,6 +379,24 @@ function DefectRow({
                 )}
               </div>
             </div>
+            {/* Notes Thread */}
+            {defect.notes && defect.notes.length > 0 && (
+              <div className="border-t border-outline-variant pt-md mt-md">
+                <h4 className="text-xs font-bold text-outline uppercase mb-sm">
+                  Notes ({defect.notes.length})
+                </h4>
+                <div className="space-y-sm max-h-48 overflow-y-auto">
+                  {defect.notes.map((n) => (
+                    <div key={n.id} className="bg-surface-container-low rounded-lg p-sm text-sm">
+                      <p className="text-on-surface">{n.note}</p>
+                      <p className="text-xs text-on-surface-variant mt-1">
+                        {new Date(n.created_at).toLocaleString()}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </td>
       </tr>

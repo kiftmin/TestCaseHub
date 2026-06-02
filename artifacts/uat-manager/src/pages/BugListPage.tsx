@@ -176,31 +176,36 @@ function BugRow({
 
   const isMyBug = bug.assigned_developer_id === currentUserId;
 
+  const invalidateBugs = () => {
+    queryClient.invalidateQueries({ queryKey: ["project-bugs"] });
+    queryClient.invalidateQueries({ queryKey: ["myBugs"] });
+  };
+
   const assignMut = useMutation({
     mutationFn: (data: { developerId: number; supportTicketNumber?: string }) =>
       customFetch(`/bugs/${bug.id}/assign`, { method: "PATCH", body: JSON.stringify(data) }),
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Bug assigned"); setAssignOpen(false); },
+    onSuccess: () => { invalidateBugs(); toast.success("Bug assigned"); setAssignOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const statusMut = useMutation({
     mutationFn: (data: { status: string; reason?: string; rootCauseCategory?: string }) =>
       customFetch(`/bugs/${bug.id}/status`, { method: "PATCH", body: JSON.stringify(data) }),
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Status updated"); setResolveOpen(false); setFailedOpen(false); },
+    onSuccess: () => { invalidateBugs(); toast.success("Status updated"); setResolveOpen(false); setFailedOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const notesMut = useMutation({
     mutationFn: (data: { notes: string; rootCauseCategory?: string }) =>
       customFetch(`/bugs/${bug.id}/notes`, { method: "PATCH", body: JSON.stringify(data) }),
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Notes updated"); setNotesOpen(false); },
+    onSuccess: () => { invalidateBugs(); toast.success("Notes updated"); setNotesOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const reassignMut = useMutation({
     mutationFn: (developerId: number) =>
       customFetch(`/bugs/${bug.id}/reassign`, { method: "PATCH", body: JSON.stringify({ developerId }) }),
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Bug reassigned"); setReassignOpen(false); },
+    onSuccess: () => { invalidateBugs(); toast.success("Bug reassigned"); setReassignOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 

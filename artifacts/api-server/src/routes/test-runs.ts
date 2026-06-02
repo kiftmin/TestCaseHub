@@ -4,19 +4,9 @@ import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { logAudit } from "../utils/project.js";
 
 const router = express.Router();
-
-async function logAudit(params: { entityType: string; entityId: number; changedByUserId: number | null; fromStatus?: string | null; toStatus?: string | null; reason?: string | null }) {
-  await db.insert(schema.statusAuditLog).values({
-    entity_type: params.entityType,
-    entity_id: params.entityId,
-    changed_by_user_id: params.changedByUserId,
-    from_status: params.fromStatus ?? null,
-    to_status: params.toStatus ?? null,
-    reason: params.reason ?? null,
-  });
-}
 
 async function recalculateTestRunCompletion(testRunId: number): Promise<void> {
   const allUseCases = await db.query.testRunUseCases.findMany({
@@ -469,7 +459,10 @@ router.get("/:testRunId/access-qr", async (req: AuthenticatedRequest, res, next)
     const allowed = await checkProjectRole(req, testRun.project_id, ["TEST_LEAD"]);
     if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
 
-    const accessUrl = `${req.protocol}://${req.get("host")}/tester/run/${testRunId}`;
+    const forwardedProto = req.headers["x-forwarded-proto"];
+    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) || process.env.PUBLIC_PROTOCOL || req.protocol;
+    const host = process.env.PUBLIC_HOST || req.get("host");
+    const accessUrl = `${proto}://${host}/tester/run/${testRunId}`;
 
     let qrDataUrl = "";
     try {

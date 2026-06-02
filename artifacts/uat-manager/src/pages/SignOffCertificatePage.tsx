@@ -39,7 +39,11 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
   const signMut = useMutation({
     mutationFn: (data: { name: string; role: string; signature: string }) =>
       customFetch(`/projects/${projectId}/sign-off`, { method: "POST", body: JSON.stringify(data) }),
-    onSuccess: () => { queryClient.invalidateQueries(); toast.success("Signature recorded"); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sign-off", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+      toast.success("Signature recorded");
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -81,7 +85,7 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
             <div className="text-on-surface-variant font-label-sm text-label-sm uppercase tracking-tighter">Document ID</div>
             <div className="font-mono font-bold text-on-surface">UCH-{project?.project_code}</div>
             <div className="text-on-surface-variant font-label-sm text-label-sm uppercase tracking-tighter mt-sm">Release Version</div>
-            <div className="font-bold text-on-surface">v{project?.version}.0-stable</div>
+            <div className="font-bold text-on-surface">v{project?.version}</div>
           </div>
         </div>
 

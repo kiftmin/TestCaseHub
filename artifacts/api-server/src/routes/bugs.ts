@@ -4,19 +4,9 @@ import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { logAudit } from "../utils/project.js";
 
 const router = express.Router();
-
-async function logAudit(params: { entityType: string; entityId: number; changedByUserId: number | null; fromStatus?: string | null; toStatus?: string | null; reason?: string | null }) {
-  await db.insert(schema.statusAuditLog).values({
-    entity_type: params.entityType,
-    entity_id: params.entityId,
-    changed_by_user_id: params.changedByUserId,
-    from_status: params.fromStatus ?? null,
-    to_status: params.toStatus ?? null,
-    reason: params.reason ?? null,
-  });
-}
 
 // GET /api/projects/:projectId/bugs
 router.get("/projects/:projectId/bugs", async (req: AuthenticatedRequest, res, next) => {
@@ -85,7 +75,10 @@ router.patch("/bugs/:bugId/assign", async (req: AuthenticatedRequest, res, next)
 router.patch("/bugs/:bugId/status", async (req: AuthenticatedRequest, res, next) => {
   try {
     const bugId = Number(req.params.bugId);
-    const bodySchema = z.object({ status: z.string(), reason: z.string().optional() });
+    const bodySchema = z.object({
+      status: z.enum(["OPEN", "ASSIGNED", "IN_PROGRESS", "RESOLVED", "TEST", "FAILED_TO_RESOLVE", "CLOSED", "REOPENED"]),
+      reason: z.string().optional(),
+    });
     const data = bodySchema.parse(req.body);
 
     const bug = await db.query.bugs.findFirst({ where: eq(schema.bugs.id, bugId) });

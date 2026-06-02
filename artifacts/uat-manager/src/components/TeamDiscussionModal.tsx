@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
-import type { TeamDiscussion, TeamDiscussionParticipant } from "../types/api";
+import type { TeamDiscussion } from "../types/api";
 
 interface Props {
   testRunId: number;
@@ -79,7 +79,7 @@ export function TeamDiscussionModal({ testRunId, onClose }: Props) {
   });
 
   const current = discussion ?? activeDiscussion;
-  const isLead = user?.role === "ADMIN" || user?.role === "TEST_LEAD";
+  const isLead = user?.role === "ADMIN";
 
   const { data: users } = useQuery({
     queryKey: ["users"],

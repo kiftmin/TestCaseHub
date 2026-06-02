@@ -85,9 +85,9 @@ function getDateGroupLabel(dateStr: string): string {
   });
 }
 
-export function AuditTrailPage() {
-  const [, params] = useRoute("/projects/:id/audit");
-  const projectId = params?.id;
+export function AuditTrailPage({ params: propParams }: { params?: { id?: string } } = {}) {
+  const [, routeParams] = useRoute<{ id: string }>("/projects/:id/audit");
+  const projectId = propParams?.id ?? routeParams?.id ?? undefined;
   const [entityType, setEntityType] = useState("");
 
   const {

@@ -4,24 +4,9 @@ import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { bumpProjectVersion, logAudit } from "../utils/project.js";
 
 const router = express.Router();
-
-async function bumpProjectVersion(projectId: number): Promise<void> {
-  await db.update(schema.projects)
-    .set({ version: sql`${schema.projects.version} + 1`, version_date: new Date() })
-    .where(eq(schema.projects.id, projectId));
-}
-
-async function logAudit(params: { entityType: string; entityId: number; changedByUserId: number | null; fromStatus?: string | null; toStatus?: string | null }) {
-  await db.insert(schema.statusAuditLog).values({
-    entity_type: params.entityType,
-    entity_id: params.entityId,
-    changed_by_user_id: params.changedByUserId,
-    from_status: params.fromStatus ?? null,
-    to_status: params.toStatus ?? null,
-  });
-}
 
 // GET /api/use-cases/:useCaseId/test-cases
 router.get("/", async (req: AuthenticatedRequest, res, next) => {
@@ -42,7 +27,7 @@ router.get("/:testCaseId", async (req: AuthenticatedRequest, res, next) => {
     const id = Number(req.params.testCaseId);
     const testCase = await db.query.testCases.findFirst({
       where: eq(schema.testCases.id, id),
-      with: { steps: true },
+      with: { steps: { orderBy: sql`CAST(${schema.testSteps.step_number} AS INTEGER)` } },
     });
     if (!testCase) { res.status(404).json({ message: "Test case not found" }); return; }
     res.json(testCase);

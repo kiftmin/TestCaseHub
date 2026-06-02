@@ -1,7 +1,12 @@
 let authTokenGetter: (() => string | null) | null = null;
+let onUnauthorized: (() => void) | null = null;
 
 export function setAuthTokenGetter(fn: () => string | null) {
   authTokenGetter = fn;
+}
+
+export function setUnauthorizedHandler(fn: (() => void) | null) {
+  onUnauthorized = fn;
 }
 
 export async function customFetch<T>(
@@ -25,7 +30,12 @@ export async function customFetch<T>(
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: response.statusText }));
-    throw new Error(error.message || `HTTP ${response.status}`);
+    const err = new Error(error.message || `HTTP ${response.status}`) as Error & { status?: number };
+    err.status = response.status;
+    if (response.status === 401 && onUnauthorized) {
+      onUnauthorized();
+    }
+    throw err;
   }
 
   if (response.status === 204) {

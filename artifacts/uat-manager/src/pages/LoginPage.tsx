@@ -1,11 +1,14 @@
 import { useState, useEffect } from "react";
-import { useLocation, useSearch } from "wouter";
-import { useMutation } from "@tanstack/react-query";
-import { toast } from "sonner";
+import { useLocation } from "wouter";
 import { customFetch } from "../lib/api-client";
 import { setToken, setStoredUser } from "../lib/auth";
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
+
+interface LoginResponse {
+  token: string;
+  user: { id: number; username: string; role: "ADMIN" | "USER" };
+}
 
 export function LoginPage() {
   useEffect(() => { document.title = "Login | TestCaseHub"; }, []);
@@ -36,7 +39,8 @@ export function LoginPage() {
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "An error occurred";
-      if (message.includes("429")) {
+      const status = (err as Error & { status?: number }).status;
+      if (status === 429 || message.toLowerCase().includes("too many")) {
         setError("Too many login attempts. Please wait before trying again.");
       } else {
         setError(message);

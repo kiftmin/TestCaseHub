@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { bumpProjectVersion, logAudit } from "../utils/project.js";
 
 const router = express.Router();
 
@@ -14,34 +15,6 @@ function generateProjectCode(): string {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return code;
-}
-
-async function bumpProjectVersion(projectId: number): Promise<void> {
-  await db
-    .update(schema.projects)
-    .set({
-      version: sql`${schema.projects.version} + 1`,
-      version_date: new Date(),
-    })
-    .where(eq(schema.projects.id, projectId));
-}
-
-async function logAudit(params: {
-  entityType: string;
-  entityId: number;
-  changedByUserId: number | null;
-  fromStatus?: string | null;
-  toStatus?: string | null;
-  reason?: string | null;
-}): Promise<void> {
-  await db.insert(schema.statusAuditLog).values({
-    entity_type: params.entityType,
-    entity_id: params.entityId,
-    changed_by_user_id: params.changedByUserId,
-    from_status: params.fromStatus ?? null,
-    to_status: params.toStatus ?? null,
-    reason: params.reason ?? null,
-  });
 }
 
 // GET /api/projects - List all projects

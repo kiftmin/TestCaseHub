@@ -204,6 +204,7 @@ export const testRunUseCases = pgTable("test_run_use_cases", {
   use_case_id: integer("use_case_id").notNull().references(() => useCases.id, { onDelete: "cascade" }),
   assigned_tester_id: integer("assigned_tester_id").references(() => users.id, { onDelete: "set null" }),
   free_pass: boolean("free_pass").notNull().default(false),
+  free_pass_reason: text("free_pass_reason"),
   status: text("status", {
     enum: ["pending", "in_progress", "passed", "failed", "passed_by_agreement"],
   }).notNull().default("pending"),
@@ -319,7 +320,7 @@ export const bugs = pgTable("bugs", {
   support_ticket_number: text("support_ticket_number"),
   assigned_developer_id: integer("assigned_developer_id").references(() => users.id, { onDelete: "set null" }),
   status: text("status", {
-    enum: ["OPEN", "ASSIGNED", "IN_PROGRESS", "RESOLVED", "FAILED_TO_RESOLVE", "CLOSED", "REOPENED"],
+    enum: ["OPEN", "ASSIGNED", "IN_PROGRESS", "RESOLVED", "TEST", "FAILED_TO_RESOLVE", "CLOSED", "REOPENED"],
   }).notNull().default("OPEN"),
   developer_notes: text("developer_notes"),
   failed_to_resolve_reason: text("failed_to_resolve_reason"),

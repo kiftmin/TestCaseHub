@@ -4,19 +4,9 @@ import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { logAudit } from "../utils/project.js";
 
 const router = express.Router();
-
-async function logAudit(params: { entityType: string; entityId: number; changedByUserId: number | null; fromStatus?: string | null; toStatus?: string | null; reason?: string | null }) {
-  await db.insert(schema.statusAuditLog).values({
-    entity_type: params.entityType,
-    entity_id: params.entityId,
-    changed_by_user_id: params.changedByUserId,
-    from_status: params.fromStatus ?? null,
-    to_status: params.toStatus ?? null,
-    reason: params.reason ?? null,
-  });
-}
 
 // GET /api/test-runs/:testRunId/defects
 router.get("/test-runs/:testRunId/defects", async (req: AuthenticatedRequest, res, next) => {
@@ -24,6 +14,30 @@ router.get("/test-runs/:testRunId/defects", async (req: AuthenticatedRequest, re
     const testRunId = Number(req.params.testRunId);
     const result = await db.query.defects.findMany({
       where: eq(schema.defects.test_run_id, testRunId),
+      with: { testCase: true, execution: { with: { stepResults: true } }, notes: true },
+    });
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
+// GET /api/projects/:projectId/defects — all defects across all test runs of a project
+// Replaces the N+1 client-side pattern in DefectLogPage.tsx
+router.get("/projects/:projectId/defects", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const projectId = Number(req.params.projectId);
+
+    const testRuns = await db.query.testRuns.findMany({
+      where: eq(schema.testRuns.project_id, projectId),
+      columns: { id: true },
+    });
+    const runIds = testRuns.map((r) => r.id);
+    if (runIds.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const result = await db.query.defects.findMany({
+      where: (d, { inArray }) => inArray(d.test_run_id, runIds),
       with: { testCase: true, execution: { with: { stepResults: true } }, notes: true },
     });
     res.json(result);

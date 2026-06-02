@@ -42,7 +42,7 @@ export function TesterDashboardPage() {
     enabled: !!user?.userId,
   });
 
-  const grouped: Record<number, { run: any; useCases: any[] }> = {};
+  const grouped: Record<number, { run: { id: number; name: string; status: string; scheduled_at: string | null; project?: { name: string } }; useCases: Array<TestRunUseCase & { testRun?: { id: number; name: string; status: string; scheduled_at: string | null; project?: { name: string } } }> }> = {};
   runs?.forEach((r) => {
     const runId = r.test_run_id;
     if (!grouped[runId]) {

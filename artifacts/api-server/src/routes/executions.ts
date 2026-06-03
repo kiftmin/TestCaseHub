@@ -55,6 +55,13 @@ router.post(
         return;
       }
 
+      // Guard: Must be assigned as tester or TEST_LEAD/ADMIN
+      const testerAllowed = await checkProjectRole(req, testRun.project_id, ["TESTER"]);
+      if (!testerAllowed) {
+        res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
+        return;
+      }
+
       // Guard: Cannot execute on a completed run
       if (testRun.status === "completed") {
         res.status(403).json({ message: "Cannot execute on a completed test run" });
@@ -128,6 +135,12 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
       res.status(403).json({
         message: "Entry criteria not confirmed for this test run",
       });
+      return;
+    }
+
+    const testerAllowed = await checkProjectRole(req, execution.testRun.project_id, ["TESTER"]);
+    if (!testerAllowed) {
+      res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
       return;
     }
 
@@ -218,6 +231,12 @@ router.post(
         return;
       }
 
+      const testerAllowed = await checkProjectRole(req, execution.testRun.project_id, ["TESTER"]);
+      if (!testerAllowed) {
+        res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
+        return;
+      }
+
       const [stepResult] = await db
         .insert(schema.stepResults)
         .values({
@@ -260,6 +279,24 @@ router.put(
       });
       if (!existing) {
         res.status(404).json({ message: "Step result not found. Use POST to create." });
+        return;
+      }
+
+      const exec = await db.query.executions.findFirst({
+        where: eq(schema.executions.id, executionId),
+        with: { testRun: true },
+      });
+      if (!exec?.testRun) {
+        res.status(400).json({ message: "Execution has no associated test run" });
+        return;
+      }
+      if (!exec.testRun.entry_confirmed) {
+        res.status(403).json({ message: "Entry criteria not confirmed for this test run" });
+        return;
+      }
+      const testerAllowed = await checkProjectRole(req, exec.testRun.project_id, ["TESTER"]);
+      if (!testerAllowed) {
+        res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
         return;
       }
 

@@ -287,8 +287,6 @@ router.get("/:projectId/sign-off-status", async (req: AuthenticatedRequest, res,
 router.get("/:projectId/uat-summary", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
-    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD", "BUSINESS_OWNER", "UAT_COORDINATOR"]);
-    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
     const testRuns = await db.query.testRuns.findMany({
       where: eq(schema.testRuns.project_id, projectId),
@@ -320,8 +318,6 @@ router.get("/:projectId/uat-summary", async (req: AuthenticatedRequest, res, nex
 router.get("/:projectId/audit-log", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
-    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD", "ADMIN"]);
-    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
     const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
     if (!project) { res.status(404).json({ message: "Project not found" }); return; }

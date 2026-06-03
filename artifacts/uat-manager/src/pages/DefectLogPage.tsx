@@ -12,6 +12,8 @@ const statusBadge: Record<string, string> = {
   "Ready for Testing": "bg-blue-100 text-blue-800 border-blue-200",
   "Accepted by Business": "bg-green-100 text-green-800 border-green-200",
   "Passed by Agreement": "bg-purple-100 text-purple-800 border-purple-200",
+  RESOLVED_DEV: "bg-indigo-100 text-indigo-800 border-indigo-200",
+  REGRESSED: "bg-red-100 text-red-800 border-red-200",
 };
 
 const severityColors: Record<string, string> = {
@@ -38,6 +40,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
   const canManage = role === "TEST_LEAD" || user?.role === "ADMIN";
   const isBusinessOwner = role === "BUSINESS_OWNER" || user?.role === "ADMIN";
   const isTester = role === "TESTER" || user?.role === "ADMIN";
+  const isDeveloper = role === "DEVELOPER" || user?.role === "ADMIN";
 
   const { data: testRuns } = useQuery({
     queryKey: ["project-runs", projectId],
@@ -193,6 +196,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
                   canManage={canManage}
                   isBusinessOwner={isBusinessOwner}
                   isTester={isTester}
+                  isDeveloper={isDeveloper}
                   onMutated={() => { /* parent owns cache invalidation */ }}
                 />
               ))}
@@ -223,6 +227,7 @@ function DefectRow({
   canManage,
   isBusinessOwner,
   isTester,
+  isDeveloper,
   onMutated,
 }: {
   defect: Defect;
@@ -231,6 +236,7 @@ function DefectRow({
   canManage: boolean;
   isBusinessOwner: boolean;
   isTester: boolean;
+  isDeveloper: boolean;
   onMutated: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -303,6 +309,12 @@ function DefectRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const resolveDevMut = useMutation({
+    mutationFn: () => customFetch(`/defects/${defect.id}/resolve`, { method: "PATCH" }),
+    onSuccess: () => { invalidateProject(); toast.success("Defect resolved by developer"); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   return (
     <>
       <tr
@@ -342,13 +354,13 @@ function DefectRow({
                 <button onClick={() => flagRetestMut.mutate()} className="p-1.5 hover:bg-amber-100 hover:text-amber-700 rounded text-on-surface-variant transition-colors" title="Flag for Retest">
                   <span className="material-symbols-outlined text-sm">history_edu</span>
                 </button>
-                <button onClick={() => flagAcceptBizMut.mutate()} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Accept by Business">
-                  <span className="material-symbols-outlined text-sm">check_circle</span>
-                </button>
               </>
             )}
             {isBusinessOwner && isNew && (
               <>
+                <button onClick={() => flagAcceptBizMut.mutate()} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Accept by Business">
+                  <span className="material-symbols-outlined text-sm">check_circle</span>
+                </button>
                 <button onClick={() => { const n = prompt("Acceptance note:"); if (n) bizAcceptMut.mutate(n); }} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Accept">
                   <span className="material-symbols-outlined text-sm">check_circle</span>
                 </button>
@@ -360,6 +372,11 @@ function DefectRow({
             {isTester && isReady && (
               <button onClick={() => setRetestOpen(true)} className="bg-secondary/10 text-secondary hover:bg-secondary hover:text-on-secondary px-3 py-1 rounded-md text-xs font-bold transition-all">
                 Record Retest
+              </button>
+            )}
+            {isDeveloper && (isSubmitted || defect.status === "NEW") && !isClosed && defect.status !== "RESOLVED_DEV" && (
+              <button onClick={() => resolveDevMut.mutate()} className="p-1.5 hover:bg-blue-100 hover:text-blue-700 rounded text-on-surface-variant transition-colors" title="Resolve as Developer">
+                <span className="material-symbols-outlined text-sm">bug_report</span>
               </button>
             )}
                 <button onClick={() => setNoteOpen(true)} className="p-1.5 hover:bg-surface-container-high rounded text-on-surface-variant transition-colors" title="Add Comment">

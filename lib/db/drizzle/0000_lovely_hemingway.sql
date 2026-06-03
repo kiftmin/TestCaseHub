@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS "defects" (
 	"test_case_id" integer NOT NULL,
 	"execution_id" integer NOT NULL,
 	"tester_notes" text,
-	"status" text DEFAULT 'New Defect' NOT NULL,
+	"status" text DEFAULT 'NEW' NOT NULL,
 	"retest_reason" text,
 	"accepted_by_business_note" text,
 	"rejection_log" text,

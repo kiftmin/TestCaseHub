@@ -22,9 +22,16 @@ interface UatSummary {
 }
 
 const DEFECT_STATUS_COLORS: Record<string, string> = {
-  Resolved: "#22c55e",
-  "In Progress": "#f59e0b",
-  Open: "#ef4444",
+  NEW: "#ef4444",
+  TRIAGED: "#f59e0b",
+  ASSIGNED: "#f59e0b",
+  IN_PROGRESS: "#3b82f6",
+  BLOCKED: "#dc2626",
+  RESOLVED_DEV: "#22c55e",
+  READY_FOR_VERIFICATION: "#a855f7",
+  REGRESSED: "#ef4444",
+  CLOSED: "#22c55e",
+  PASSED_BY_AGREEMENT: "#16a34a",
 };
 
 const SEVERITY_COLORS: Record<string, string> = {

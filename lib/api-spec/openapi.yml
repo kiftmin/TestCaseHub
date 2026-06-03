@@ -1410,9 +1410,32 @@ paths:
         "200":
           description: OK
 
-  /defects/{defectId}/flag-accepted-by-business:
+  /defects/{defectId}/assign:
     patch:
-      summary: Flag defect accepted by business
+      summary: Assign defect to developer (TRIAGED → ASSIGNED)
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                assigned_to_user_id: { type: integer }
+                support_ticket_number: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/start:
+    patch:
+      summary: Developer starts work (ASSIGNED → IN_PROGRESS)
       tags: [Defects]
       parameters:
         - in: path
@@ -1424,9 +1447,67 @@ paths:
         "200":
           description: OK
 
-  /defects/{defectId}/business-accept:
+  /defects/{defectId}/block:
     patch:
-      summary: Business owner accepts defect
+      summary: Developer blocks defect (→ BLOCKED)
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/unblock:
+    patch:
+      summary: Unblock defect (BLOCKED → IN_PROGRESS)
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/resolve:
+    patch:
+      summary: Developer resolves defect (→ RESOLVED_DEV)
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                root_cause_category: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/accept:
+    patch:
+      summary: Business owner accepts defect (→ CLOSED)
       tags: [Defects]
       parameters:
         - in: path
@@ -1446,7 +1527,7 @@ paths:
         "200":
           description: OK
 
-  /defects/{defectId}/business-reject:
+  /defects/{defectId}/reject:
     patch:
       summary: Business owner rejects defect
       tags: [Defects]
@@ -1464,6 +1545,28 @@ paths:
               type: object
               properties:
                 reason: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/accept-by-agreement:
+    patch:
+      summary: Business owner accepts by exception (→ PASSED_BY_AGREEMENT)
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
       responses:
         "200":
           description: OK

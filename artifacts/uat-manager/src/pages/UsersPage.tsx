@@ -32,6 +32,7 @@ function UsersPageContent() {
   const [search, setSearch] = useState("");
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [formKey, setFormKey] = useState(0);
   const [passwordDialog, setPasswordDialog] = useState<User | null>(null);
   const [suspendDialog, setSuspendDialog] = useState<User | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<User | null>(null);
@@ -139,6 +140,7 @@ function UsersPageContent() {
         <button
           onClick={() => {
             setEditingUser(null);
+            setFormKey((k) => k + 1);
             setSheetOpen(true);
           }}
           className="flex items-center gap-sm bg-secondary text-on-secondary px-lg py-sm rounded-lg font-label-md shadow-md hover:brightness-110 transition-all"
@@ -346,10 +348,10 @@ function UsersPageContent() {
       </div>
 
       {/* Add/Edit User Sheet */}
-      <SheetUserForm
-        key={editingUser?.id ?? 'new'}
-        open={sheetOpen}
-        user={editingUser}
+        <SheetUserForm
+          key={editingUser?.id ?? formKey}
+          open={sheetOpen}
+          user={editingUser}
         onClose={() => {
           setSheetOpen(false);
           setEditingUser(null);

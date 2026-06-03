@@ -484,7 +484,7 @@ function SheetUserForm({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-lg space-y-lg">
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-lg space-y-lg" autoComplete="off">
           {errors.length > 0 && (
             <div className="p-md bg-error-container border border-error/20 rounded-lg">
               {errors.map((e, i) => (
@@ -513,6 +513,7 @@ function SheetUserForm({
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               disabled={isEdit}
+              autoComplete="off"
             />
           </div>
 
@@ -536,6 +537,7 @@ function SheetUserForm({
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="new-password"
                 />
               </div>
             </div>

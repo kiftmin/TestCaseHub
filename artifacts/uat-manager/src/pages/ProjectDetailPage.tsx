@@ -123,7 +123,7 @@ function ProjectHeader({ projectId }: { projectId: number }) {
   });
   const role = useProjectRole(projectId);
   const canEdit = role === "TEST_LEAD" || role === "ADMIN" || role === "TEST_AUTHOR";
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
   const queryClient = useQueryClient();
 

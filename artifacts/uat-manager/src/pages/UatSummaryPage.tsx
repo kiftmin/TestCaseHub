@@ -9,7 +9,7 @@ interface ExecutionWithDefects {
   id: number;
   defects?: Array<{
     id: number;
-    bugs?: Array<{ id: number; status: string }>;
+    status: string;
   }>;
 }
 
@@ -88,16 +88,13 @@ export function UatSummaryPage({ params: propParams }: { params?: { id?: string 
     [summary],
   );
 
-  const openBugs = useMemo(() => {
+  const openDefects = useMemo(() => {
     if (!testRuns) return 0;
     return testRuns.reduce((count, run) => {
       const executions = ((run as TestRun & { executions?: ExecutionWithDefects[] }).executions) ?? [];
       return count + executions.reduce((ec, exec) => {
         const defects = (exec as ExecutionWithDefects).defects ?? [];
-        return ec + defects.reduce((dc, def) => {
-          const bugs = def.bugs ?? [];
-          return dc + bugs.filter((b) => b.status === "OPEN").length;
-        }, 0);
+        return ec + defects.filter((d) => d.status !== "CLOSED" && d.status !== "PASSED_BY_AGREEMENT").length;
       }, 0);
     }, 0);
   }, [testRuns]);
@@ -171,8 +168,8 @@ export function UatSummaryPage({ params: propParams }: { params?: { id?: string 
               <h3 className="font-headline-md text-headline-md mt-xs">{totalDefects}</h3>
             </div>
             <div className="bg-surface-container-lowest p-lg rounded-xl border border-outline-variant">
-              <p className="font-label-md text-label-md text-on-surface-variant">Open Bugs</p>
-              <h3 className="font-headline-md text-headline-md mt-xs">{openBugs}</h3>
+              <p className="font-label-md text-label-md text-on-surface-variant">Open Defects</p>
+              <h3 className="font-headline-md text-headline-md mt-xs">{openDefects}</h3>
             </div>
           </div>
 

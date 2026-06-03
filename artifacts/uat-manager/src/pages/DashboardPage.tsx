@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { useAuth } from "../hooks/useAuth";
-import type { DashboardSummary, Bug, ProjectAssignment, TestRunUseCase } from "../types/api";
+import type { DashboardSummary, Defect, ProjectAssignment, TestRunUseCase } from "../types/api";
 import { useState, useEffect, useMemo } from "react";
 
 const severityColors: Record<string, string> = {
@@ -13,15 +13,17 @@ const severityColors: Record<string, string> = {
   Cosmetic: "text-green-600",
 };
 
-const bugStatusColors: Record<string, string> = {
-  OPEN: "bg-red-100 text-red-700",
+const defectStatusColors: Record<string, string> = {
+  NEW: "bg-red-100 text-red-700",
+  TRIAGED: "bg-amber-100 text-amber-700",
   ASSIGNED: "bg-amber-100 text-amber-700",
   IN_PROGRESS: "bg-blue-100 text-blue-700",
-  RESOLVED: "bg-green-100 text-green-700",
-  TEST: "bg-purple-100 text-purple-700",
-  FAILED_TO_RESOLVE: "bg-red-100 text-red-700",
+  BLOCKED: "bg-red-100 text-red-700",
+  RESOLVED_DEV: "bg-green-100 text-green-700",
+  READY_FOR_VERIFICATION: "bg-purple-100 text-purple-700",
+  REGRESSED: "bg-red-100 text-red-700",
   CLOSED: "bg-surface-container-high text-on-surface-variant",
-  REOPENED: "bg-amber-100 text-amber-700",
+  PASSED_BY_AGREEMENT: "bg-green-100 text-green-700",
 };
 
 interface RecentExecution {
@@ -38,18 +40,9 @@ interface RecentDefect {
   created_at: string;
   testCase?: { title: string };
 }
-interface RecentBug {
-  id: number;
-  bug_number: number;
-  status: string;
-  created_at: string;
-  developer?: { name: string };
-  defect?: { testCase?: { title: string } };
-}
 interface ActivityResponse {
   recentExecutions?: RecentExecution[];
   recentDefects?: RecentDefect[];
-  recentBugs?: RecentBug[];
 }
 interface TesterRun {
   id: number;
@@ -95,9 +88,9 @@ export function DashboardPage() {
     }
   }, [topRole, currentRole, assignments]);
 
-  const { data: myBugs } = useQuery({
-    queryKey: ["myBugs", user?.userId],
-    queryFn: () => customFetch<Bug[]>(`/dashboard/developer/${user!.userId}/bugs`),
+  const { data: myDefects } = useQuery({
+    queryKey: ["myDefects", user?.userId],
+    queryFn: () => customFetch<Defect[]>(`/dashboard/developer/${user!.userId}/defects`),
     enabled: currentRole === "DEVELOPER" && !!user?.userId,
   });
 
@@ -117,17 +110,17 @@ export function DashboardPage() {
     document.title = "Dashboard | TestCaseHub";
   }, []);
 
-  const myOpenBugs = useMemo(
-    () => myBugs?.filter(b => b.status !== "CLOSED" && b.status !== "RESOLVED") ?? [],
-    [myBugs],
+  const myOpenDefects = useMemo(
+    () => myDefects?.filter(d => d.status !== "CLOSED" && d.status !== "PASSED_BY_AGREEMENT") ?? [],
+    [myDefects],
   );
   const myInProgress = useMemo(
-    () => myBugs?.filter(b => b.status === "IN_PROGRESS" || b.status === "ASSIGNED") ?? [],
-    [myBugs],
+    () => myDefects?.filter(d => d.status === "IN_PROGRESS" || d.status === "ASSIGNED" || d.status === "TRIAGED") ?? [],
+    [myDefects],
   );
   const myResolved = useMemo(
-    () => myBugs?.filter(b => b.status === "RESOLVED" || b.status === "CLOSED") ?? [],
-    [myBugs],
+    () => myDefects?.filter(d => d.status === "RESOLVED_DEV" || d.status === "CLOSED" || d.status === "PASSED_BY_AGREEMENT") ?? [],
+    [myDefects],
   );
 
   const testerRunStats = useMemo(() => {
@@ -159,15 +152,6 @@ export function DashboardPage() {
         description: `Defect #${d.id} ${d.status} — ${d.severity ?? ""}`,
         timestamp: d.created_at,
         detail: d.testCase?.title ?? "",
-      });
-    });
-    activity?.recentBugs?.forEach((b) => {
-      events.push({
-        icon: "bug_report",
-        iconBg: "bg-blue-100 text-blue-700",
-        description: `Bug #${b.bug_number} ${b.status} — assigned to ${b.developer?.name ?? "unassigned"}`,
-        timestamp: b.created_at,
-        detail: b.defect?.testCase?.title ?? "",
       });
     });
     return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 10);
@@ -229,11 +213,11 @@ export function DashboardPage() {
             <span className="material-symbols-outlined text-secondary text-3xl">folder_shared</span>
           </div>
           <p className="font-label-md text-label-md text-on-surface-variant">
-            {currentRole === "DEVELOPER" ? "My Open Bugs" : currentRole === "TESTER" ? "Assigned Runs" : "Active Projects"}
+              {currentRole === "DEVELOPER" ? "My Open Defects" : currentRole === "TESTER" ? "Assigned Runs" : "Active Projects"}
           </p>
           <h3 className="font-headline-md text-headline-md mt-xs">
             {summaryLoading ? <span className="skeleton inline-block w-16 h-8 rounded" /> :
-             currentRole === "DEVELOPER" ? myOpenBugs.length :
+             currentRole === "DEVELOPER" ? myOpenDefects.length :
              currentRole === "TESTER" ? (testerRunStats?.assigned ?? summary?.totalTestRuns ?? 0) :
              summary?.totalProjects ?? 0}
           </h3>
@@ -281,9 +265,9 @@ export function DashboardPage() {
       {currentRole === "DEVELOPER" ? (
         <div className="bg-surface-container-lowest rounded-xl border border-outline-variant overflow-hidden">
           <div className="p-lg border-b border-outline-variant flex justify-between items-center">
-            <h4 className="font-title-sm text-title-sm">My Bug Inbox</h4>
+            <h4 className="font-title-sm text-title-sm">My Defect Inbox</h4>
           </div>
-          {myBugs && myBugs.length > 0 ? (
+          {myDefects && myDefects.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="bg-surface-container-low font-label-md text-label-md text-on-surface-variant">
@@ -297,23 +281,23 @@ export function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-outline-variant font-body-sm text-body-sm">
-                  {[...myBugs].sort((a, b) => new Date(b.opened_at).getTime() - new Date(a.opened_at).getTime()).map((bug) => (
-                    <tr key={bug.id} className="hover:bg-surface-container-low transition-colors cursor-pointer"
-                      onClick={() => navigate(`/projects/${bug.project_id}/bugs`)}
+                  {[...myDefects].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()).map((defect) => (
+                    <tr key={defect.id} className="hover:bg-surface-container-low transition-colors cursor-pointer"
+                      onClick={() => navigate(`/projects/${defect.project_id}/defects`)}
                     >
-                      <td className="px-lg py-md font-bold">#{bug.bug_number}</td>
+                      <td className="px-lg py-md font-bold">#{defect.id}</td>
                       <td className="px-lg py-md">
-                        <span className={`flex items-center gap-xs font-bold ${severityColors[bug.defect?.severity ?? ""] ?? ""}`}>
+                        <span className={`flex items-center gap-xs font-bold ${severityColors[defect.severity ?? ""] ?? ""}`}>
                           <span className="material-symbols-outlined text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>error</span>
-                          {bug.defect?.severity ?? "—"}
+                          {defect.severity ?? "—"}
                         </span>
                       </td>
-                      <td className="px-lg py-md font-medium">{bug.defect?.testCase?.title ?? `Bug #${bug.bug_number}`}</td>
-                      <td className="px-lg py-md text-on-surface-variant">{bug.project?.name ?? ""}</td>
-                      <td className="px-lg py-md text-on-surface-variant">{timeAgo(bug.opened_at)}</td>
+                      <td className="px-lg py-md font-medium">{defect.testCase?.title ?? `Defect #${defect.id}`}</td>
+                      <td className="px-lg py-md text-on-surface-variant">{defect.project?.name ?? ""}</td>
+                      <td className="px-lg py-md text-on-surface-variant">{timeAgo(defect.created_at)}</td>
                       <td className="px-lg py-md">
-                        <span className={`px-sm py-xs rounded text-xs font-bold ${bugStatusColors[bug.status] ?? ""}`}>
-                          {bug.status.replace(/_/g, " ")}
+                        <span className={`px-sm py-xs rounded text-xs font-bold ${defectStatusColors[defect.status] ?? ""}`}>
+                          {defect.status.replace(/_/g, " ")}
                         </span>
                       </td>
                     </tr>
@@ -324,7 +308,7 @@ export function DashboardPage() {
           ) : (
             <div className="p-lg text-center text-on-surface-variant">
               <span className="material-symbols-outlined text-4xl mb-md">bug_report</span>
-              <p>No bugs assigned to you yet.</p>
+              <p>No defects assigned to you yet.</p>
             </div>
           )}
         </div>

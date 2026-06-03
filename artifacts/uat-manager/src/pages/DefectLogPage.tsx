@@ -258,7 +258,7 @@ function DefectRow({
   });
 
   const flagBugMut = useMutation({
-    mutationFn: () => customFetch(`/defects/${defect.id}/flag-bug`, { method: "PATCH" }),
+    mutationFn: () => customFetch(`/defects/${defect.id}/flag-dev`, { method: "PATCH" }),
     onSuccess: () => { invalidateProject(); toast.success("Flagged for bug"); },
     onError: (e: Error) => toast.error(e.message),
   });

@@ -17,7 +17,6 @@ const projectSubLinks: NavItem[] = [
   { href: "/team", label: "Team", icon: "group" },
   { href: "/test-runs", label: "Test Runs", icon: "play_circle" },
   { href: "/defects", label: "Defects", icon: "error" },
-  { href: "/bugs", label: "Bugs", icon: "bug_report" },
   { href: "/sign-off", label: "Sign-off", icon: "verified" },
   { href: "/uat-summary", label: "UAT Summary", icon: "analytics" },
   { href: "/audit", label: "Audit", icon: "history" },

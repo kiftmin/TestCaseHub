@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { CameraCapture } from "../components/CameraCapture";
-import type { TestRun, TestCase, TestStep } from "../types/api";
+import type { TestRun, TestCase, TestStep, Execution } from "../types/api";
 
 interface Draft {
   stepId: number;
@@ -175,6 +175,7 @@ function StepWizard({
 }) {
   const [stepIndex, setStepIndex] = useState(0);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const user = getStoredUser();
 
   const { data: testCase } = useQuery({
     queryKey: ["test-case", testCaseId],
@@ -182,6 +183,21 @@ function StepWizard({
       return customFetch<TestCase & { steps: TestStep[] }>(`/test-cases/${testCaseId}`);
     },
     enabled: !!testCaseId,
+  });
+
+  // Find or create execution for this test case
+  const { data: execution } = useQuery({
+    queryKey: ["tester-execution", testRunId, testCaseId],
+    queryFn: async () => {
+      const run = await customFetch<{ executions?: Execution[] }>(`/test-runs/${testRunId}`);
+      const existing = run.executions?.find((e) => e.test_case_id === testCaseId);
+      if (existing) return existing;
+      return customFetch<Execution>(`/test-runs/${testRunId}/test-cases/${testCaseId}/execute`, {
+        method: "POST",
+        body: JSON.stringify({ tester_id: user!.userId, tester_name: user!.username }),
+      });
+    },
+    enabled: !!testCaseId && !!user,
   });
 
   const steps = useMemo(() => testCase?.steps ?? [], [testCase]);
@@ -219,7 +235,7 @@ function StepWizard({
 
   const submitStepMut = useMutation({
     mutationFn: (data: { passed: boolean; actual_result: string; comments: string }) =>
-      customFetch(`/executions/${testCaseId}/steps/${currentStep!.id}/result`, {
+      customFetch(`/executions/${execution!.id}/steps/${currentStep!.id}/result`, {
         method: "POST",
         body: JSON.stringify(data),
       }),

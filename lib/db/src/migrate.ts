@@ -24,24 +24,28 @@ async function main() {
     migrationsFolder: join(__dirname, "..", "drizzle"),
   });
 
-  console.log("Running raw SQL migrations...");
-  const rawSqlPath = join(__dirname, "..", "drizzle", "0001_add_sort_order.sql");
-  try {
-    const sql = readFileSync(rawSqlPath, "utf-8");
-    const statements = sql.split("--> statement-breakpoint").map(s => s.trim()).filter(Boolean);
-    for (const stmt of statements) {
-      if (stmt) {
-        await client.query(stmt);
-        console.log(`  Executed: ${stmt.substring(0, 80)}...`);
+  const rawSqlFiles = [
+    "0001_add_sort_order.sql",
+  ];
+  for (const file of rawSqlFiles) {
+    const rawSqlPath = join(__dirname, "..", "drizzle", file);
+    try {
+      const sql = readFileSync(rawSqlPath, "utf-8");
+      const statements = sql.split("--> statement-breakpoint").map(s => s.trim()).filter(Boolean);
+      for (const stmt of statements) {
+        if (stmt) {
+          await client.query(stmt);
+          console.log(`  [${file}] Executed: ${stmt.substring(0, 80)}...`);
+        }
       }
-    }
-    console.log("Raw SQL migrations complete!");
-  } catch (err: any) {
-    if (err.code === "ENOENT") {
-      console.log("No raw SQL migration file found, skipping.");
-    } else {
-      console.error("Raw SQL migration failed:", err);
-      process.exit(1);
+      console.log(`Raw SQL migration ${file} complete!`);
+    } catch (err: any) {
+      if (err.code === "ENOENT") {
+        console.log(`No raw SQL migration file found (${file}), skipping.`);
+      } else {
+        console.error(`Raw SQL migration ${file} failed:`, err);
+        process.exit(1);
+      }
     }
   }
 

@@ -83,7 +83,6 @@ function TabNav({
   ] as const;
   const links = [
     { key: "defects", label: "Defects", href: `/projects/${projectId}/defects` },
-    { key: "bugs", label: "Bugs", href: `/projects/${projectId}/bugs` },
     { key: "sign-off", label: "Sign-off", href: `/projects/${projectId}/sign-off` },
   ] as const;
   return (

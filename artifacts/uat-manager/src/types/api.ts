@@ -161,33 +161,37 @@ export interface StepResult {
 
 export interface Defect {
   id: number;
-  test_run_id: number;
+  project_id: number;
+  test_run_id: number | null;
   test_case_id: number;
-  execution_id: number;
+  execution_id: number | null;
+  ticket_type: string;
+  status: string;
+  severity: "Critical" | "Major" | "Minor" | "Cosmetic" | null;
+  priority: "P1" | "P2" | "P3" | "P4" | null;
+  assigned_to_user_id: number | null;
+  support_ticket_number: string | null;
+  root_cause_category: string | null;
+  regression_index: number;
   tester_notes: string | null;
-  status:
-    | "New Defect"
-    | "Submitted to Dev to Fix"
-    | "Ready for Testing"
-    | "Accepted by Business"
-    | "Passed by Agreement";
   retest_reason: string | null;
   accepted_by_business_note: string | null;
   rejection_log: string | null;
-  severity: "Critical" | "Major" | "Minor" | "Cosmetic" | null;
-  priority: "P1" | "P2" | "P3" | "P4" | null;
   created_at: string;
   updated_at: string;
+  resolved_at: string | null;
+  closed_at: string | null;
   testCase?: TestCase;
   retests?: DefectRetest[];
-  bugs?: Bug[];
   notes?: DefectNote[];
+  project?: Project;
 }
 
 export interface DefectRetest {
   id: number;
   defect_id: number;
   test_run_id: number;
+  target_verification_run_id: number | null;
   assigned_tester_id: number | null;
   retest_result: "passed" | "failed" | null;
   retest_notes: string | null;
@@ -196,43 +200,7 @@ export interface DefectRetest {
   created_at: string;
 }
 
-export interface Bug {
-  id: number;
-  project_id: number;
-  defect_id: number;
-  bug_number: number;
-  support_ticket_number: string | null;
-  assigned_developer_id: number | null;
-  status:
-    | "OPEN"
-    | "ASSIGNED"
-    | "IN_PROGRESS"
-    | "RESOLVED"
-    | "TEST"
-    | "FAILED_TO_RESOLVE"
-    | "CLOSED"
-    | "REOPENED";
-  developer_notes: string | null;
-  failed_to_resolve_reason: string | null;
-  root_cause_category: string | null;
-  opened_at: string;
-  assigned_at: string | null;
-  resolved_at: string | null;
-  created_at: string;
-  updated_at: string;
-  defect?: Defect;
-  project?: Project;
-  developer?: User;
-  notes?: BugNote[];
-}
-
-export interface BugNote {
-  id: number;
-  bug_id: number;
-  added_by_user_id: number | null;
-  note: string;
-  created_at: string;
-}
+// Bug and BugNote types removed — consolidated into Defect and DefectNote
 
 export interface StatusAuditLog {
   id: number;

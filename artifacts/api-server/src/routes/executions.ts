@@ -141,14 +141,19 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
     // Auto-create defect on failure — unconditional (spec §7.8)
     let defect = null;
     if (parsed.overall_result === "failed") {
+      const projectId = execution.testRun?.project_id;
+      if (!projectId) {
+        res.status(400).json({ message: "Cannot create defect: test run has no project" });
+        return;
+      }
       [defect] = await db
         .insert(schema.defects)
         .values({
+          project_id: projectId,
           test_run_id: execution.test_run_id!,
           test_case_id: execution.test_case_id,
           execution_id: executionId,
           tester_notes: parsed.notes || "Auto-created from failed execution",
-          status: "New Defect",
         })
         .returning();
     }
@@ -202,6 +207,10 @@ router.post(
         return;
       }
 
+      if (!execution.testRun) {
+        res.status(400).json({ message: "Execution has no associated test run" });
+        return;
+      }
       if (!execution.testRun.entry_confirmed) {
         res.status(403).json({
           message: "Entry criteria not confirmed for this test run",

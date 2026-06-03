@@ -34,7 +34,6 @@ export const usersRelations = relations(users, ({ many }) => ({
   defectRetestsAssigned: many(defectRetests),
   defectsCreated: many(defects),
   defectNotes: many(defectNotes),
-  bugsAssigned: many(bugs),
   testRunUseCasesAssigned: many(testRunUseCases),
   retestedBy: many(defectRetests),
 }));
@@ -67,7 +66,6 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   assignments: many(projectAssignments),
   testRuns: many(testRuns),
   useCases: many(useCases),
-  bugs: many(bugs),
   auditLogs: many(statusAuditLog), // per spec: status_audit_log references projects
 }));
 
@@ -260,35 +258,36 @@ export const stepResultsRelations = relations(stepResults, ({ one }) => ({
 // 13. defects
 export const defects = pgTable("defects", {
   id: serial("id").primaryKey(),
-  test_run_id: integer("test_run_id").notNull().references(() => testRuns.id, { onDelete: "cascade" }),
-  test_case_id: integer("test_case_id").notNull().references(() => testCases.id, { onDelete: "cascade" }),
-  execution_id: integer("execution_id").notNull().references(() => executions.id, { onDelete: "cascade" }),
+  project_id: integer("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
+  test_run_id: integer("test_run_id").references(() => testRuns.id, { onDelete: "cascade" }),
+  test_case_id: integer("test_case_id").references(() => testCases.id, { onDelete: "cascade" }).notNull(),
+  execution_id: integer("execution_id").references(() => executions.id, { onDelete: "cascade" }),
+  ticket_type: text("ticket_type").notNull().default("SOFTWARE_BUG"),
+  status: text("status").notNull().default("NEW"),
+  severity: text("severity"),
+  priority: text("priority"),
+  assigned_to_user_id: integer("assigned_to_user_id").references(() => users.id, { onDelete: "set null" }),
+  support_ticket_number: text("support_ticket_number"),
+  root_cause_category: text("root_cause_category"),
+  regression_index: integer("regression_index").notNull().default(0),
   tester_notes: text("tester_notes"),
-  status: text("status", {
-    enum: [
-      "New Defect",
-      "Submitted to Dev to Fix",
-      "Ready for Testing",
-      "Accepted by Business",
-      "Passed by Agreement",
-    ],
-  }).notNull().default("New Defect"),
   retest_reason: text("retest_reason"),
   accepted_by_business_note: text("accepted_by_business_note"),
   rejection_log: text("rejection_log"),
-  severity: text("severity", { enum: ["Critical", "Major", "Minor", "Cosmetic"] }),
-  priority: text("priority", { enum: ["P1", "P2", "P3", "P4"] }),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  resolved_at: timestamp("resolved_at", { withTimezone: true }),
+  closed_at: timestamp("closed_at", { withTimezone: true }),
 });
 
 export const defectsRelations = relations(defects, ({ one, many }) => ({
+  project: one(projects, { fields: [defects.project_id], references: [projects.id] }),
   testRun: one(testRuns, { fields: [defects.test_run_id], references: [testRuns.id] }),
   testCase: one(testCases, { fields: [defects.test_case_id], references: [testCases.id] }),
   execution: one(executions, { fields: [defects.execution_id], references: [executions.id] }),
+  assignedTo: one(users, { fields: [defects.assigned_to_user_id], references: [users.id] }),
   notes: many(defectNotes),
   retests: many(defectRetests),
-  bugs: many(bugs),
 }));
 
 // 14. defect_retests
@@ -296,6 +295,7 @@ export const defectRetests = pgTable("defect_retests", {
   id: serial("id").primaryKey(),
   defect_id: integer("defect_id").notNull().references(() => defects.id, { onDelete: "cascade" }),
   test_run_id: integer("test_run_id").notNull().references(() => testRuns.id, { onDelete: "cascade" }),
+  target_verification_run_id: integer("target_verification_run_id").references(() => testRuns.id, { onDelete: "set null" }),
   assigned_tester_id: integer("assigned_tester_id").references(() => users.id, { onDelete: "set null" }),
   retest_result: text("retest_result", { enum: ["passed", "failed"] }),
   retest_notes: text("retest_notes"),
@@ -307,41 +307,12 @@ export const defectRetests = pgTable("defect_retests", {
 export const defectRetestsRelations = relations(defectRetests, ({ one }) => ({
   defect: one(defects, { fields: [defectRetests.defect_id], references: [defects.id] }),
   testRun: one(testRuns, { fields: [defectRetests.test_run_id], references: [testRuns.id] }),
+  targetVerificationRun: one(testRuns, { fields: [defectRetests.target_verification_run_id], references: [testRuns.id] }),
   assignedTester: one(users, { fields: [defectRetests.assigned_tester_id], references: [users.id] }),
   retestedBy: one(users, { fields: [defectRetests.retested_by_user_id], references: [users.id] }),
 }));
 
-// 15. bugs
-export const bugs = pgTable("bugs", {
-  id: serial("id").primaryKey(),
-  project_id: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-  defect_id: integer("defect_id").notNull().references(() => defects.id, { onDelete: "cascade" }),
-  bug_number: integer("bug_number").notNull(),
-  support_ticket_number: text("support_ticket_number"),
-  assigned_developer_id: integer("assigned_developer_id").references(() => users.id, { onDelete: "set null" }),
-  status: text("status", {
-    enum: ["OPEN", "ASSIGNED", "IN_PROGRESS", "RESOLVED", "TEST", "FAILED_TO_RESOLVE", "CLOSED", "REOPENED"],
-  }).notNull().default("OPEN"),
-  developer_notes: text("developer_notes"),
-  failed_to_resolve_reason: text("failed_to_resolve_reason"),
-  root_cause_category: text("root_cause_category", {
-    enum: ["Requirements Gap", "Design Defect", "Coding Error", "Environment Issue", "Test Data Issue", "Configuration Error", "Third-Party Integration", "Other"],
-  }),
-  opened_at: timestamp("opened_at", { withTimezone: true }).defaultNow().notNull(),
-  assigned_at: timestamp("assigned_at", { withTimezone: true }),
-  resolved_at: timestamp("resolved_at", { withTimezone: true }),
-  test_at: timestamp("test_at", { withTimezone: true }),
-  failed_to_resolve_at: timestamp("failed_to_resolve_at", { withTimezone: true }),
-  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
-
-export const bugsRelations = relations(bugs, ({ one, many }) => ({
-  project: one(projects, { fields: [bugs.project_id], references: [projects.id] }),
-  defect: one(defects, { fields: [bugs.defect_id], references: [defects.id] }),
-  developer: one(users, { fields: [bugs.assigned_developer_id], references: [users.id] }),
-  notes: many(bugNotes),
-}));
+// 15. (removed - bugs table consolidated into defects)
 
 // 16. status_audit_log
 export const statusAuditLog = pgTable("status_audit_log", {
@@ -409,16 +380,4 @@ export const defectNotesRelations = relations(defectNotes, ({ one }) => ({
   addedBy: one(users, { fields: [defectNotes.added_by_user_id], references: [users.id] }),
 }));
 
-// 20. bug_notes
-export const bugNotes = pgTable("bug_notes", {
-  id: serial("id").primaryKey(),
-  bug_id: integer("bug_id").notNull().references(() => bugs.id, { onDelete: "cascade" }),
-  added_by_user_id: integer("added_by_user_id").references(() => users.id, { onDelete: "set null" }),
-  note: text("note").notNull(),
-  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
-
-export const bugNotesRelations = relations(bugNotes, ({ one }) => ({
-  bug: one(bugs, { fields: [bugNotes.bug_id], references: [bugs.id] }),
-  addedBy: one(users, { fields: [bugNotes.added_by_user_id], references: [users.id] }),
-}));
+// 20. (removed - bug_notes table consolidated into defect_notes)

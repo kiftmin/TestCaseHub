@@ -174,18 +174,26 @@ components:
       type: object
       properties:
         id: { type: integer }
-        test_run_id: { type: integer }
+        project_id: { type: integer }
+        test_run_id: { type: integer, nullable: true }
         test_case_id: { type: integer }
-        execution_id: { type: integer }
+        execution_id: { type: integer, nullable: true }
+        ticket_type: { type: string, enum: [SOFTWARE_BUG, ENVIRONMENT_ISSUE, DATA_ISSUE, REQUIREMENTS_GAP] }
+        status: { type: string, enum: [NEW, TRIAGED, ASSIGNED, IN_PROGRESS, BLOCKED, RESOLVED_DEV, READY_FOR_VERIFICATION, REGRESSED, CLOSED, PASSED_BY_AGREEMENT] }
+        severity: { type: string, nullable: true }
+        priority: { type: string, nullable: true }
+        assigned_to_user_id: { type: integer, nullable: true }
+        support_ticket_number: { type: string, nullable: true }
+        root_cause_category: { type: string, nullable: true }
+        regression_index: { type: integer }
         tester_notes: { type: string, nullable: true }
-        status: { type: string }
         retest_reason: { type: string, nullable: true }
         accepted_by_business_note: { type: string, nullable: true }
         rejection_log: { type: string, nullable: true }
-        severity: { type: string, nullable: true }
-        priority: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        closed_at: { type: string, format: date-time, nullable: true }
 
     DefectRetest:
       type: object
@@ -193,6 +201,7 @@ components:
         id: { type: integer }
         defect_id: { type: integer }
         test_run_id: { type: integer }
+        target_verification_run_id: { type: integer, nullable: true }
         assigned_tester_id: { type: integer, nullable: true }
         retest_result: { type: string, nullable: true }
         retest_notes: { type: string, nullable: true }
@@ -200,7 +209,7 @@ components:
         retested_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
 
-    Bug:
+    # Bug schema is deprecated — consolidated into Defect
       type: object
       properties:
         id: { type: integer }

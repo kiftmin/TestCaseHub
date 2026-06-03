@@ -22,7 +22,7 @@ import dashboardRoutes from "./routes/dashboard.js";
 import assignmentRoutes from "./routes/project-assignments.js";
 import executionRoutes from "./routes/executions.js";
 import defectRoutes from "./routes/defects.js";
-import bugRoutes from "./routes/bugs.js";
+// bugRoutes deprecated — bugs consolidated into defects
 import discussionRoutes from "./routes/discussions.js";
 import attachmentRoutes from "./routes/attachments.js";
 
@@ -67,7 +67,7 @@ api.use("/dashboard", authenticate, dashboardRoutes);
 api.use("/", authenticate, executionRoutes);   // /test-runs/:id/test-cases/:id/execute, /executions/:id, /tester/:id/test-runs
 api.use("/", authenticate, assignmentRoutes);  // /projects/:id/users, /users/:id/projects
 api.use("/", authenticate, defectRoutes);      // /defects, /test-runs/:id/defects
-api.use("/", authenticate, bugRoutes);          // /bugs
+// api.use("/", authenticate, bugRoutes);        // /bugs — deprecated
 api.use("/", authenticate, discussionRoutes);   // /discussions, /test-runs/:id/discussions
 api.use("/", authenticate, attachmentRoutes);   // /upload, /attachments
 

@@ -57,34 +57,27 @@ router.get("/recent-activity", async (req, res, next) => {
       with: { testCase: true, testRun: true },
     });
 
-    const recentBugs = await db.query.bugs.findMany({
-      orderBy: desc(schema.bugs.created_at),
-      limit,
-      with: { defect: true },
-    });
-
     res.json({
       recentExecutions,
       recentDefects,
-      recentBugs,
     });
   } catch (err) {
     next(err);
   }
 });
 
-// GET /api/dashboard/developer/:userId/bugs
-router.get("/developer/:userId/bugs", async (req, res, next) => {
+// GET /api/dashboard/developer/:userId/defects
+router.get("/developer/:userId/defects", async (req, res, next) => {
   try {
     const userId = Number(req.params.userId);
 
-    const assignedBugs = await db.query.bugs.findMany({
-      where: eq(schema.bugs.assigned_developer_id, userId),
-      with: { defect: true, project: true },
-      orderBy: desc(schema.bugs.created_at),
+    const assignedDefects = await db.query.defects.findMany({
+      where: eq(schema.defects.assigned_to_user_id, userId),
+      with: { project: true, testCase: true },
+      orderBy: desc(schema.defects.created_at),
     });
 
-    res.json(assignedBugs);
+    res.json(assignedDefects);
   } catch (err) {
     next(err);
   }

@@ -18,7 +18,7 @@ import { TesterScenarioPage } from "./pages/TesterScenarioPage";
 import { TesterCasePage } from "./pages/TesterCasePage";
 import { TesterProjectRedirect } from "./pages/TesterProjectRedirect";
 import { DefectLogPage } from "./pages/DefectLogPage";
-import { BugListPage } from "./pages/BugListPage";
+// BugListPage deprecated — bugs consolidated into defects
 import { SignOffCertificatePage } from "./pages/SignOffCertificatePage";
 import { UatSummaryPage } from "./pages/UatSummaryPage";
 import { AuditTrailPage } from "./pages/AuditTrailPage";
@@ -105,11 +105,6 @@ export default function App() {
         <Route path="/projects/:id/defects" component={({ params }) => (
           <ProtectedRoute>
             <DefectLogPage params={params as { id: string }} />
-          </ProtectedRoute>
-        )} />
-        <Route path="/projects/:id/bugs" component={({ params }) => (
-          <ProtectedRoute>
-            <BugListPage params={params as { id: string }} />
           </ProtectedRoute>
         )} />
         <Route path="/projects/:id/sign-off" component={({ params }) => (

@@ -64,6 +64,11 @@ router.patch("/defects/:defectId/flag-dev", async (req: AuthenticatedRequest, re
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
 
+    const tr = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, defect.test_run_id), columns: { project_id: true } });
+    if (!tr) { res.status(404).json({ message: "Test run not found" }); return; }
+    const allowed = await checkProjectRole(req, tr.project_id, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
       .set({ status: "ASSIGNED", updated_at: new Date() })
@@ -85,6 +90,11 @@ router.patch("/defects/:defectId/flag-retest", async (req: AuthenticatedRequest,
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    const tr = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, defect.test_run_id), columns: { project_id: true } });
+    if (!tr) { res.status(404).json({ message: "Test run not found" }); return; }
+    const allowed = await checkProjectRole(req, tr.project_id, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
@@ -111,6 +121,11 @@ router.patch("/defects/:defectId/flag-accepted-by-business", async (req: Authent
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
 
+    const tr = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, defect.test_run_id), columns: { project_id: true } });
+    if (!tr) { res.status(404).json({ message: "Test run not found" }); return; }
+    const allowed = await checkProjectRole(req, tr.project_id, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
       .set({ status: "PASSED_BY_AGREEMENT", updated_at: new Date() })
@@ -131,6 +146,11 @@ router.patch("/defects/:defectId/business-accept", async (req: AuthenticatedRequ
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    const tr = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, defect.test_run_id), columns: { project_id: true } });
+    if (!tr) { res.status(404).json({ message: "Test run not found" }); return; }
+    const allowed = await checkProjectRole(req, tr.project_id, ["BUSINESS_OWNER"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
@@ -153,6 +173,11 @@ router.patch("/defects/:defectId/business-reject", async (req: AuthenticatedRequ
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    const tr = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, defect.test_run_id), columns: { project_id: true } });
+    if (!tr) { res.status(404).json({ message: "Test run not found" }); return; }
+    const allowed = await checkProjectRole(req, tr.project_id, ["BUSINESS_OWNER"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
     const oldStatus = defect.status;
     const rejectionLog = data.reason ? JSON.stringify({ reason: data.reason, rejectedAt: new Date().toISOString(), rejectedBy: req.user!.userId }) : "{}";
@@ -179,6 +204,11 @@ router.patch("/defects/:defectId/classify", async (req: AuthenticatedRequest, re
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    const tr = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, defect.test_run_id), columns: { project_id: true } });
+    if (!tr) { res.status(404).json({ message: "Test run not found" }); return; }
+    const allowed = await checkProjectRole(req, tr.project_id, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
     const [updated] = await db.update(schema.defects)
       .set({ severity: data.severity, priority: data.priority, updated_at: new Date() })

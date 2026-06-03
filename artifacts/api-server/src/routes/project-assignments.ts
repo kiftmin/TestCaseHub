@@ -71,7 +71,26 @@ router.get("/users/:userId/projects", async (req: AuthenticatedRequest, res, nex
       where: eq(schema.projectAssignments.user_id, userId),
       with: { project: true },
     });
-    res.json(assignments);
+
+    // Include projects where user is set as test_lead_id but has no TEST_LEAD assignment
+    const existingProjectIds = new Set(assignments.map(a => a.project_id));
+    const leadProjects = await db.query.projects.findMany({
+      where: eq(schema.projects.test_lead_id, userId),
+      columns: { id: true, name: true, project_code: true },
+    });
+
+    const synthetic = leadProjects
+      .filter(p => !existingProjectIds.has(p.id))
+      .map(p => ({
+        id: -p.id,
+        project_id: p.id,
+        user_id: userId,
+        role: "TEST_LEAD" as const,
+        assigned_at: new Date().toISOString(),
+        project: { id: p.id, name: p.name, project_code: p.project_code },
+      }));
+
+    res.json([...assignments, ...synthetic]);
   } catch (err) { next(err); }
 });
 

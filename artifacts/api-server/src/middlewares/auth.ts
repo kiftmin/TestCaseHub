@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { db } from "../db.js";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import * as schema from "@workspace/db";
 
 const SESSION_SECRET = process.env.SESSION_SECRET;
@@ -98,5 +98,16 @@ export async function checkProjectRole(
       ),
   });
 
-  return !!assignment && allowedRoles.includes(assignment.role);
+  if (assignment && allowedRoles.includes(assignment.role)) return true;
+
+  // Implicit TEST_LEAD via projects.test_lead_id
+  if (allowedRoles.includes("TEST_LEAD")) {
+    const project = await db.query.projects.findFirst({
+      where: eq(schema.projects.id, projectId),
+      columns: { test_lead_id: true },
+    });
+    if (project?.test_lead_id === req.user!.userId) return true;
+  }
+
+  return false;
 }

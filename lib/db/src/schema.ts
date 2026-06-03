@@ -263,7 +263,7 @@ export const defects = pgTable("defects", {
   test_case_id: integer("test_case_id").references(() => testCases.id, { onDelete: "cascade" }).notNull(),
   execution_id: integer("execution_id").references(() => executions.id, { onDelete: "cascade" }),
   ticket_type: text("ticket_type").notNull().default("SOFTWARE_BUG"),
-  status: text("status").notNull().default("New Defect"),
+  status: text("status").notNull().default("NEW"),
   severity: text("severity"),
   priority: text("priority"),
   assigned_to_user_id: integer("assigned_to_user_id").references(() => users.id, { onDelete: "set null" }),

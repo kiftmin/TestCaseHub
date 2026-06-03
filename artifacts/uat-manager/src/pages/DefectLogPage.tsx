@@ -7,13 +7,29 @@ import { useProjectRole } from "../hooks/useProjectRole";
 import type { Defect, TestRun } from "../types/api";
 
 const statusBadge: Record<string, string> = {
-  "New Defect": "bg-error-container text-on-error-container border-error/20",
-  "Submitted to Dev to Fix": "bg-amber-100 text-amber-800 border-amber-200",
-  "Ready for Testing": "bg-blue-100 text-blue-800 border-blue-200",
-  "Accepted by Business": "bg-green-100 text-green-800 border-green-200",
-  "Passed by Agreement": "bg-purple-100 text-purple-800 border-purple-200",
+  NEW: "bg-error-container text-on-error-container border-error/20",
+  TRIAGED: "bg-orange-100 text-orange-800 border-orange-200",
+  ASSIGNED: "bg-amber-100 text-amber-800 border-amber-200",
+  IN_PROGRESS: "bg-cyan-100 text-cyan-800 border-cyan-200",
+  BLOCKED: "bg-red-100 text-red-800 border-red-200",
   RESOLVED_DEV: "bg-indigo-100 text-indigo-800 border-indigo-200",
+  READY_FOR_VERIFICATION: "bg-blue-100 text-blue-800 border-blue-200",
   REGRESSED: "bg-red-100 text-red-800 border-red-200",
+  CLOSED: "bg-green-100 text-green-800 border-green-200",
+  PASSED_BY_AGREEMENT: "bg-purple-100 text-purple-800 border-purple-200",
+};
+
+const statusDisplay: Record<string, string> = {
+  NEW: "New",
+  TRIAGED: "Triaged",
+  ASSIGNED: "Assigned",
+  IN_PROGRESS: "In Progress",
+  BLOCKED: "Blocked",
+  RESOLVED_DEV: "Resolved by Dev",
+  READY_FOR_VERIFICATION: "Ready for Verification",
+  REGRESSED: "Regressed",
+  CLOSED: "Closed",
+  PASSED_BY_AGREEMENT: "Passed by Agreement",
 };
 
 const severityColors: Record<string, string> = {
@@ -240,15 +256,21 @@ function DefectRow({
   onMutated: () => void;
 }) {
   const queryClient = useQueryClient();
+  const user = getStoredUser();
   const [classifyOpen, setClassifyOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [retestOpen, setRetestOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
 
-  const isNew = defect.status === "New Defect";
-  const isSubmitted = defect.status === "Submitted to Dev to Fix";
-  const isReady = defect.status === "Ready for Testing";
-  const isClosed = defect.status === "Accepted by Business" || defect.status === "Passed by Agreement";
+  const isNew = defect.status === "NEW";
+  const isTriaged = defect.status === "TRIAGED";
+  const isAssigned = defect.status === "ASSIGNED";
+  const isInProgress = defect.status === "IN_PROGRESS";
+  const isBlocked = defect.status === "BLOCKED";
+  const isResolved = defect.status === "RESOLVED_DEV";
+  const isReady = defect.status === "READY_FOR_VERIFICATION";
+  const isRegressed = defect.status === "REGRESSED";
+  const isClosed = defect.status === "CLOSED" || defect.status === "PASSED_BY_AGREEMENT";
 
   const invalidateProject = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["project-defects"] });
@@ -263,32 +285,62 @@ function DefectRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const flagBugMut = useMutation({
-    mutationFn: () => customFetch(`/defects/${defect.id}/flag-dev`, { method: "PATCH" }),
-    onSuccess: () => { invalidateProject(); toast.success("Flagged for bug"); },
+  const assignMut = useMutation({
+    mutationFn: () => customFetch(`/defects/${defect.id}/assign`, {
+      method: "PATCH",
+      body: JSON.stringify({ assigned_to_user_id: user!.userId }),
+    }),
+    onSuccess: () => { invalidateProject(); toast.success("Assigned to developer"); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const startMut = useMutation({
+    mutationFn: () => customFetch(`/defects/${defect.id}/start`, { method: "PATCH" }),
+    onSuccess: () => { invalidateProject(); toast.success("Work started"); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const blockMut = useMutation({
+    mutationFn: (reason: string) => customFetch(`/defects/${defect.id}/block`, { method: "PATCH", body: JSON.stringify({ reason }) }),
+    onSuccess: () => { invalidateProject(); toast.success("Defect blocked"); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const unblockMut = useMutation({
+    mutationFn: () => customFetch(`/defects/${defect.id}/unblock`, { method: "PATCH" }),
+    onSuccess: () => { invalidateProject(); toast.success("Block lifted"); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const resolveDevMut = useMutation({
+    mutationFn: () => customFetch(`/defects/${defect.id}/resolve`, { method: "PATCH", body: JSON.stringify({ root_cause_category: "Code" }) }),
+    onSuccess: () => { invalidateProject(); toast.success("Defect resolved by developer"); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const flagRetestMut = useMutation({
-    mutationFn: () => customFetch(`/defects/${defect.id}/flag-retest`, { method: "PATCH", body: JSON.stringify({ reason: "Flagged for retest" }) }),
-    onSuccess: () => { invalidateProject(); toast.success("Flagged for retest"); },
+    mutationFn: () => customFetch(`/defects/${defect.id}/flag-retest`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason: "Ready for verification", targetVerificationRunId: defect.test_run_id }),
+    }),
+    onSuccess: () => { invalidateProject(); toast.success("Sent for verification"); },
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const flagAcceptBizMut = useMutation({
-    mutationFn: () => customFetch(`/defects/${defect.id}/flag-accepted-by-business`, { method: "PATCH" }),
-    onSuccess: () => { invalidateProject(); toast.success("Accepted by business"); },
+  const exceptionMut = useMutation({
+    mutationFn: (note: string) => customFetch(`/defects/${defect.id}/accept-by-agreement`, { method: "PATCH", body: JSON.stringify({ note }) }),
+    onSuccess: () => { invalidateProject(); toast.success("Accepted by agreement"); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const bizAcceptMut = useMutation({
-    mutationFn: (note: string) => customFetch(`/defects/${defect.id}/business-accept`, { method: "PATCH", body: JSON.stringify({ note }) }),
+    mutationFn: (note: string) => customFetch(`/defects/${defect.id}/accept`, { method: "PATCH", body: JSON.stringify({ note }) }),
     onSuccess: () => { invalidateProject(); toast.success("Defect accepted"); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const bizRejectMut = useMutation({
-    mutationFn: (reason: string) => customFetch(`/defects/${defect.id}/business-reject`, { method: "PATCH", body: JSON.stringify({ reason }) }),
+    mutationFn: (reason: string) => customFetch(`/defects/${defect.id}/reject`, { method: "PATCH", body: JSON.stringify({ reason }) }),
     onSuccess: () => { invalidateProject(); toast.success("Defect rejected"); setRejectOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -309,12 +361,6 @@ function DefectRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const resolveDevMut = useMutation({
-    mutationFn: () => customFetch(`/defects/${defect.id}/resolve`, { method: "PATCH" }),
-    onSuccess: () => { invalidateProject(); toast.success("Defect resolved by developer"); },
-    onError: (e: Error) => toast.error(e.message),
-  });
-
   return (
     <>
       <tr
@@ -331,7 +377,7 @@ function DefectRow({
         </td>
         <td className="p-md">
           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border ${statusBadge[defect.status] ?? ""}`}>
-            {defect.status}
+            {statusDisplay[defect.status] ?? defect.status}
           </span>
         </td>
         <td className={`p-md font-body-sm text-body-sm ${severityColors[defect.severity ?? ""] ?? ""}`}>
@@ -343,24 +389,57 @@ function DefectRow({
         </td>
         <td className="p-md text-right" onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-end gap-1 opacity-40 group-hover:opacity-100 transition-opacity">
+            {/* TEST_LEAD: Classify (NEW → TRIAGED) */}
             {canManage && isNew && (
-              <>
-                <button onClick={() => setClassifyOpen(true)} className="p-1.5 hover:bg-secondary-container hover:text-on-secondary-container rounded text-on-surface-variant transition-colors" title="Classify">
-                  <span className="material-symbols-outlined text-sm">category</span>
-                </button>
-                <button onClick={() => flagBugMut.mutate()} className="p-1.5 hover:bg-error-container hover:text-on-error-container rounded text-on-surface-variant transition-colors" title="Flag for Bug">
-                  <span className="material-symbols-outlined text-sm">flag</span>
-                </button>
-                <button onClick={() => flagRetestMut.mutate()} className="p-1.5 hover:bg-amber-100 hover:text-amber-700 rounded text-on-surface-variant transition-colors" title="Flag for Retest">
-                  <span className="material-symbols-outlined text-sm">history_edu</span>
-                </button>
-              </>
+              <button onClick={() => setClassifyOpen(true)} className="p-1.5 hover:bg-secondary-container hover:text-on-secondary-container rounded text-on-surface-variant transition-colors" title="Classify">
+                <span className="material-symbols-outlined text-sm">category</span>
+              </button>
             )}
-            {isBusinessOwner && isNew && (
+            {/* TEST_LEAD: Assign (NEW | TRIAGED → ASSIGNED) */}
+            {canManage && (isNew || isTriaged) && (
+              <button onClick={() => assignMut.mutate()} className="p-1.5 hover:bg-amber-100 hover:text-amber-700 rounded text-on-surface-variant transition-colors" title="Assign to Developer">
+                <span className="material-symbols-outlined text-sm">assignment</span>
+              </button>
+            )}
+            {/* DEVELOPER: Start (ASSIGNED → IN_PROGRESS) */}
+            {isDeveloper && isAssigned && (
+              <button onClick={() => startMut.mutate()} className="p-1.5 hover:bg-cyan-100 hover:text-cyan-700 rounded text-on-surface-variant transition-colors" title="Start Work">
+                <span className="material-symbols-outlined text-sm">play_arrow</span>
+              </button>
+            )}
+            {/* DEVELOPER: Resolve (ASSIGNED | IN_PROGRESS → RESOLVED_DEV) */}
+            {isDeveloper && (isAssigned || isInProgress) && (
+              <button onClick={() => resolveDevMut.mutate()} className="p-1.5 hover:bg-blue-100 hover:text-blue-700 rounded text-on-surface-variant transition-colors" title="Resolve as Developer">
+                <span className="material-symbols-outlined text-sm">bug_report</span>
+              </button>
+            )}
+            {/* DEVELOPER: Block (ASSIGNED | IN_PROGRESS → BLOCKED) */}
+            {isDeveloper && (isAssigned || isInProgress) && (
+              <button onClick={() => { const r = prompt("Block reason:"); if (r) blockMut.mutate(r); }} className="p-1.5 hover:bg-red-100 hover:text-red-700 rounded text-on-surface-variant transition-colors" title="Block">
+                <span className="material-symbols-outlined text-sm">block</span>
+              </button>
+            )}
+            {/* DEVELOPER | TEST_LEAD: Unblock (BLOCKED → IN_PROGRESS) */}
+            {(isDeveloper || canManage) && isBlocked && (
+              <button onClick={() => unblockMut.mutate()} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Unblock">
+                <span className="material-symbols-outlined text-sm">check_circle</span>
+              </button>
+            )}
+            {/* TEST_LEAD: Flag Retest (RESOLVED_DEV → READY_FOR_VERIFICATION) */}
+            {canManage && isResolved && (
+              <button onClick={() => flagRetestMut.mutate()} className="p-1.5 hover:bg-amber-100 hover:text-amber-700 rounded text-on-surface-variant transition-colors" title="Send for Verification">
+                <span className="material-symbols-outlined text-sm">history_edu</span>
+              </button>
+            )}
+            {/* TESTER: Record Retest Result (READY_FOR_VERIFICATION → CLOSED | REGRESSED) */}
+            {isTester && isReady && (
+              <button onClick={() => setRetestOpen(true)} className="bg-secondary/10 text-secondary hover:bg-secondary hover:text-on-secondary px-3 py-1 rounded-md text-xs font-bold transition-all">
+                Record Retest
+              </button>
+            )}
+            {/* BUSINESS_OWNER: Accept (READY_FOR_VERIFICATION → CLOSED) */}
+            {isBusinessOwner && isReady && (
               <>
-                <button onClick={() => flagAcceptBizMut.mutate()} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Accept by Business">
-                  <span className="material-symbols-outlined text-sm">check_circle</span>
-                </button>
                 <button onClick={() => { const n = prompt("Acceptance note:"); if (n) bizAcceptMut.mutate(n); }} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Accept">
                   <span className="material-symbols-outlined text-sm">check_circle</span>
                 </button>
@@ -369,25 +448,21 @@ function DefectRow({
                 </button>
               </>
             )}
-            {isTester && isReady && (
-              <button onClick={() => setRetestOpen(true)} className="bg-secondary/10 text-secondary hover:bg-secondary hover:text-on-secondary px-3 py-1 rounded-md text-xs font-bold transition-all">
-                Record Retest
+            {/* BUSINESS_OWNER: Accept by Agreement (any non-terminal → PASSED_BY_AGREEMENT) */}
+            {isBusinessOwner && !isClosed && !isNew && (
+              <button onClick={() => { const n = prompt("Business justification:"); if (n) exceptionMut.mutate(n); }} className="p-1.5 hover:bg-purple-100 hover:text-purple-700 rounded text-on-surface-variant transition-colors" title="Accept by Agreement">
+                <span className="material-symbols-outlined text-sm">approval</span>
               </button>
             )}
-            {isDeveloper && (isSubmitted || defect.status === "NEW") && !isClosed && defect.status !== "RESOLVED_DEV" && (
-              <button onClick={() => resolveDevMut.mutate()} className="p-1.5 hover:bg-blue-100 hover:text-blue-700 rounded text-on-surface-variant transition-colors" title="Resolve as Developer">
-                <span className="material-symbols-outlined text-sm">bug_report</span>
-              </button>
-            )}
-                <button onClick={() => setNoteOpen(true)} className="p-1.5 hover:bg-surface-container-high rounded text-on-surface-variant transition-colors" title="Add Comment">
-                  <span className="material-symbols-outlined text-sm">comment</span>
-                </button>
+            <button onClick={() => setNoteOpen(true)} className="p-1.5 hover:bg-surface-container-high rounded text-on-surface-variant transition-colors" title="Add Comment">
+              <span className="material-symbols-outlined text-sm">comment</span>
+            </button>
           </div>
         </td>
       </tr>
       <tr className={`bg-surface-container-lowest ${expanded ? "" : "hidden"}`}>
         <td className="p-0" colSpan={7}>
-          <div className={`p-lg border-l-4 ${isNew ? "border-error" : isSubmitted ? "border-amber-400" : isReady ? "border-blue-500" : "border-green-500"} ml-md my-sm space-y-md`}>
+          <div className={`p-lg border-l-4 ${isNew ? "border-error" : isAssigned ? "border-amber-400" : isReady ? "border-blue-500" : "border-green-500"} ml-md my-sm space-y-md`}>
             <div className="grid grid-cols-2 gap-xl">
               <div>
                 <h4 className="text-xs font-bold text-outline uppercase mb-sm">Tester Notes</h4>

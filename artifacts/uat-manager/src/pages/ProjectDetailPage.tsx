@@ -128,7 +128,7 @@ function ProjectHeader({ projectId }: { projectId: number }) {
   const queryClient = useQueryClient();
 
   const editMutation = useMutation({
-    mutationFn: (data: Record<string, string | null>) =>
+    mutationFn: (data: Record<string, unknown>) =>
       customFetch<Project>(`/projects/${projectId}`, {
         method: "PUT",
         body: JSON.stringify(data),
@@ -212,7 +212,7 @@ function ProjectHeader({ projectId }: { projectId: number }) {
         open={editOpen}
         project={project}
         saving={editMutation.isPending}
-        onSave={(data) => editMutation.mutate(data)}
+        onSave={(data) => editMutation.mutate(data as Record<string, unknown>)}
         onClose={() => setEditOpen(false)}
       />
       {!collapsed && (
@@ -279,15 +279,20 @@ function EditProjectSlideOver({
   open: boolean;
   project: Project;
   saving: boolean;
-  onSave: (data: Record<string, string | null>) => void;
+  onSave: (data: Record<string, unknown>) => void;
   onClose: () => void;
 }) {
+  const { data: users } = useQuery({
+    queryKey: ["users"],
+    queryFn: () => customFetch<import("../types/api").User[]>("/users"),
+  });
   const [form, setForm] = useState({
     name: project.name,
     module_name: project.module_name,
     designed_by: project.designed_by,
     design_date: project.design_date,
     test_link: project.test_link ?? "",
+    test_lead_id: project.test_lead_id ?? null,
     objectives: project.objectives ?? "",
     scope: project.scope ?? "",
     out_of_scope: project.out_of_scope ?? "",
@@ -298,6 +303,8 @@ function EditProjectSlideOver({
 
   const set = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [field]: e.target.value }));
+  const setSelect = (field: string) => (e: React.ChangeEvent<HTMLSelectElement>) =>
+    setForm((f) => ({ ...f, [field]: e.target.value ? Number(e.target.value) : null }));
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -311,6 +318,7 @@ function EditProjectSlideOver({
 
     onSave({
       ...form,
+      test_lead_id: form.test_lead_id,
       test_link: form.test_link.trim() || null,
       objectives: form.objectives.trim() || null,
       scope: form.scope.trim() || null,
@@ -409,6 +417,24 @@ function EditProjectSlideOver({
                   />
                 </div>
               </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-label-sm font-label-sm text-on-surface-variant block">Test Lead</label>
+              <select
+                className="w-full bg-white border border-outline-variant rounded-lg px-md py-sm font-body-base focus:ring-2 focus:ring-secondary focus:border-secondary outline-none"
+                value={form.test_lead_id ?? ""}
+                onChange={setSelect("test_lead_id")}
+              >
+                <option value="">None (no test lead)</option>
+                {users
+                  ?.filter((u) => u.is_active)
+                  .map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name} ({u.username})
+                    </option>
+                  ))}
+              </select>
             </div>
 
             <div className="space-y-lg">

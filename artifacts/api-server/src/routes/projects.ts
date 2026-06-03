@@ -135,7 +135,7 @@ router.put("/:projectId", async (req: AuthenticatedRequest, res, next) => {
       module_name: z.string().optional(),
       design_date: z.string().optional(),
       test_link: z.string().nullable().optional(),
-      test_lead_id: z.number().optional(),
+      test_lead_id: z.number().nullable().optional(),
       objectives: z.string().nullable().optional(),
       scope: z.string().nullable().optional(),
       out_of_scope: z.string().nullable().optional(),
@@ -149,6 +149,24 @@ router.put("/:projectId", async (req: AuthenticatedRequest, res, next) => {
       .where(eq(schema.projects.id, projectId))
       .returning();
 
+    // Sync project_assignments when test_lead_id changes
+    if (data.test_lead_id !== undefined) {
+      // Remove existing TEST_LEAD assignment for this project
+      await db.delete(schema.projectAssignments)
+        .where(and(
+          eq(schema.projectAssignments.project_id, projectId),
+          eq(schema.projectAssignments.role, "TEST_LEAD"),
+        ));
+      // Add new TEST_LEAD assignment if a user was selected
+      if (data.test_lead_id !== null) {
+        await db.insert(schema.projectAssignments).values({
+          project_id: projectId,
+          user_id: data.test_lead_id,
+          role: "TEST_LEAD",
+        });
+      }
+    }
+
     await bumpProjectVersion(projectId);
     await logAudit({
       entityType: "project",
@@ -157,7 +175,12 @@ router.put("/:projectId", async (req: AuthenticatedRequest, res, next) => {
       toStatus: "updated",
     });
 
-    res.json(project);
+    const updatedProject = await db.query.projects.findFirst({
+      where: eq(schema.projects.id, projectId),
+      with: { testLead: true },
+    });
+
+    res.json(updatedProject);
   } catch (err) { next(err); }
 });
 

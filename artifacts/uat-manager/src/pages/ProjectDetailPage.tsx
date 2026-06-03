@@ -124,6 +124,22 @@ function ProjectHeader({ projectId }: { projectId: number }) {
   const role = useProjectRole(projectId);
   const canEdit = role === "TEST_LEAD" || role === "ADMIN" || role === "TEST_AUTHOR";
   const [collapsed, setCollapsed] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const queryClient = useQueryClient();
+
+  const editMutation = useMutation({
+    mutationFn: (data: Record<string, string | null>) =>
+      customFetch<Project>(`/projects/${projectId}`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+      setEditOpen(false);
+      toast.success("Project updated");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
 
   if (isLoading) {
     return (
@@ -178,7 +194,7 @@ function ProjectHeader({ projectId }: { projectId: number }) {
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                /* Edit project - could open slide-over in future */
+                setEditOpen(true);
               }}
               className="flex items-center gap-sm text-secondary font-label-md text-label-md border border-secondary px-md py-1 rounded-lg hover:bg-secondary/5 transition-all"
             >
@@ -191,6 +207,14 @@ function ProjectHeader({ projectId }: { projectId: number }) {
           </span>
         </div>
       </div>
+      <EditProjectSlideOver
+        key={project.id}
+        open={editOpen}
+        project={project}
+        saving={editMutation.isPending}
+        onSave={(data) => editMutation.mutate(data)}
+        onClose={() => setEditOpen(false)}
+      />
       {!collapsed && (
         <div className="p-md pt-0 grid grid-cols-1 md:grid-cols-3 gap-lg border-t border-outline-variant/50 bg-surface-container-lowest">
           <div className="mt-md">
@@ -240,6 +264,223 @@ function ProjectHeader({ projectId }: { projectId: number }) {
         </div>
       )}
     </section>
+  );
+}
+
+/* ───────────── Edit Project Slide-Over ───────────── */
+
+function EditProjectSlideOver({
+  open,
+  project,
+  saving,
+  onSave,
+  onClose,
+}: {
+  open: boolean;
+  project: Project;
+  saving: boolean;
+  onSave: (data: Record<string, string | null>) => void;
+  onClose: () => void;
+}) {
+  const [form, setForm] = useState({
+    name: project.name,
+    module_name: project.module_name,
+    designed_by: project.designed_by,
+    design_date: project.design_date,
+    test_link: project.test_link ?? "",
+    objectives: project.objectives ?? "",
+    scope: project.scope ?? "",
+    out_of_scope: project.out_of_scope ?? "",
+    entry_criteria: project.entry_criteria ?? "",
+    exit_criteria: project.exit_criteria ?? "",
+  });
+  const [errors, setErrors] = useState<string[]>([]);
+
+  const set = (field: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+    setForm((f) => ({ ...f, [field]: e.target.value }));
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const errs: string[] = [];
+    if (!form.name.trim()) errs.push("Project Name is required");
+    if (!form.module_name.trim()) errs.push("Module Name is required");
+    if (!form.designed_by.trim()) errs.push("Designed By is required");
+    if (!form.design_date.trim()) errs.push("Design Date is required");
+    setErrors(errs);
+    if (errs.length > 0) return;
+
+    onSave({
+      ...form,
+      test_link: form.test_link.trim() || null,
+      objectives: form.objectives.trim() || null,
+      scope: form.scope.trim() || null,
+      out_of_scope: form.out_of_scope.trim() || null,
+      entry_criteria: form.entry_criteria.trim() || null,
+      exit_criteria: form.exit_criteria.trim() || null,
+    });
+  };
+
+  return (
+    <div
+      className={`fixed inset-0 z-[100] ${open ? "" : "invisible"}`}
+      style={{ pointerEvents: open ? "auto" : "none" }}
+    >
+      <div
+        className="absolute inset-0"
+        style={{ backgroundColor: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)" }}
+        onClick={onClose}
+      />
+      <div className="absolute inset-y-0 right-0 flex max-w-full pl-10">
+        <div
+          className={`w-screen max-w-xl transform transition-transform duration-500 ease-in-out bg-surface-container-lowest shadow-2xl flex flex-col ${
+            open ? "translate-x-0" : "translate-x-full"
+          }`}
+        >
+          <div className="flex items-center justify-between px-lg py-md border-b border-outline-variant bg-surface">
+            <h2 className="font-headline-md text-headline-md text-primary">Edit Project</h2>
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-surface-container-high rounded-full transition-colors"
+            >
+              <span className="material-symbols-outlined text-on-surface-variant">close</span>
+            </button>
+          </div>
+
+          <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-lg space-y-lg">
+            {errors.length > 0 && (
+              <div className="p-md bg-error-container border border-error/20 rounded-lg">
+                {errors.map((e, i) => (
+                  <p key={i} className="font-body-sm text-on-error-container">{e}</p>
+                ))}
+              </div>
+            )}
+
+            <div className="space-y-1">
+              <label className="text-label-sm font-label-sm text-on-surface-variant block">Project Name</label>
+              <input
+                className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all font-semibold"
+                placeholder="Project title"
+                value={form.name}
+                onChange={set("name")}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-md">
+              <div className="space-y-1">
+                <label className="text-label-sm font-label-sm text-on-surface-variant block">Module</label>
+                <input
+                  className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all"
+                  placeholder="Enter module"
+                  value={form.module_name}
+                  onChange={set("module_name")}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-label-sm font-label-sm text-on-surface-variant block">Designed By</label>
+                <input
+                  className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all"
+                  placeholder="Full name"
+                  value={form.designed_by}
+                  onChange={set("designed_by")}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-md">
+              <div className="space-y-1">
+                <label className="text-label-sm font-label-sm text-on-surface-variant block">Design Date</label>
+                <input
+                  className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all"
+                  type="date"
+                  value={form.design_date}
+                  onChange={set("design_date")}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-label-sm font-label-sm text-on-surface-variant block">Test Link (URL)</label>
+                <div className="relative">
+                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-[18px]">link</span>
+                  <input
+                    className="w-full bg-surface border border-outline-variant rounded-lg pl-10 pr-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all"
+                    placeholder="https://..."
+                    type="url"
+                    value={form.test_link}
+                    onChange={set("test_link")}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-lg">
+              <div className="space-y-1">
+                <label className="text-label-sm font-label-sm text-on-surface-variant block">Objectives</label>
+                <textarea
+                  className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all resize-none"
+                  rows={2}
+                  value={form.objectives}
+                  onChange={set("objectives")}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-label-sm font-label-sm text-on-surface-variant block">Scope</label>
+                <textarea
+                  className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all resize-none"
+                  rows={2}
+                  value={form.scope}
+                  onChange={set("scope")}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-label-sm font-label-sm text-on-surface-variant block">Out of Scope</label>
+                <textarea
+                  className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all resize-none"
+                  rows={2}
+                  value={form.out_of_scope}
+                  onChange={set("out_of_scope")}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-md">
+                <div className="space-y-1">
+                  <label className="text-label-sm font-label-sm text-on-surface-variant block">Entry Criteria</label>
+                  <textarea
+                    className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all resize-none"
+                    rows={3}
+                    value={form.entry_criteria}
+                    onChange={set("entry_criteria")}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-label-sm font-label-sm text-on-surface-variant block">Exit Criteria</label>
+                  <textarea
+                    className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base focus:border-secondary focus:ring-1 focus:ring-secondary outline-none transition-all resize-none"
+                    rows={3}
+                    value={form.exit_criteria}
+                    onChange={set("exit_criteria")}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="p-lg bg-surface border-t border-outline-variant flex justify-end gap-md sticky bottom-0 -mx-lg -mb-lg">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-lg py-sm rounded-lg border border-outline-variant text-on-surface font-label-md hover:bg-surface-container-low transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="px-lg py-sm rounded-lg bg-secondary text-on-secondary font-label-md hover:brightness-110 shadow-md transition-all disabled:opacity-50"
+              >
+                {saving ? "Saving..." : "Save Changes"}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
   );
 }
 

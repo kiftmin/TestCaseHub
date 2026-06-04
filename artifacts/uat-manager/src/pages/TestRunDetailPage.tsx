@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -707,6 +707,16 @@ function AssignTester({
 
 /* ───────── EXECUTION MODAL ───────── */
 
+// Module-level cache to persist execution session data across component remounts
+const executionSessionCache = new Map<number, {
+  execution: Execution | null;
+  results: Record<number, { passed: boolean | null; actual_result: string; comments: string }>;
+  overallResult: string;
+  testerNotes: string;
+  currentStep: number;
+  proofImages: Record<number, string>;
+}>();
+
 function ExecutionModal({
   testRunId,
   testCase,
@@ -723,7 +733,6 @@ function ExecutionModal({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const activeTestCaseRef = useRef<number | null>(null);
   const [mode, setMode] = useState<"guided" | "quick">("guided");
   const [currentStep, setCurrentStep] = useState(0);
   const [execution, setExecution] = useState<Execution | null>(null);
@@ -734,6 +743,11 @@ function ExecutionModal({
   const [offlineBanner, setOfflineBanner] = useState(false);
   const [proofImages, setProofImages] = useState<Record<number, string>>({});
   const [showConfirm, setShowConfirm] = useState(false);
+
+  const handleClose = useCallback(() => {
+    executionSessionCache.delete(testCase.id);
+    onClose();
+  }, [testCase.id, onClose]);
 
   const handleProofUpload = async (stepId: number, file: File) => {
     try {
@@ -771,17 +785,17 @@ function ExecutionModal({
   });
 
   useEffect(() => {
-    if (activeTestCaseRef.current === testCase.id && execution) {
+    // Restore from cache if available (handles component remount mid-session)
+    const cached = executionSessionCache.get(testCase.id);
+    if (cached) {
+      setExecution(cached.execution);
+      setResults(cached.results);
+      setOverallResult(cached.overallResult);
+      setTesterNotes(cached.testerNotes);
+      setCurrentStep(cached.currentStep);
+      setProofImages(cached.proofImages);
       return;
     }
-    activeTestCaseRef.current = testCase.id;
-    setExecution(null);
-    setResults({});
-    setOverallResult("");
-    setTesterNotes("");
-    setCurrentStep(0);
-    setProofImages({});
-    setOfflineBanner(false);
 
     if (!entryConfirmed) return;
     let cancelled = false;
@@ -849,6 +863,20 @@ function ExecutionModal({
     initExec();
     return () => { cancelled = true; };
   }, [entryConfirmed, testRunId, testCase.id]);
+
+  // Sync state to cache whenever execution data changes (survives component remounts)
+  useEffect(() => {
+    if (execution) {
+      executionSessionCache.set(testCase.id, {
+        execution,
+        results,
+        overallResult,
+        testerNotes,
+        currentStep,
+        proofImages,
+      });
+    }
+  }, [testCase.id, execution, results, overallResult, testerNotes, currentStep, proofImages]);
 
   const stepList = steps ?? [];
   const totalSteps = stepList.length;
@@ -954,6 +982,7 @@ function ExecutionModal({
       });
 
       queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+      executionSessionCache.delete(testCase.id);
       onClose();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "An error occurred");
@@ -965,7 +994,8 @@ function ExecutionModal({
   if (!entryConfirmed) {
     return (
       <div className="fixed inset-0 z-[100] flex items-center justify-center">
-        <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+        <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={handleClose}
+ />
         <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-md mx-4 p-lg space-y-md">
           <div className="flex items-start gap-md">
             <span className="material-symbols-outlined text-error">lock</span>
@@ -976,7 +1006,8 @@ function ExecutionModal({
               </p>
             </div>
           </div>
-          <button onClick={onClose} className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md">
+          <button onClick={handleClose}
+ className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md">
             Close
           </button>
       </div>
@@ -1032,7 +1063,8 @@ function ConfirmDialog({
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={handleClose}
+ />
       <div className="relative bg-surface-container-lowest w-full max-w-[800px] border border-outline-variant rounded-xl shadow-xl flex flex-col overflow-hidden max-h-[90vh]">
         {/* Offline banner */}
         {offlineBanner && (
@@ -1053,7 +1085,8 @@ function ConfirmDialog({
               <p className="font-label-sm text-label-sm text-on-surface-variant">[{testCase.case_number}] {testCase.title}</p>
             </div>
           </div>
-          <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-surface-variant flex items-center justify-center">
+          <button onClick={handleClose}
+ className="w-8 h-8 rounded-full hover:bg-surface-variant flex items-center justify-center">
             <span className="material-symbols-outlined">close</span>
           </button>
         </div>

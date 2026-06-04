@@ -56,7 +56,7 @@ router.post(
       }
 
       // Guard: Must be assigned as tester or TEST_LEAD/ADMIN
-      const testerAllowed = await checkProjectRole(req, testRun.project_id, ["TESTER"]);
+      const testerAllowed = await checkProjectRole(req, testRun.project_id, ["TESTER", "TEST_LEAD"]);
       if (!testerAllowed) {
         res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
         return;
@@ -138,7 +138,7 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
       return;
     }
 
-    const testerAllowed = await checkProjectRole(req, execution.testRun.project_id, ["TESTER"]);
+    const testerAllowed = await checkProjectRole(req, execution.testRun.project_id, ["TESTER", "TEST_LEAD"]);
     if (!testerAllowed) {
       res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
       return;
@@ -159,10 +159,16 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
         res.status(400).json({ message: "Cannot create defect: test run has no project" });
         return;
       }
+      const maxBug = await db
+        .select({ max: sql`COALESCE(MAX(bug_number), 0)` })
+        .from(schema.defects)
+        .where(eq(schema.defects.project_id, projectId));
+      const nextBugNumber = (maxBug[0]?.max as number ?? 0) + 1;
       [defect] = await db
         .insert(schema.defects)
         .values({
           project_id: projectId,
+          bug_number: nextBugNumber,
           test_run_id: execution.test_run_id!,
           test_case_id: execution.test_case_id,
           execution_id: executionId,
@@ -231,24 +237,60 @@ router.post(
         return;
       }
 
-      const testerAllowed = await checkProjectRole(req, execution.testRun.project_id, ["TESTER"]);
+      const testerAllowed = await checkProjectRole(req, execution.testRun.project_id, ["TESTER", "TEST_LEAD"]);
       if (!testerAllowed) {
         res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
         return;
       }
 
-      const [stepResult] = await db
-        .insert(schema.stepResults)
-        .values({
-          execution_id: executionId,
-          step_id: stepId,
-          actual_result: parsed.actual_result,
-          comments: parsed.comments,
-          passed: parsed.passed,
-        })
-        .returning();
+      // Upsert: update existing step result or create new one
+      const existingResult = await db.query.stepResults.findFirst({
+        where: and(
+          eq(schema.stepResults.execution_id, executionId),
+          eq(schema.stepResults.step_id, stepId),
+        ),
+        orderBy: desc(schema.stepResults.id),
+      });
+      console.log(`[exec] POST step result exec=${executionId} step=${stepId} existingResult=${existingResult?.id ?? "none"} body=${JSON.stringify(parsed)}`);
 
-      res.status(201).json({ stepResult });
+      let stepResult;
+      if (existingResult) {
+        [stepResult] = await db.update(schema.stepResults)
+          .set({
+            actual_result: parsed.actual_result,
+            comments: parsed.comments,
+            passed: parsed.passed,
+            recorded_at: new Date(),
+          })
+          .where(eq(schema.stepResults.id, existingResult.id))
+          .returning();
+        // Clean up older duplicates
+        const delResult = await db.delete(schema.stepResults)
+          .where(
+            and(
+              eq(schema.stepResults.execution_id, executionId),
+              eq(schema.stepResults.step_id, stepId),
+              sql`${schema.stepResults.id} != ${existingResult.id}`,
+            ),
+          );
+        if (delResult.rowCount && delResult.rowCount > 0) {
+          console.log(`[exec] Cleaned up ${delResult.rowCount} older duplicate(s) for exec=${executionId} step=${stepId}`);
+        }
+      } else {
+        [stepResult] = await db
+          .insert(schema.stepResults)
+          .values({
+            execution_id: executionId,
+            step_id: stepId,
+            actual_result: parsed.actual_result,
+            comments: parsed.comments,
+            passed: parsed.passed,
+          })
+          .returning();
+        console.log(`[exec] INSERTED new step_result id=${stepResult.id} for exec=${executionId} step=${stepId}`);
+      }
+
+      res.status(existingResult ? 200 : 201).json({ stepResult });
     } catch (err) {
       next(err);
     }
@@ -276,6 +318,7 @@ router.put(
           eq(schema.stepResults.execution_id, executionId),
           eq(schema.stepResults.step_id, stepId),
         ),
+        orderBy: desc(schema.stepResults.id),
       });
       if (!existing) {
         res.status(404).json({ message: "Step result not found. Use POST to create." });
@@ -294,11 +337,13 @@ router.put(
         res.status(403).json({ message: "Entry criteria not confirmed for this test run" });
         return;
       }
-      const testerAllowed = await checkProjectRole(req, exec.testRun.project_id, ["TESTER"]);
+      const testerAllowed = await checkProjectRole(req, exec.testRun.project_id, ["TESTER", "TEST_LEAD"]);
       if (!testerAllowed) {
         res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
         return;
       }
+
+      console.log(`[exec] PUT step result exec=${executionId} step=${stepId} existingId=${existing.id} body=${JSON.stringify(parsed)}`);
 
       const [updated] = await db.update(schema.stepResults)
         .set({
@@ -307,6 +352,19 @@ router.put(
         })
         .where(eq(schema.stepResults.id, existing.id))
         .returning();
+
+      // Clean up older duplicate step results for this execution+step
+      const delResult = await db.delete(schema.stepResults)
+        .where(
+          and(
+            eq(schema.stepResults.execution_id, executionId),
+            eq(schema.stepResults.step_id, stepId),
+            sql`${schema.stepResults.id} != ${existing.id}`,
+          ),
+        );
+      if (delResult.rowCount && delResult.rowCount > 0) {
+        console.log(`[exec] PUT cleaned up ${delResult.rowCount} older duplicate(s) for exec=${executionId} step=${stepId}`);
+      }
 
       res.json(updated);
     } catch (err) {

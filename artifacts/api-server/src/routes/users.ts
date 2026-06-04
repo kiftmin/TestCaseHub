@@ -9,7 +9,17 @@ import { authenticate, authorize, AuthenticatedRequest } from "../middlewares/au
 const router = express.Router();
 
 router.use(authenticate);
-router.use(authorize(["ADMIN"]));
+// Most endpoints require ADMIN; GET / is open to all authenticated users (for user selection dropdowns)
+router.get("/", async (req, res, next) => {
+  try {
+    const users = await db.query.users.findMany({
+      columns: { password_hash: false },
+    });
+    res.json(users);
+  } catch (err) {
+    next(err);
+  }
+});
 
 const createUserSchema = z.object({
   username: z.string(),
@@ -29,18 +39,7 @@ const updatePasswordSchema = z.object({
   password: z.string().min(6),
 });
 
-router.get("/", async (req, res, next) => {
-  try {
-    const users = await db.query.users.findMany({
-      columns: { password_hash: false },
-    });
-    res.json(users);
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.post("/", async (req, res, next) => {
+router.post("/", authorize(["ADMIN"]), async (req, res, next) => {
   try {
     const { username, password, name, email, role } = createUserSchema.parse(req.body);
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -55,7 +54,7 @@ router.post("/", async (req, res, next) => {
   }
 });
 
-router.put("/:userId", async (req, res, next) => {
+router.put("/:userId", authorize(["ADMIN"]), async (req, res, next) => {
   try {
     const { name, email, role } = updateUserSchema.parse(req.body);
     const [user] = await db
@@ -70,7 +69,7 @@ router.put("/:userId", async (req, res, next) => {
   }
 });
 
-router.put("/:userId/suspend", async (req, res, next) => {
+router.put("/:userId/suspend", authorize(["ADMIN"]), async (req, res, next) => {
   try {
     const userId = Number(req.params.userId);
     const [user] = await db
@@ -85,7 +84,7 @@ router.put("/:userId/suspend", async (req, res, next) => {
   }
 });
 
-router.put("/:userId/password", async (req, res, next) => {
+router.put("/:userId/password", authorize(["ADMIN"]), async (req, res, next) => {
   try {
     const { password } = updatePasswordSchema.parse(req.body);
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -101,7 +100,7 @@ router.put("/:userId/password", async (req, res, next) => {
   }
 });
 
-router.delete("/:userId", async (req, res, next) => {
+router.delete("/:userId", authorize(["ADMIN"]), async (req, res, next) => {
   try {
     const userId = Number(req.params.userId);
     const targetUser = await db.query.users.findFirst({

@@ -258,6 +258,7 @@ export const stepResultsRelations = relations(stepResults, ({ one }) => ({
 // 13. defects
 export const defects = pgTable("defects", {
   id: serial("id").primaryKey(),
+  bug_number: integer("bug_number"),
   project_id: integer("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
   test_run_id: integer("test_run_id").references(() => testRuns.id, { onDelete: "cascade" }),
   test_case_id: integer("test_case_id").references(() => testCases.id, { onDelete: "cascade" }).notNull(),
@@ -268,7 +269,7 @@ export const defects = pgTable("defects", {
   priority: text("priority"),
   assigned_to_user_id: integer("assigned_to_user_id").references(() => users.id, { onDelete: "set null" }),
   support_ticket_number: text("support_ticket_number"),
-  root_cause_category: text("root_cause_category"),
+  root_cause_category: text("root_cause_category"), // 'Requirements Gap' | 'Design Defect' | 'Coding Error' | 'Environment Issue' | 'Test Data Issue' | 'Configuration Error' | 'Third-Party Integration' | 'Other'
   regression_index: integer("regression_index").notNull().default(0),
   tester_notes: text("tester_notes"),
   retest_reason: text("retest_reason"),
@@ -371,6 +372,7 @@ export const defectNotes = pgTable("defect_notes", {
   discussion_id: integer("discussion_id").references(() => teamDiscussions.id, { onDelete: "set null" }),
   added_by_user_id: integer("added_by_user_id").references(() => users.id, { onDelete: "set null" }),
   note: text("note").notNull(),
+  is_system_note: boolean("is_system_note").notNull().default(false),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

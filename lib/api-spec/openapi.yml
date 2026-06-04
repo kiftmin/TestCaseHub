@@ -170,10 +170,31 @@ components:
         passed: { type: boolean, nullable: true }
         recorded_at: { type: string, format: date-time }
 
+    DefectAgingMatrixItem:
+      type: object
+      properties:
+        defectId: { type: integer }
+        bugNumber: { type: integer, nullable: true }
+        status: { type: string }
+        severity: { type: string, nullable: true }
+        priority: { type: string, nullable: true }
+        ticketType: { type: string }
+        regressionIndex: { type: integer }
+        assignedToUserId: { type: integer, nullable: true }
+        supportTicketNumber: { type: string, nullable: true }
+        rootCauseCategory: { type: string, nullable: true }
+        currentStateAge: { type: string }
+        totalAge: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+        closedAt: { type: string, format: date-time, nullable: true }
+
     Defect:
       type: object
       properties:
         id: { type: integer }
+        bug_number: { type: integer, nullable: true }
         project_id: { type: integer }
         test_run_id: { type: integer, nullable: true }
         test_case_id: { type: integer }
@@ -271,6 +292,7 @@ components:
         discussion_id: { type: integer, nullable: true }
         added_by_user_id: { type: integer, nullable: true }
         note: { type: string }
+        is_system_note: { type: boolean }
         created_at: { type: string, format: date-time }
 
 paths:
@@ -2035,6 +2057,46 @@ paths:
       responses:
         "200":
           description: OK
+
+  /projects/{projectId}/my-role:
+    get:
+      summary: Get current user's role in project
+      tags: [ProjectAssignments]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  role: { type: string, nullable: true, enum: [TEST_LEAD, TEST_AUTHOR, BUSINESS_OWNER, TESTER, DEVELOPER, UAT_COORDINATOR] }
+
+  /projects/{projectId}/defect-aging-matrix:
+    get:
+      summary: Defect aging matrix
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DefectAgingMatrixItem"
 
   /projects/{projectId}/uat-summary:
     get:

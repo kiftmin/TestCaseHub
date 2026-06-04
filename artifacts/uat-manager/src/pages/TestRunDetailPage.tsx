@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -15,6 +15,7 @@ import type {
   TeamDiscussion,
   TestCase,
   UseCase,
+  ProjectAssignment,
 } from "../types/api";
 
 const statusColors: Record<string, string> = {
@@ -39,6 +40,7 @@ interface TestRunFullReport {
     tester_id: number;
     executed_at: string | null;
     overall_result: "passed" | "failed" | "passed_by_agreement" | null;
+    notes?: string | null;
     stepResults?: Array<{
       id: number;
       step_id: number;
@@ -187,7 +189,8 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
     );
   }
 
-  const useCases = (testRun as TestRun & { useCases?: TestRunUseCase[] })?.useCases ?? [];
+  const allUseCases = (testRun as TestRun & { useCases?: TestRunUseCase[] })?.useCases ?? [];
+  const useCases = allUseCases.filter((uc) => uc.assigned_tester_id === getStoredUser()?.userId);
 
   const handleDownloadQR = () => {
     if (qrData?.qrDataUrl) {
@@ -381,6 +384,7 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
                 <ScenarioPanel
                   key={truc.id}
                   truc={truc}
+                  projectId={testRun.project_id}
                   canManage={canManage}
                   onAssign={(testerId) =>
                     assignTesterMutation.mutate({ testRunUseCaseId: truc.id, assigned_tester_id: testerId })
@@ -555,11 +559,13 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
 
 function ScenarioPanel({
   truc,
+  projectId,
   canManage,
   onAssign,
   onExec,
 }: {
   truc: TestRunUseCase;
+  projectId: number;
   canManage: boolean;
   onAssign: (testerId: number | null) => void;
   onExec: (tc: TestCase) => void;
@@ -620,6 +626,7 @@ function ScenarioPanel({
         <div className="ml-xl pl-lg border-l border-outline-variant space-y-[1px] pb-md">
           {canManage && (
             <AssignTester
+              projectId={projectId}
               currentTesterId={truc.assigned_tester_id}
               onAssign={onAssign}
             />
@@ -644,17 +651,28 @@ function ScenarioPanel({
 /* ───────── Assign Tester ───────── */
 
 function AssignTester({
+  projectId,
   currentTesterId,
   onAssign,
 }: {
+  projectId: number;
   currentTesterId: number | null;
   onAssign: (testerId: number | null) => void;
 }) {
-  const { data: users } = useQuery({
-    queryKey: ["users"],
-    queryFn: () => customFetch<{ id: number; name: string }[]>("/users"),
+  const { data: assignments } = useQuery({
+    queryKey: ["project-users", projectId],
+    queryFn: () => customFetch<ProjectAssignment[]>(`/projects/${projectId}/users`),
   });
   const [open, setOpen] = useState(false);
+
+  const eligibleUsers = (assignments ?? [])
+    .filter((a) => a.role === "TEST_LEAD" || a.role === "TESTER")
+    .map((a) => ({ id: a.user_id, name: a.user.name }));
+
+  const currentUser = assignments?.find((a) => a.user_id === currentTesterId);
+  if (currentUser && !eligibleUsers.some((u) => u.id === currentUser.user_id)) {
+    eligibleUsers.push({ id: currentUser.user_id, name: currentUser.user.name });
+  }
 
   return (
     <div className="px-md py-sm">
@@ -669,7 +687,7 @@ function AssignTester({
           autoFocus
         >
           <option value="">Unassign</option>
-          {users?.map((u) => (
+          {eligibleUsers.map((u) => (
             <option key={u.id} value={u.id}>
               {u.name}
             </option>
@@ -705,6 +723,7 @@ function ExecutionModal({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const activeTestCaseRef = useRef<number | null>(null);
   const [mode, setMode] = useState<"guided" | "quick">("guided");
   const [currentStep, setCurrentStep] = useState(0);
   const [execution, setExecution] = useState<Execution | null>(null);
@@ -752,6 +771,10 @@ function ExecutionModal({
   });
 
   useEffect(() => {
+    if (activeTestCaseRef.current === testCase.id && execution) {
+      return;
+    }
+    activeTestCaseRef.current = testCase.id;
     setExecution(null);
     setResults({});
     setOverallResult("");
@@ -775,18 +798,25 @@ function ExecutionModal({
         if (!cancelled) setExecution(created);
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
+        console.log(`[exec] initExec error: "${errMsg}"`);
         if (errMsg.toLowerCase().includes("already been executed") || errMsg.toLowerCase().includes("completed test run")) {
           try {
             const fullReport = await customFetch<TestRunFullReport>(`/test-runs/${testRunId}/full-report`, {
               cache: "no-store",
             });
             if (cancelled) return;
-            const existing = fullReport.executions?.find((ex) => ex.test_case_id === testCase.id);
+            const matches = fullReport.executions?.filter((ex) => ex.test_case_id === testCase.id) ?? [];
+            const existing = matches.sort((a, b) => b.id - a.id)[0];
+            console.log(`[exec] full-report executions for case ${testCase.id}: ${JSON.stringify(matches.map(m => ({ id: m.id, stepResultsCount: m.stepResults?.length ?? 0, stepResultIds: m.stepResults?.map(sr => sr.id) })))}`);
+            console.log(`[exec] Selected execution id=${existing?.id}, stepResults=`, JSON.stringify(existing?.stepResults?.map(sr => ({ id: sr.id, step_id: sr.step_id, passed: sr.passed, actual_result: sr.actual_result }))));
             if (existing) {
               setExecution(existing as Execution);
+              if (existing.overall_result) setOverallResult(existing.overall_result);
+              if (existing.notes) setTesterNotes(existing.notes);
               if (existing.stepResults) {
                 const map: Record<number, { passed: boolean | null; actual_result: string; comments: string }> = {};
-                existing.stepResults.forEach((sr) => {
+                const sorted = [...existing.stepResults].sort((a, b) => a.id - b.id);
+                sorted.forEach((sr) => {
                   map[sr.step_id] = { passed: sr.passed, actual_result: sr.actual_result ?? "", comments: sr.comments ?? "" };
                 });
                 setResults(map);
@@ -877,12 +907,14 @@ function ExecutionModal({
     }
 
     try {
+      const hasExisting = results[stepId]?.passed != null;
+      console.log(`[exec] submitStepResult step=${stepId} method=${hasExisting ? "PUT" : "POST"} passed=${passed} body=${JSON.stringify({ passed, actual_result, comments })} executionId=${execution.id}`);
       await customFetch(`/executions/${execution.id}/steps/${stepId}/result`, {
-        method: "POST",
+        method: hasExisting ? "PUT" : "POST",
         body: JSON.stringify({ passed, actual_result, comments }),
       });
+      console.log(`[exec] submitStepResult step=${stepId} SUCCESS`);
       setResults((prev) => ({ ...prev, [stepId]: { passed, actual_result, comments } }));
-      queryClient.invalidateQueries({ queryKey: ["steps", testCase.id] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "An error occurred");
     }

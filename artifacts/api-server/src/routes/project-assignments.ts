@@ -94,4 +94,38 @@ router.get("/users/:userId/projects", async (req: AuthenticatedRequest, res, nex
   } catch (err) { next(err); }
 });
 
+// GET /api/projects/:projectId/my-role — returns current user's role for a project
+// Includes implicit TEST_LEAD from projects.test_lead_id
+router.get("/projects/:projectId/my-role", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const projectId = Number(req.params.projectId);
+
+    const assignment = await db.query.projectAssignments.findFirst({
+      where: and(
+        eq(schema.projectAssignments.project_id, projectId),
+        eq(schema.projectAssignments.user_id, req.user!.userId),
+      ),
+      columns: { role: true },
+    });
+
+    if (assignment) {
+      res.json({ role: assignment.role });
+      return;
+    }
+
+    // Implicit TEST_LEAD: check if user is set as test_lead_id on the project
+    const project = await db.query.projects.findFirst({
+      where: eq(schema.projects.id, projectId),
+      columns: { test_lead_id: true },
+    });
+
+    if (project?.test_lead_id === req.user!.userId) {
+      res.json({ role: "TEST_LEAD" });
+      return;
+    }
+
+    res.json({ role: null });
+  } catch (err) { next(err); }
+});
+
 export default router;

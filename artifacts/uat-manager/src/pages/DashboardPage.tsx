@@ -44,14 +44,14 @@ interface ActivityResponse {
   recentExecutions?: RecentExecution[];
   recentDefects?: RecentDefect[];
 }
-interface TesterRun {
+interface GroupedRun {
   id: number;
   name: string;
   status: string;
   updated_at?: string;
   scheduled_at?: string | null;
   project?: { name: string };
-  useCases?: TestRunUseCase[];
+  useCases: TestRunUseCase[];
 }
 
 export function DashboardPage() {
@@ -94,11 +94,25 @@ export function DashboardPage() {
     enabled: currentRole === "DEVELOPER" && !!user?.userId,
   });
 
-  const { data: myRuns } = useQuery({
+  const { data: myRunsRaw } = useQuery({
     queryKey: ["testerRuns", user?.userId],
-    queryFn: () => customFetch<TesterRun[]>(`/dashboard/tester/${user!.userId}/test-runs`),
+    queryFn: () => customFetch<(TestRunUseCase & { testRun?: { id: number; name: string; status: string; updated_at?: string; scheduled_at?: string | null; project?: { name: string } } })[]>(`/dashboard/tester/${user!.userId}/test-runs`),
     enabled: currentRole === "TESTER" && !!user?.userId,
   });
+
+  const myRunsGrouped = useMemo(() => {
+    if (!myRunsRaw) return [];
+    const map: Record<number, GroupedRun> = {};
+    for (const uc of myRunsRaw) {
+      const runId = uc.test_run_id;
+      if (!map[runId]) {
+        const tr = uc.testRun;
+        map[runId] = { id: runId, name: tr?.name ?? `Run #${runId}`, status: tr?.status ?? "scheduled", updated_at: tr?.updated_at, scheduled_at: tr?.scheduled_at, project: tr?.project, useCases: [] };
+      }
+      map[runId].useCases.push(uc);
+    }
+    return Object.values(map);
+  }, [myRunsRaw]);
 
   const { data: signOffStatus } = useQuery({
     queryKey: ["signOffStatus"],
@@ -124,15 +138,15 @@ export function DashboardPage() {
   );
 
   const testerRunStats = useMemo(() => {
-    if (!myRuns) return null;
+    if (!myRunsGrouped || myRunsGrouped.length === 0) return null;
     return {
-      assigned: myRuns.length,
-      completedToday: myRuns.filter(
+      assigned: myRunsGrouped.length,
+      completedToday: myRunsGrouped.filter(
         (r) => r.status === "completed" && r.updated_at && new Date(r.updated_at).toDateString() === new Date().toDateString(),
       ).length,
       openDefectsFound: 0,
     };
-  }, [myRuns]);
+  }, [myRunsGrouped]);
 
   const recentEvents = useMemo(() => {
     const events: Array<{ icon: string; iconBg: string; description: string; timestamp: string; detail: string }> = [];
@@ -314,10 +328,10 @@ export function DashboardPage() {
         </div>
       ) : currentRole === "TESTER" ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-lg">
-          {myRuns && myRuns.length > 0 ? (
-            myRuns.map((run) => {
-              const total = run.useCases?.length ?? 0;
-              const done = run.useCases?.filter((uc) => uc.status !== "pending").length ?? 0;
+          {myRunsGrouped.length > 0 ? (
+            myRunsGrouped.map((run) => {
+              const total = run.useCases.length;
+              const done = run.useCases.filter((uc) => uc.status !== "pending").length;
               const progress = total > 0 ? Math.round((done / total) * 100) : 0;
               return (
                 <div key={run.id} className="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden">

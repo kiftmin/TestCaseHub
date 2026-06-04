@@ -4,7 +4,7 @@ import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
-import { logAudit } from "../utils/project.js";
+import { logAudit, logSystemNote } from "../utils/project.js";
 
 const router = express.Router();
 
@@ -18,7 +18,12 @@ router.get("/test-runs/:testRunId/defects", async (req: AuthenticatedRequest, re
     const testRunId = Number(req.params.testRunId);
     const result = await db.query.defects.findMany({
       where: eq(schema.defects.test_run_id, testRunId),
-      with: { testCase: true, execution: { with: { stepResults: true } }, notes: true },
+      with: {
+        testCase: { with: { steps: true, useCase: true } },
+        execution: { with: { stepResults: { with: { step: true } }, tester: true } },
+        notes: { with: { addedBy: true } },
+        retests: true,
+      },
     });
     res.json(result);
   } catch (err) { next(err); }
@@ -28,15 +33,14 @@ router.get("/test-runs/:testRunId/defects", async (req: AuthenticatedRequest, re
 router.get("/projects/:projectId/defects", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
-    const testRuns = await db.query.testRuns.findMany({
-      where: eq(schema.testRuns.project_id, projectId),
-      columns: { id: true },
-    });
-    const runIds = testRuns.map((r) => r.id);
-    if (runIds.length === 0) { res.json([]); return; }
     const result = await db.query.defects.findMany({
-      where: (d, { inArray }) => inArray(d.test_run_id, runIds),
-      with: { testCase: true, execution: { with: { stepResults: true } }, notes: true },
+      where: eq(schema.defects.project_id, projectId),
+      with: {
+        testCase: { with: { steps: true, useCase: true } },
+        execution: { with: { stepResults: { with: { step: true } }, tester: true } },
+        notes: { with: { addedBy: true } },
+        retests: true,
+      },
     });
     res.json(result);
   } catch (err) { next(err); }
@@ -48,7 +52,12 @@ router.get("/defects/:defectId", async (req: AuthenticatedRequest, res, next) =>
     const defectId = Number(req.params.defectId);
     const defect = await db.query.defects.findFirst({
       where: eq(schema.defects.id, defectId),
-      with: { testCase: true, execution: { with: { stepResults: true } }, notes: true, retests: true },
+      with: {
+        testCase: { with: { steps: true, useCase: true } },
+        execution: { with: { stepResults: { with: { step: true } }, tester: true } },
+        notes: { with: { addedBy: true } },
+        retests: true,
+      },
     });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
     res.json(defect);
@@ -87,8 +96,8 @@ async function getProjectId(defectId: number): Promise<number | null> {
 // ---------------------------------------------------------------------------
 
 // PATCH /defects/:defectId/classify — TEST_LEAD only
-// NEW ─────────────────────────────────────────────────────────> TRIAGED
-// Requires severity + priority payload
+// Any non-terminal status — updates severity + priority.
+// If currently NEW, also transitions to TRIAGED.
 router.patch("/defects/:defectId/classify", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
@@ -107,14 +116,17 @@ router.patch("/defects/:defectId/classify", async (req: AuthenticatedRequest, re
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
 
     const oldStatus = defect.status;
+    const targetStatus = oldStatus === "NEW" ? "TRIAGED" : oldStatus;
     const [updated] = await db.update(schema.defects)
-      .set({ severity: data.severity, priority: data.priority, status: "TRIAGED", updated_at: new Date() })
+      .set({ severity: data.severity, priority: data.priority, status: targetStatus, updated_at: new Date() })
       .where(eq(schema.defects.id, defectId))
       .returning();
 
-    if (oldStatus !== "TRIAGED") {
-      await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "TRIAGED" });
+    if (targetStatus !== oldStatus) {
+      await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: targetStatus });
+      await logSystemNote(defectId, oldStatus, targetStatus, req.user!.userId);
     }
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: oldStatus, reason: `Reclassified: severity=${data.severity}, priority=${data.priority}` });
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -151,6 +163,106 @@ router.patch("/defects/:defectId/assign", async (req: AuthenticatedRequest, res,
       .returning();
 
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "ASSIGNED" });
+    await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, `Assigned to user #${data.assigned_to_user_id}`);
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/flag-blocked — TEST_LEAD only
+// NEW ────────────────────────────────────────────────────────> BLOCKED
+// Requires mandatory reason text
+router.patch("/defects/:defectId/flag-blocked", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({ reason: z.string().min(1, "Block reason is required") });
+    const data = bodySchema.parse(req.body);
+
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    if (defect.status !== "NEW") { res.status(400).json({ message: "Only NEW defects can be flagged as blocked" }); return; }
+
+    const oldStatus = defect.status;
+    const [updated] = await db.update(schema.defects)
+      .set({ status: "BLOCKED", updated_at: new Date() })
+      .where(eq(schema.defects.id, defectId))
+      .returning();
+
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "BLOCKED", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "BLOCKED", req.user!.userId, data.reason);
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/flag-retest-from-new — TEST_LEAD only
+// NEW ────────────────────────────────────────────────────────> READY_FOR_VERIFICATION
+// Automatically provisions a defect_retests trace and a retest_reason
+router.patch("/defects/:defectId/flag-retest-from-new", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({
+      reason: z.string().default("Flagged for retesting from NEW status"),
+      targetVerificationRunId: z.number().optional(),
+    });
+    const data = bodySchema.parse(req.body);
+
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    if (defect.status !== "NEW") { res.status(400).json({ message: "Only NEW defects can be flagged for retesting from new" }); return; }
+
+    const oldStatus = defect.status;
+    const [updated] = await db.update(schema.defects)
+      .set({ status: "READY_FOR_VERIFICATION", retest_reason: data.reason, updated_at: new Date() })
+      .where(eq(schema.defects.id, defectId))
+      .returning();
+
+    await db.insert(schema.defectRetests).values({
+      defect_id: defectId,
+      test_run_id: defect.test_run_id,
+      target_verification_run_id: data.targetVerificationRunId ?? defect.test_run_id,
+    });
+
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "READY_FOR_VERIFICATION", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "READY_FOR_VERIFICATION", req.user!.userId, data.reason);
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/flag-accepted-by-business — TEST_LEAD only
+// NEW ────────────────────────────────────────────────────────> PASSED_BY_AGREEMENT
+// Routes directly to the business owner exception track
+router.patch("/defects/:defectId/flag-accepted-by-business", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({ note: z.string().min(1, "Business justification note is required") });
+    const data = bodySchema.parse(req.body);
+
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    if (defect.status !== "NEW") { res.status(400).json({ message: "Only NEW defects can be flagged as accepted by business" }); return; }
+
+    const oldStatus = defect.status;
+    const [updated] = await db.update(schema.defects)
+      .set({ status: "PASSED_BY_AGREEMENT", accepted_by_business_note: data.note, updated_at: new Date() })
+      .where(eq(schema.defects.id, defectId))
+      .returning();
+
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PASSED_BY_AGREEMENT", reason: data.note });
+    await logSystemNote(defectId, oldStatus, "PASSED_BY_AGREEMENT", req.user!.userId, data.note);
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -179,6 +291,7 @@ router.patch("/defects/:defectId/start", async (req: AuthenticatedRequest, res, 
       .returning();
 
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "IN_PROGRESS" });
+    await logSystemNote(defectId, oldStatus, "IN_PROGRESS", req.user!.userId);
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -207,6 +320,7 @@ router.patch("/defects/:defectId/block", async (req: AuthenticatedRequest, res, 
       .returning();
 
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "BLOCKED", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "BLOCKED", req.user!.userId, data.reason);
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -231,6 +345,7 @@ router.patch("/defects/:defectId/unblock", async (req: AuthenticatedRequest, res
       .returning();
 
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "IN_PROGRESS", reason: "Block lifted" });
+    await logSystemNote(defectId, oldStatus, "IN_PROGRESS", req.user!.userId, "Block lifted");
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -242,7 +357,7 @@ router.patch("/defects/:defectId/resolve", async (req: AuthenticatedRequest, res
   try {
     const defectId = Number(req.params.defectId);
     const bodySchema = z.object({
-      root_cause_category: z.enum(["Code", "Configuration", "Data", "Environment", "Requirement", "Other"]),
+      root_cause_category: z.enum(["Requirements Gap", "Design Defect", "Coding Error", "Environment Issue", "Test Data Issue", "Configuration Error", "Third-Party Integration", "Other"]),
     });
     const data = bodySchema.parse(req.body);
 
@@ -261,6 +376,7 @@ router.patch("/defects/:defectId/resolve", async (req: AuthenticatedRequest, res
       .returning();
 
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "RESOLVED_DEV", reason: data.root_cause_category });
+    await logSystemNote(defectId, oldStatus, "RESOLVED_DEV", req.user!.userId, `Root cause: ${data.root_cause_category}`);
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -302,6 +418,7 @@ router.patch("/defects/:defectId/flag-retest", async (req: AuthenticatedRequest,
     });
 
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "READY_FOR_VERIFICATION", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "READY_FOR_VERIFICATION", req.user!.userId, data.reason);
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -355,6 +472,7 @@ router.patch("/defect-retests/:retestId", async (req: AuthenticatedRequest, res,
         toStatus: "REGRESSED",
         reason: "Retest failed: " + (data.retestNotes || "No notes"),
       });
+      await logSystemNote(retest.defect_id, oldDefectStatus, "REGRESSED", req.user!.userId, "Retest failed: " + (data.retestNotes || "No notes"));
     } else if (data.retestResult === "passed") {
       await db.update(schema.defects)
         .set({ status: "CLOSED", updated_at: new Date(), resolved_at: new Date() })
@@ -368,6 +486,7 @@ router.patch("/defect-retests/:retestId", async (req: AuthenticatedRequest, res,
         toStatus: "CLOSED",
         reason: "Retest passed: " + (data.retestNotes || "No notes"),
       });
+      await logSystemNote(retest.defect_id, oldDefectStatus, "CLOSED", req.user!.userId, "Retest passed: " + (data.retestNotes || "No notes"));
     }
 
     res.json({ message: "Retest recorded", retestResult: data.retestResult });
@@ -401,6 +520,7 @@ router.patch("/defects/:defectId/accept", async (req: AuthenticatedRequest, res,
       .returning();
 
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "CLOSED", reason: data.note });
+    await logSystemNote(defectId, oldStatus, "CLOSED", req.user!.userId, data.note);
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -429,6 +549,7 @@ router.patch("/defects/:defectId/reject", async (req: AuthenticatedRequest, res,
       .returning();
 
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "READY_FOR_VERIFICATION", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "READY_FOR_VERIFICATION", req.user!.userId, data.reason ?? undefined);
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -457,6 +578,7 @@ router.patch("/defects/:defectId/accept-by-agreement", async (req: Authenticated
       .returning();
 
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PASSED_BY_AGREEMENT", reason: data.note });
+    await logSystemNote(defectId, oldStatus, "PASSED_BY_AGREEMENT", req.user!.userId, data.note);
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -503,6 +625,41 @@ router.post("/defects/:defectId/notes", async (req: AuthenticatedRequest, res, n
       .returning();
 
     res.status(201).json(note);
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Aging Matrix
+// ---------------------------------------------------------------------------
+
+// GET /api/projects/:projectId/defect-aging-matrix
+// Returns all defects with their current-state age and total age
+router.get("/projects/:projectId/defect-aging-matrix", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const projectId = Number(req.params.projectId);
+    const result = await db.execute(sql`
+      SELECT
+        d.id AS "defectId",
+        d.bug_number AS "bugNumber",
+        d.status,
+        d.severity,
+        d.priority,
+        d.ticket_type AS "ticketType",
+        d.regression_index AS "regressionIndex",
+        d.assigned_to_user_id AS "assignedToUserId",
+        d.support_ticket_number AS "supportTicketNumber",
+        d.root_cause_category AS "rootCauseCategory",
+        AGE(d.updated_at)::text AS "currentStateAge",
+        AGE(d.created_at)::text AS "totalAge",
+        d.created_at AS "createdAt",
+        d.updated_at AS "updatedAt",
+        d.resolved_at AS "resolvedAt",
+        d.closed_at AS "closedAt"
+      FROM ${schema.defects} d
+      WHERE d.project_id = ${projectId}
+      ORDER BY d.created_at DESC
+    `);
+    res.json(result.rows);
   } catch (err) { next(err); }
 });
 

@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
-import type { Defect, TestRun } from "../types/api";
+import type { Defect, TestRun, ProjectAssignment } from "../types/api";
 
 const statusBadge: Record<string, string> = {
   NEW: "bg-error-container text-on-error-container border-error/20",
@@ -68,6 +68,16 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     queryFn: () => customFetch<Defect[]>(`/projects/${projectId}/defects`),
     enabled: !!projectId,
   });
+
+  const newDefectAnalytics = useMemo(() => {
+    const newDefects = (allDefects ?? []).filter((d) => d.status === "NEW");
+    const count = newDefects.length;
+    const ages = newDefects.map((d) => (Date.now() - new Date(d.created_at).getTime()) / (1000 * 60 * 60));
+    const avgAge = ages.length ? ages.reduce((a, b) => a + b, 0) / ages.length : 0;
+    const maxAge = ages.length ? Math.max(...ages) : 0;
+    const slaBreached = newDefects.filter((d) => (Date.now() - new Date(d.created_at).getTime()) > 48 * 60 * 60 * 1000).length;
+    return { count, avgAge, maxAge, slaBreached, total: allDefects?.length ?? 0 };
+  }, [allDefects]);
 
   const filtered = useMemo(() => {
     return (allDefects ?? []).filter((d) => {
@@ -187,6 +197,41 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
         </div>
       </section>
 
+      {/* NEW Queue Analytics Dashboard */}
+      <section className="grid grid-cols-2 md:grid-cols-4 gap-md">
+        <div className="bg-surface border border-outline-variant rounded-xl p-md shadow-sm">
+          <p className="text-xs font-semibold text-outline uppercase tracking-wider mb-1">NEW Queue</p>
+          <p className="font-display-lg text-display-lg text-primary">{newDefectAnalytics.count}</p>
+          <p className="text-xs text-on-surface-variant">of {newDefectAnalytics.total} total defects</p>
+        </div>
+        <div className="bg-surface border border-outline-variant rounded-xl p-md shadow-sm">
+          <p className="text-xs font-semibold text-outline uppercase tracking-wider mb-1">Avg Age (NEW)</p>
+          <p className="font-display-lg text-display-lg text-on-surface">{newDefectAnalytics.avgAge.toFixed(1)}h</p>
+          <p className="text-xs text-on-surface-variant">Mean duration in NEW state</p>
+        </div>
+        <div className="bg-surface border border-outline-variant rounded-xl p-md shadow-sm">
+          <p className="text-xs font-semibold text-outline uppercase tracking-wider mb-1">Max Age (NEW)</p>
+          <p className="font-display-lg text-display-lg text-on-surface">{newDefectAnalytics.maxAge.toFixed(1)}h</p>
+          <p className="text-xs text-on-surface-variant">Worst-case ceiling spike</p>
+        </div>
+        <div className={`bg-surface border rounded-xl p-md shadow-sm ${newDefectAnalytics.slaBreached > 0 ? "border-error/40 bg-error-container/20" : "border-outline-variant"}`}>
+          <p className="text-xs font-semibold text-outline uppercase tracking-wider mb-1">SLA Alerts</p>
+          <p className={`font-display-lg text-display-lg ${newDefectAnalytics.slaBreached > 0 ? "text-error" : "text-on-surface"}`}>
+            {newDefectAnalytics.slaBreached > 0 ? (
+              <span className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-2xl">warning</span>
+                {newDefectAnalytics.slaBreached}
+              </span>
+            ) : "0"}
+          </p>
+          <p className={`text-xs ${newDefectAnalytics.slaBreached > 0 ? "text-error" : "text-on-surface-variant"}`}>
+            {newDefectAnalytics.slaBreached > 0
+              ? `${newDefectAnalytics.slaBreached} item${newDefectAnalytics.slaBreached > 1 ? "s" : ""} over 48h without triage`
+              : "All items within SLA"}
+          </p>
+        </div>
+      </section>
+
       {/* Defect Table */}
       <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
@@ -256,20 +301,50 @@ function DefectRow({
   onMutated: () => void;
 }) {
   const queryClient = useQueryClient();
-  const user = getStoredUser();
   const [classifyOpen, setClassifyOpen] = useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [retestOpen, setRetestOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
+  const [flagRetestNewOpen, setFlagRetestNewOpen] = useState(false);
+  const [flagBlockedNewOpen, setFlagBlockedNewOpen] = useState(false);
+  const [flagBusinessOpen, setFlagBusinessOpen] = useState(false);
+  const [untriagedAction, setUntriagedAction] = useState<string | null>(null);
+  const [pendingAfterClassify, setPendingAfterClassify] = useState<string | null>(null);
 
   const isNew = defect.status === "NEW";
+  const isClassified = !!(defect.severity && defect.priority);
+
+  const handleUntriagedAction = (action: string) => {
+    if (isNew && !isClassified) {
+      setUntriagedAction(action);
+    } else {
+      proceedWithAction(action);
+    }
+  };
+
+  const proceedWithAction = (action: string) => {
+    setUntriagedAction(null);
+    setPendingAfterClassify(null);
+    switch (action) {
+      case "assign": setAssignOpen(true); break;
+      case "retest": setFlagRetestNewOpen(true); break;
+      case "acceptBiz": setFlagBusinessOpen(true); break;
+      case "block": setFlagBlockedNewOpen(true); break;
+    }
+  };
+
+  const handleClassifyThenAction = () => {
+    setPendingAfterClassify(untriagedAction);
+    setUntriagedAction(null);
+    setClassifyOpen(true);
+  };
   const isTriaged = defect.status === "TRIAGED";
   const isAssigned = defect.status === "ASSIGNED";
   const isInProgress = defect.status === "IN_PROGRESS";
   const isBlocked = defect.status === "BLOCKED";
   const isResolved = defect.status === "RESOLVED_DEV";
   const isReady = defect.status === "READY_FOR_VERIFICATION";
-  const isRegressed = defect.status === "REGRESSED";
   const isClosed = defect.status === "CLOSED" || defect.status === "PASSED_BY_AGREEMENT";
 
   const invalidateProject = useCallback(() => {
@@ -281,16 +356,23 @@ function DefectRow({
   const classifyMut = useMutation({
     mutationFn: (data: { severity: string; priority: string }) =>
       customFetch(`/defects/${defect.id}/classify`, { method: "PATCH", body: JSON.stringify(data) }),
-    onSuccess: () => { invalidateProject(); toast.success("Defect classified"); setClassifyOpen(false); },
+    onSuccess: () => {
+      invalidateProject();
+      toast.success("Defect classified");
+      setClassifyOpen(false);
+      const next = pendingAfterClassify;
+      setPendingAfterClassify(null);
+      if (next) setTimeout(() => proceedWithAction(next), 100);
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const assignMut = useMutation({
-    mutationFn: () => customFetch(`/defects/${defect.id}/assign`, {
+    mutationFn: (data: { assigned_to_user_id: number; support_ticket_number?: string }) => customFetch(`/defects/${defect.id}/assign`, {
       method: "PATCH",
-      body: JSON.stringify({ assigned_to_user_id: user!.userId }),
+      body: JSON.stringify(data),
     }),
-    onSuccess: () => { invalidateProject(); toast.success("Assigned to developer"); },
+    onSuccess: () => { invalidateProject(); toast.success("Assigned to developer"); setAssignOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -324,6 +406,25 @@ function DefectRow({
       body: JSON.stringify({ reason: "Ready for verification", targetVerificationRunId: defect.test_run_id }),
     }),
     onSuccess: () => { invalidateProject(); toast.success("Sent for verification"); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const flagRetestFromNewMut = useMutation({
+    mutationFn: (data: { reason: string; targetVerificationRunId?: number }) =>
+      customFetch(`/defects/${defect.id}/flag-retest-from-new`, { method: "PATCH", body: JSON.stringify(data) }),
+    onSuccess: () => { invalidateProject(); toast.success("Defect sent for retesting"); setFlagRetestNewOpen(false); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const flagBlockedNewMut = useMutation({
+    mutationFn: (reason: string) => customFetch(`/defects/${defect.id}/flag-blocked`, { method: "PATCH", body: JSON.stringify({ reason }) }),
+    onSuccess: () => { invalidateProject(); toast.success("Defect flagged as blocked"); setFlagBlockedNewOpen(false); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const flagAcceptedByBusinessMut = useMutation({
+    mutationFn: (note: string) => customFetch(`/defects/${defect.id}/flag-accepted-by-business`, { method: "PATCH", body: JSON.stringify({ note }) }),
+    onSuccess: () => { invalidateProject(); toast.success("Defect accepted by business agreement"); setFlagBusinessOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -389,15 +490,40 @@ function DefectRow({
         </td>
         <td className="p-md text-right" onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-end gap-1 opacity-40 group-hover:opacity-100 transition-opacity">
-            {/* TEST_LEAD: Classify (NEW → TRIAGED) */}
+            {/* NEW-specific triage pathways — Classify always available, others guarded by triage check */}
             {canManage && isNew && (
-              <button onClick={() => setClassifyOpen(true)} className="p-1.5 hover:bg-secondary-container hover:text-on-secondary-container rounded text-on-surface-variant transition-colors" title="Classify">
+              <>
+                {/* Classify (NEW → TRIAGED) */}
+                <button onClick={() => setClassifyOpen(true)} className="bg-secondary-container/40 text-on-secondary-container px-2 py-1 rounded-md text-xs font-bold hover:bg-secondary-container transition-colors" title="Set severity and priority">
+                  Classify
+                </button>
+                {/* Assign to Engineering (NEW → ASSIGNED) */}
+                <button onClick={() => handleUntriagedAction("assign")} className="bg-amber-100 text-amber-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-amber-200 transition-colors" title="Assign to Developer">
+                  Assign
+                </button>
+                {/* Flag for Retesting (NEW → READY_FOR_VERIFICATION) */}
+                <button onClick={() => handleUntriagedAction("retest")} className="bg-blue-100 text-blue-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-blue-200 transition-colors" title="Send for verification">
+                  Retest
+                </button>
+                {/* Flag Accepted by Business (NEW → PASSED_BY_AGREEMENT) */}
+                <button onClick={() => handleUntriagedAction("acceptBiz")} className="bg-purple-100 text-purple-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-purple-200 transition-colors" title="Accept by business agreement">
+                  Accept Biz
+                </button>
+                {/* Flag as Blocked (NEW → BLOCKED) */}
+                <button onClick={() => handleUntriagedAction("block")} className="bg-red-100 text-red-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-red-200 transition-colors" title="Flag as blocked">
+                  Block
+                </button>
+              </>
+            )}
+            {/* Classify — always available for TEST_LEAD on non-terminal defects (reclassify severity/priority) */}
+            {canManage && !isNew && !isClosed && (
+              <button onClick={() => setClassifyOpen(true)} className="p-1.5 hover:bg-secondary-container hover:text-on-secondary-container rounded text-on-surface-variant transition-colors" title="Reclassify severity and priority">
                 <span className="material-symbols-outlined text-sm">category</span>
               </button>
             )}
-            {/* TEST_LEAD: Assign (NEW | TRIAGED → ASSIGNED) */}
-            {canManage && (isNew || isTriaged) && (
-              <button onClick={() => assignMut.mutate()} className="p-1.5 hover:bg-amber-100 hover:text-amber-700 rounded text-on-surface-variant transition-colors" title="Assign to Developer">
+            {/* TEST_LEAD: Assign (TRIAGED → ASSIGNED) */}
+            {canManage && !isNew && isTriaged && (
+              <button onClick={() => setAssignOpen(true)} className="p-1.5 hover:bg-amber-100 hover:text-amber-700 rounded text-on-surface-variant transition-colors" title="Assign to Developer">
                 <span className="material-symbols-outlined text-sm">assignment</span>
               </button>
             )}
@@ -463,6 +589,73 @@ function DefectRow({
       <tr className={`bg-surface-container-lowest ${expanded ? "" : "hidden"}`}>
         <td className="p-0" colSpan={7}>
           <div className={`p-lg border-l-4 ${isNew ? "border-error" : isAssigned ? "border-amber-400" : isReady ? "border-blue-500" : "border-green-500"} ml-md my-sm space-y-md`}>
+
+            {/* Execution Context — Test Scenario & Test Case Details */}
+            {defect.execution && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-md mb-md pb-md border-b border-outline-variant">
+                <div>
+                  <h4 className="text-xs font-bold text-outline uppercase mb-sm">Test Scenario</h4>
+                  <p className="font-body-sm text-body-sm text-on-surface font-semibold">
+                    {defect.testCase?.useCase?.name ?? `Scenario #${defect.testCase?.use_case_id}`}
+                  </p>
+                  <h4 className="text-xs font-bold text-outline uppercase mt-sm mb-sm">Test Case</h4>
+                  <p className="font-body-sm text-body-sm text-on-surface">
+                    {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
+                  </p>
+                  {defect.testCase?.acceptance_criteria && (
+                    <>
+                      <h4 className="text-xs font-bold text-outline uppercase mt-sm mb-sm">Acceptance Criteria</h4>
+                      <p className="font-body-sm text-body-sm text-on-surface">{defect.testCase.acceptance_criteria}</p>
+                    </>
+                  )}
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-outline uppercase mb-sm">Execution Details</h4>
+                  <p className="font-body-sm text-body-sm text-on-surface">
+                    Tester: {defect.execution.tester?.name ?? defect.execution.tester_name ?? "Unknown"}
+                  </p>
+                  <p className="font-body-sm text-body-sm text-on-surface">
+                    Result: <span className={`font-bold ${defect.execution.overall_result === "failed" ? "text-error" : defect.execution.overall_result === "passed" ? "text-green-600" : ""}`}>
+                      {defect.execution.overall_result ?? "N/A"}
+                    </span>
+                  </p>
+                  <p className="font-body-sm text-body-sm text-on-surface">
+                    Executed: {defect.execution.executed_at ? new Date(defect.execution.executed_at).toLocaleString() : "N/A"}
+                  </p>
+                  {defect.execution.notes && (
+                    <>
+                      <h4 className="text-xs font-bold text-outline uppercase mt-sm mb-sm">Execution Notes</h4>
+                      <p className="font-body-sm text-body-sm text-on-surface">{defect.execution.notes}</p>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Test Steps — Expected vs Actual */}
+            {defect.execution?.stepResults && defect.execution.stepResults.length > 0 && (
+              <div className="mb-md pb-md border-b border-outline-variant">
+                <h4 className="text-xs font-bold text-outline uppercase mb-sm">Test Steps — Expected vs Actual</h4>
+                <div className="space-y-sm">
+                  {defect.execution.stepResults.map((sr) => (
+                    <div key={sr.id} className={`border-l-4 ${sr.passed ? "border-green-500" : "border-error"} bg-surface-container-low rounded-lg p-sm text-sm`}>
+                      <div className="flex items-center gap-sm mb-xs">
+                        <span className="font-bold text-xs">Step {sr.step?.step_number ?? sr.step_id}</span>
+                        <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${sr.passed ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
+                          {sr.passed ? "PASS" : "FAIL"}
+                        </span>
+                      </div>
+                      <p className="text-on-surface mb-xs"><span className="font-semibold">Instruction:</span> {sr.step?.instruction ?? "N/A"}</p>
+                      {sr.step?.expected_result && <p className="text-on-surface mb-xs"><span className="font-semibold">Expected:</span> {sr.step.expected_result}</p>}
+                      {sr.actual_result && <p className="text-on-surface mb-xs"><span className="font-semibold">Actual:</span> {sr.actual_result}</p>}
+                      {sr.comments && <p className="text-on-surface-variant text-xs mt-1"><span className="font-semibold">Comments:</span> {sr.comments}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Tester Notes & Dates */}
             <div className="grid grid-cols-2 gap-xl">
               <div>
                 <h4 className="text-xs font-bold text-outline uppercase mb-sm">Tester Notes</h4>
@@ -510,19 +703,40 @@ function DefectRow({
                 )}
               </div>
             </div>
-            {/* Comments Thread */}
+
+            {/* Activity Feed / System Notes */}
             {defect.notes && defect.notes.length > 0 && (
               <div className="border-t border-outline-variant pt-md mt-md">
                 <h4 className="text-xs font-bold text-outline uppercase mb-sm">
-                  Comments ({defect.notes.length})
+                  Activity Feed ({defect.notes.length})
                 </h4>
-                <div className="space-y-sm max-h-48 overflow-y-auto">
+                <div className="space-y-sm max-h-64 overflow-y-auto">
                   {defect.notes.map((n) => (
-                    <div key={n.id} className="bg-surface-container-low rounded-lg p-sm text-sm">
-                      <p className="text-on-surface">{n.note}</p>
-                      <p className="text-xs text-on-surface-variant mt-1">
-                        {new Date(n.created_at).toLocaleString()}
-                      </p>
+                    <div
+                      key={n.id}
+                      className={`rounded-lg p-sm text-sm ${n.is_system_note ? "bg-surface-container-low border border-outline-variant/30" : "bg-surface-container-high"}`}
+                    >
+                      <div className="flex items-start gap-2">
+                        {n.is_system_note && (
+                          <span className="text-on-surface-variant mt-0.5 flex-shrink-0 material-symbols-outlined text-sm">settings</span>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-on-surface ${n.is_system_note ? "italic text-on-surface-variant text-xs" : ""}`}>
+                            {n.note}
+                          </p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="text-[10px] text-on-surface-variant">
+                              {n.addedBy?.name ?? `User #${n.added_by_user_id ?? "system"}`}
+                            </span>
+                            <span className="text-[10px] text-on-surface-variant">
+                              {new Date(n.created_at).toLocaleString()}
+                            </span>
+                            {n.is_system_note && (
+                              <span className="text-[10px] text-on-surface-variant italic">System Note</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -534,10 +748,21 @@ function DefectRow({
 
       {/* Classify Dialog */}
       {classifyOpen && (
-        <Dialog onClose={() => setClassifyOpen(false)} title="Classify Defect">
+        <Dialog onClose={() => setClassifyOpen(false)} title={isNew ? "Classify Defect" : "Reclassify Defect"}>
           <ClassifyForm
             onSave={(data) => classifyMut.mutate(data)}
             loading={classifyMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Assign Developer Dialog */}
+      {assignOpen && (
+        <Dialog onClose={() => setAssignOpen(false)} title="Assign to Developer">
+          <AssignDeveloperForm
+            projectId={defect.project_id}
+            onAssign={(data) => assignMut.mutate(data)}
+            loading={assignMut.isPending}
           />
         </Dialog>
       )}
@@ -572,6 +797,74 @@ function DefectRow({
             onSave={(note) => addNoteMut.mutate(note)}
             loading={addNoteMut.isPending}
           />
+        </Dialog>
+      )}
+
+      {/* Flag Retest from New Dialog */}
+      {flagRetestNewOpen && (
+        <Dialog onClose={() => setFlagRetestNewOpen(false)} title="Flag for Retesting">
+          <FlagRetestFromNewForm
+            onSave={(data) => flagRetestFromNewMut.mutate(data)}
+            loading={flagRetestFromNewMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Flag Blocked Dialog */}
+      {flagBlockedNewOpen && (
+        <Dialog onClose={() => setFlagBlockedNewOpen(false)} title="Flag as Blocked">
+          <FlagBlockedForm
+            onSave={(reason) => flagBlockedNewMut.mutate(reason)}
+            loading={flagBlockedNewMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Flag Accepted by Business Dialog */}
+      {flagBusinessOpen && (
+        <Dialog onClose={() => setFlagBusinessOpen(false)} title="Flag Accepted by Business">
+          <FlagBusinessForm
+            onSave={(note) => flagAcceptedByBusinessMut.mutate(note)}
+            loading={flagAcceptedByBusinessMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Untriaged Warning Dialog */}
+      {untriagedAction && (
+        <Dialog onClose={() => setUntriagedAction(null)} title="Defect Not Triaged">
+          <div className="space-y-md">
+            <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg p-md">
+              <span className="material-symbols-outlined text-amber-600 text-xl flex-shrink-0">warning</span>
+              <div>
+                <p className="font-label-md text-label-md text-amber-900 mb-xs">No severity or priority assigned</p>
+                <p className="font-body-sm text-body-sm text-amber-800">
+                  This defect is still in NEW status without a Severity or Priority classification. 
+                  It is strongly recommended to triage the defect first so downstream teams have the full picture.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-sm">
+              <button
+                onClick={handleClassifyThenAction}
+                className="flex-1 py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 transition-colors"
+              >
+                Triage First
+              </button>
+              <button
+                onClick={() => proceedWithAction(untriagedAction)}
+                className="flex-1 py-sm bg-surface-container-high text-on-surface rounded-lg font-label-md hover:bg-outline-variant transition-colors"
+              >
+                Proceed Anyway
+              </button>
+              <button
+                onClick={() => setUntriagedAction(null)}
+                className="py-sm px-md bg-surface text-on-surface-variant rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </Dialog>
       )}
     </>
@@ -684,6 +977,113 @@ function NoteForm({ onSave, loading }: { onSave: (note: string) => void; loading
       <textarea value={note} onChange={(e) => setNote(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Enter your comment..." required />
       <button type="submit" disabled={loading || !note.trim()} className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
         {loading ? "Saving..." : "Add Comment"}
+      </button>
+    </form>
+  );
+}
+
+function AssignDeveloperForm({ projectId, onAssign, loading }: { projectId: number; onAssign: (data: { assigned_to_user_id: number; support_ticket_number?: string }) => void; loading: boolean }) {
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [ticketNumber, setTicketNumber] = useState("");
+
+  const { data: assignments } = useQuery({
+    queryKey: ["project-users", projectId],
+    queryFn: () => customFetch<ProjectAssignment[]>(`/projects/${projectId}/users`),
+  });
+
+  const developers = assignments?.filter((a) => a.role === "DEVELOPER") ?? [];
+
+  return (
+    <div className="space-y-md">
+      {developers.length === 0 ? (
+        <p className="font-body-sm text-on-surface-variant">
+          No developers are assigned to this project. Add a team member with the DEVELOPER role first.
+        </p>
+      ) : (
+        <form onSubmit={(e) => { e.preventDefault(); if (selectedId) onAssign({ assigned_to_user_id: selectedId, ...(ticketNumber ? { support_ticket_number: ticketNumber } : {}) }); }} className="space-y-md">
+          <div className="space-y-sm">
+            <label className="font-label-sm text-label-sm">Select Developer</label>
+            <select
+              value={selectedId ?? ""}
+              onChange={(e) => setSelectedId(Number(e.target.value))}
+              className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm"
+            >
+              <option value="" disabled>Choose a developer...</option>
+              {developers.map((d) => (
+                <option key={d.user_id} value={d.user_id}>
+                  {d.user.name} ({d.user.username})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-sm">
+            <label className="font-label-sm text-label-sm">External Ticket Ref (optional)</label>
+            <input
+              type="text"
+              value={ticketNumber}
+              onChange={(e) => setTicketNumber(e.target.value)}
+              placeholder="e.g. JIRA-123, SNOW-INC-456"
+              className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm"
+            />
+          </div>
+          <button type="submit" disabled={loading || !selectedId} className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
+            {loading ? "Assigning..." : "Assign"}
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+function FlagRetestFromNewForm({ onSave, loading }: { onSave: (data: { reason: string; targetVerificationRunId?: number }) => void; loading: boolean }) {
+  const [reason, setReason] = useState("Transient issue — flagging for verification");
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); onSave({ reason: reason.trim() }); }} className="space-y-md">
+      <p className="font-body-sm text-on-surface-variant">
+        This will move the defect directly to <strong>Ready for Verification</strong> and create a retest tracking record.
+      </p>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Reason</label>
+        <textarea value={reason} onChange={(e) => setReason(e.target.value)} className="w-full h-20 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Why is this being flagged for retest?" required />
+      </div>
+      <button type="submit" disabled={loading} className="w-full py-sm bg-blue-600 text-white rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
+        {loading ? "Flagging..." : "Flag for Retesting"}
+      </button>
+    </form>
+  );
+}
+
+function FlagBlockedForm({ onSave, loading }: { onSave: (reason: string) => void; loading: boolean }) {
+  const [reason, setReason] = useState("");
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (reason.trim()) onSave(reason.trim()); }} className="space-y-md">
+      <p className="font-body-sm text-on-surface-variant">
+        Moving this NEW defect to <strong>Blocked</strong>. Provide a mandatory explanation of the blocking issue.
+      </p>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Block Reason *</label>
+        <textarea value={reason} onChange={(e) => setReason(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Describe the environmental crash, third-party failure, or missing requirement..." required />
+      </div>
+      <button type="submit" disabled={loading || !reason.trim()} className="w-full py-sm bg-red-600 text-white rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
+        {loading ? "Flagging..." : "Flag as Blocked"}
+      </button>
+    </form>
+  );
+}
+
+function FlagBusinessForm({ onSave, loading }: { onSave: (note: string) => void; loading: boolean }) {
+  const [note, setNote] = useState("");
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (note.trim()) onSave(note.trim()); }} className="space-y-md">
+      <p className="font-body-sm text-on-surface-variant">
+        This will route the defect to the <strong>Passed by Agreement</strong> state. Provide a business justification.
+      </p>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Business Justification *</label>
+        <textarea value={note} onChange={(e) => setNote(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Explain why this defect is accepted by business agreement..." required />
+      </div>
+      <button type="submit" disabled={loading || !note.trim()} className="w-full py-sm bg-purple-600 text-white rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
+        {loading ? "Submitting..." : "Accept by Business"}
       </button>
     </form>
   );

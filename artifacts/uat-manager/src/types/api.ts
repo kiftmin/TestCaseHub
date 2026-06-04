@@ -12,15 +12,14 @@ export interface ProjectAssignment {
   id: number;
   project_id: number;
   user_id: number;
-  role:
-    | "TEST_LEAD"
-    | "TEST_AUTHOR"
-    | "BUSINESS_OWNER"
-    | "TESTER"
-    | "DEVELOPER"
-    | "UAT_COORDINATOR";
+  role: string;
   assigned_at: string;
-  user?: User;
+  user: {
+    id: number;
+    username: string;
+    name: string;
+    email: string;
+  };
 }
 
 export interface Project {
@@ -82,6 +81,7 @@ export interface TestCase {
   sort_order?: number;
   created_at: string;
   steps?: TestStep[];
+  useCase?: UseCase;
 }
 
 export interface TestStep {
@@ -145,9 +145,13 @@ export interface Execution {
   tester_id: number | null;
   overall_result: "passed" | "failed" | "passed_by_agreement" | null;
   executed_at: string | null;
-  tester_notes: string | null;
+  notes: string | null;
+  tester_name: string | null;
+  status: string;
+  iteration_number: number;
   testCase?: TestCase;
   stepResults?: StepResult[];
+  tester?: User;
 }
 
 export interface StepResult {
@@ -157,10 +161,12 @@ export interface StepResult {
   actual_result: string | null;
   comments: string | null;
   passed: boolean;
+  step?: TestStep;
 }
 
 export interface Defect {
   id: number;
+  bug_number: number | null;
   project_id: number;
   test_run_id: number | null;
   test_case_id: number;
@@ -182,6 +188,7 @@ export interface Defect {
   resolved_at: string | null;
   closed_at: string | null;
   testCase?: TestCase;
+  execution?: Execution;
   retests?: DefectRetest[];
   notes?: DefectNote[];
   project?: Project;
@@ -240,7 +247,9 @@ export interface DefectNote {
   discussion_id: number | null;
   added_by_user_id: number | null;
   note: string;
+  is_system_note: boolean;
   created_at: string;
+  addedBy?: User;
 }
 
 export interface DashboardSummary {

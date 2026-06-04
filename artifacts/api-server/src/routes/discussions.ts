@@ -7,6 +7,22 @@ import { authenticate, authorize, authorizeProjectRole, checkProjectRole, Authen
 
 const router = express.Router();
 
+// GET /api/test-runs/:testRunId/discussions — open to authenticated
+router.get("/test-runs/:testRunId/discussions", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const testRunId = Number(req.params.testRunId);
+    const discussions = await db.query.teamDiscussions.findMany({
+      where: eq(schema.teamDiscussions.test_run_id, testRunId),
+      orderBy: desc(schema.teamDiscussions.created_at),
+      with: {
+        participants: { with: { user: true } },
+        initiatedBy: true,
+      },
+    });
+    res.json(discussions);
+  } catch (err) { next(err); }
+});
+
 // POST /api/test-runs/:testRunId/discussions — TEST_LEAD only
 router.post("/test-runs/:testRunId/discussions", async (req: AuthenticatedRequest, res, next) => {
   try {

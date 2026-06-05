@@ -490,7 +490,7 @@ router.get("/:testRunId/full-report", async (req: AuthenticatedRequest, res, nex
             tester: true,
           },
         },
-        executions: { with: { testCase: true, stepResults: true } },
+        executions: { with: { testCase: true, stepResults: { orderBy: [desc(schema.stepResults.id)] } } },
         defects: { with: { testCase: true, retests: true } },
       },
     });

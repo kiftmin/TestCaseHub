@@ -53,20 +53,22 @@ try {
     ON executions (test_run_id, test_case_id)
   `);
 
-  // Clean up duplicate step_results keeping only the latest per execution+step
+  // Clean up duplicate step_results keeping only the most recently updated row. This prevents startup
+  // cleanup from reverting user data when old duplicate rows exist. We order by recorded_at DESC, then id DESC
+  // to deterministically keep the latest updated row (or the highest id in case of identical timestamps).
   const srResult = await client.query(`
-    DELETE FROM step_results sr1 USING (
-      SELECT execution_id, step_id, MAX(id) AS max_id
-      FROM step_results
-      GROUP BY execution_id, step_id
-      HAVING COUNT(*) > 1
-    ) dup
-    WHERE sr1.execution_id = dup.execution_id
-      AND sr1.step_id = dup.step_id
-      AND sr1.id <> dup.max_id
+    DELETE FROM step_results
+    WHERE id IN (
+      SELECT id
+      FROM (
+        SELECT id, ROW_NUMBER() OVER (PARTITION BY execution_id, step_id ORDER BY recorded_at DESC, id DESC) as rn
+        FROM step_results
+      ) ranked
+      WHERE ranked.rn > 1
+    )
   `);
   if (srResult.rowCount && srResult.rowCount > 0) {
-    console.log(`[startup] Removed ${srResult.rowCount} duplicate step_result(s)`);
+    console.log(`[startup] Removed ${srResult.rowCount} duplicate step_result(s), keeping latest by recorded_at`);
   }
 
   await client.query(`

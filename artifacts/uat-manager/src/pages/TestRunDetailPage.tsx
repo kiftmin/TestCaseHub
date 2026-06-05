@@ -742,6 +742,7 @@ function ExecutionModal({
   const [submitting, setSubmitting] = useState(false);
   const [offlineBanner, setOfflineBanner] = useState(false);
   const [proofImages, setProofImages] = useState<Record<number, string>>({});
+  const [initialLoading, setInitialLoading] = useState(true);
   const [showConfirm, setShowConfirm] = useState(false);
 
   const handleClose = useCallback(() => {
@@ -794,16 +795,17 @@ function ExecutionModal({
       setTesterNotes(cached.testerNotes);
       setCurrentStep(cached.currentStep);
       setProofImages(cached.proofImages);
+      setInitialLoading(false);
       return;
     }
 
-    if (!entryConfirmed) return;
+    if (!entryConfirmed) { setInitialLoading(false); return; }
     let cancelled = false;
 
     const initExec = async () => {
       try {
         const user = getStoredUser();
-        if (!user) { toast.error("User not found"); return; }
+        if (!user) { toast.error("User not found"); setInitialLoading(false); return; }
 
         const created = await customFetch<Execution>(`/test-runs/${testRunId}/test-cases/${testCase.id}/execute`, {
           method: "POST",
@@ -858,11 +860,13 @@ function ExecutionModal({
         } else {
           toast.error(errMsg);
         }
+      } finally {
+        if (!cancelled) setInitialLoading(false);
       }
     };
     initExec();
     return () => { cancelled = true; };
-  }, [entryConfirmed, testRunId, testCase.id]);
+  }, [entryConfirmed, testRunId, testCase.id, readOnly]);
 
   // Sync state to cache whenever execution data changes (survives component remounts)
   useEffect(() => {
@@ -1132,53 +1136,67 @@ function ConfirmDialog({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-lg">
-          {readOnly && !execution && totalSteps > 0 && (
-            <div className="mb-md bg-surface-container-high border border-outline-variant rounded-lg p-md flex items-center gap-md">
-              <span className="material-symbols-outlined text-on-surface-variant">info</span>
-              <p className="text-body-sm text-on-surface-variant">This test case was not executed during this run.</p>
-            </div>
-          )}
-          {mode === "guided" ? (
-            <GuidedMode
-              step={stepList[currentStep]}
-              totalSteps={totalSteps}
-              result={results[stepList[currentStep]?.id] ?? { passed: null, actual_result: "", comments: "" }}
-              readOnly={readOnly}
-              onResult={(r) => {
-                const s = stepList[currentStep];
-                if (!s) return;
-                setResults((prev) => ({ ...prev, [s.id]: { ...prev[s.id], ...r } }));
-                if (r.passed !== undefined && r.passed !== null) {
-                  submitStepResult(s.id, r.passed, r.actual_result ?? "", r.comments ?? "");
-                }
-              }}
-              onSubmit={(passed, actual_result, comments) => {
-                const s = stepList[currentStep];
-                if (!s) return;
-                submitStepResult(s.id, passed, actual_result, comments);
-              }}
-              proofImage={stepList[currentStep] ? proofImages[stepList[currentStep].id] : undefined}
-              onProofUpload={(file) => {
-                if (stepList[currentStep]) {
-                  handleProofUpload(stepList[currentStep].id, file);
-                }
-              }}
-            />
-          ) : (
-            <QuickMode
-              steps={stepList}
-              results={results}
-              readOnly={readOnly}
-              onResult={(stepId, r) => {
-                setResults((prev) => ({ ...prev, [stepId]: { ...prev[stepId], ...r } }));
-                submitStepResult(stepId, r.passed ?? false, r.actual_result ?? "", r.comments ?? "");
-              }}
-              overallResult={overallResult}
-              onOverallResult={readOnly ? undefined : setOverallResult}
-              testerNotes={testerNotes}
-              onTesterNotes={readOnly ? undefined : setTesterNotes}
-            />
-          )}
+          {(() => {
+            if (initialLoading) {
+              return (
+                <div className="flex flex-col items-center justify-center h-full text-on-surface-variant gap-sm">
+                  <div className="w-8 h-8 border-4 border-secondary border-t-transparent rounded-full animate-spin" />
+                  <p className="text-body-sm">Loading execution data...</p>
+                </div>
+              );
+            }
+            return (
+              <div className="contents">
+              {readOnly && !execution && totalSteps > 0 && (
+                <div className="mb-md bg-surface-container-high border border-outline-variant rounded-lg p-md flex items-center gap-md">
+                  <span className="material-symbols-outlined text-on-surface-variant">info</span>
+                  <p className="text-body-sm text-on-surface-variant">This test case was not executed during this run.</p>
+                </div>
+              )}
+              {mode === "guided" ? (
+                <GuidedMode
+                  step={stepList[currentStep]}
+                  totalSteps={totalSteps}
+                  result={results[stepList[currentStep]?.id] ?? { passed: null, actual_result: "", comments: "" }}
+                  readOnly={readOnly}
+                  onResult={(r) => {
+                    const s = stepList[currentStep];
+                    if (!s) return;
+                    setResults((prev) => ({ ...prev, [s.id]: { ...prev[s.id], ...r } }));
+                    if (r.passed !== undefined && r.passed !== null) {
+                      submitStepResult(s.id, r.passed, r.actual_result ?? "", r.comments ?? "");
+                    }
+                  }}
+                  onSubmit={(passed, actual_result, comments) => {
+                    const s = stepList[currentStep];
+                    if (!s) return;
+                    submitStepResult(s.id, passed, actual_result, comments);
+                  }}
+                  proofImage={stepList[currentStep] ? proofImages[stepList[currentStep].id] : undefined}
+                  onProofUpload={(file) => {
+                    if (stepList[currentStep]) {
+                      handleProofUpload(stepList[currentStep].id, file);
+                    }
+                  }}
+                />
+              ) : (
+                <QuickMode
+                  steps={stepList}
+                  results={results}
+                  readOnly={readOnly}
+                  onResult={(stepId, r) => {
+                    setResults((prev) => ({ ...prev, [stepId]: { ...prev[stepId], ...r } }));
+                    submitStepResult(stepId, r.passed ?? false, r.actual_result ?? "", r.comments ?? "");
+                  }}
+                  overallResult={overallResult}
+                  onOverallResult={readOnly ? undefined : setOverallResult}
+                  testerNotes={testerNotes}
+                  onTesterNotes={readOnly ? undefined : setTesterNotes}
+                />
+              )}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Guided mode footer */}
@@ -1186,7 +1204,15 @@ function ConfirmDialog({
           <div className="px-lg py-md border-t border-outline-variant flex items-center justify-between bg-surface-container-low">
             <button
               disabled={currentStep === 0}
-              onClick={() => setCurrentStep((s) => Math.max(0, s - 1))}
+              onClick={() => {
+                const s = stepList[currentStep];
+                const r = results[s.id];
+                // Persist current step result before navigating back
+                if (r?.passed !== undefined && r?.passed !== null) {
+                  submitStepResult(s.id, r.passed, r.actual_result ?? "", r.comments ?? "");
+                }
+                setCurrentStep((s) => Math.max(0, s - 1));
+              }}
               className="px-lg py-sm rounded-lg border border-outline-variant font-label-md text-label-md text-on-surface flex items-center gap-sm hover:bg-surface-container-high transition-all disabled:opacity-30"
             >
               <span className="material-symbols-outlined">arrow_back</span>
@@ -1201,6 +1227,8 @@ function ConfirmDialog({
                       const r = results[s.id];
                       if (r?.passed === null) { toast.error("Record a result first"); return; }
                       if (r?.passed === false && !r?.actual_result) { toast.error("Actual result is required when failing"); return; }
+                      // Persist current step result before navigating
+                      if (r) submitStepResult(s.id, r.passed ?? false, r.actual_result ?? "", r.comments ?? "");
                       setCurrentStep((s) => s + 1);
                     }}
                     className="px-lg py-sm rounded-lg bg-secondary text-on-secondary font-label-md text-label-md flex items-center gap-sm hover:brightness-110 transition-all"
@@ -1211,7 +1239,15 @@ function ConfirmDialog({
                 </>
               ) : (
                 <button
-                  onClick={() => setShowConfirm(true)}
+                  onClick={async () => {
+                    const s = stepList[currentStep];
+                    const r = results[s.id];
+                    // Persist current step result before prompting for completion
+                    if (r?.passed !== undefined && r?.passed !== null) {
+                      await submitStepResult(s.id, r.passed, r.actual_result ?? "", r.comments ?? "");
+                    }
+                    setShowConfirm(true);
+                  }}
                   disabled={submitting}
                   className="px-lg py-sm rounded-lg bg-secondary text-on-secondary font-label-md text-label-md hover:brightness-110 transition-all disabled:opacity-50"
                 >

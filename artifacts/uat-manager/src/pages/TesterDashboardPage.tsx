@@ -135,7 +135,7 @@ function RunCard({ group, onOpen }: { group: RunGroup; onOpen: (runId: number) =
           <div className="flex items-center justify-between text-label-sm">
             <span className="text-on-surface-variant font-bold uppercase tracking-wider">Progress</span>
             <span className="font-bold text-on-surface">
-              {completed} / {totalCases} cases
+              {completed} / {totalCases} scenarios
             </span>
           </div>
           <div className="w-full bg-surface-container-high rounded-full h-2 overflow-hidden">
@@ -240,34 +240,40 @@ export function TesterDashboardPage() {
       map.get(runId)!.useCases.push(r);
     });
 
-    // Compute progress for each run
+    // Compute progress for each run — count scenarios (not test cases)
     for (const [, group] of map) {
-      let completed = 0, inProg = 0, notStarted = 0, totalCases = 0;
+      let completed = 0, inProg = 0, notStarted = 0;
       const runExecs = (group.run as any).executions ?? [];
+
       for (const uc of group.useCases) {
         const tcs = uc.useCase?.testCases ?? [];
-        for (const tc of tcs) {
-          totalCases++;
+        // Compute this scenario's progress from its test cases
+        const caseProgresses = tcs.map((tc: any) => {
           const exec = runExecs.find((e: any) => e.test_case_id === tc.id);
-          if (!exec) {
-            notStarted++;
-            continue;
-          }
-          const progress = computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);
-          if (progress === "Completed") completed++;
-          else if (progress === "In Progress") inProg++;
-          else notStarted++;
-        }
+          if (!exec) return "Not Started" as CaseProgress;
+          if (exec.overall_result != null) return "Completed" as CaseProgress;
+          return computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);
+        });
+        const scenarioProgress: CaseProgress =
+          caseProgresses.length === 0 ? "Not Started" :
+          caseProgresses.every((p: CaseProgress) => p === "Completed") ? "Completed" :
+          caseProgresses.some((p: CaseProgress) => p === "In Progress" || p === "Completed") ? "In Progress" :
+          "Not Started";
+
+        if (scenarioProgress === "Completed") completed++;
+        else if (scenarioProgress === "In Progress") inProg++;
+        else notStarted++;
       }
 
+      const totalScenarios = group.useCases.length;
       let runProgress: CaseProgress = "Not Started";
-      if (totalCases > 0 && completed === totalCases) runProgress = "Completed";
+      if (totalScenarios > 0 && completed === totalScenarios) runProgress = "Completed";
       else if (completed > 0 || inProg > 0) runProgress = "In Progress";
 
       group.completed = completed;
       group.inProgress = inProg;
       group.notStarted = notStarted;
-      group.totalCases = totalCases;
+      group.totalCases = totalScenarios; // reusing field — now means totalScenarios
       group.progress = runProgress;
     }
 

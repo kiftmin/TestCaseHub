@@ -157,29 +157,19 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
     }
   }, [testRun, useCases, allExecutions]);
 
-  // Compute scenario-level progress from step results
+  // Compute scenario-level progress — always derive from executions so we
+  // are never fooled by a stale backend status (e.g. "passed" when only
+  // 1 of 3 test cases has been executed).
   const scenarioProgresses = useMemo(() => {
     const map = new Map<number, CaseProgress>();
     useCases.forEach(uc => {
-      // First: use the backend-computed status on testRunUseCase — it's authoritative
-      // because syncUseCaseStatus runs server-side after every execution update.
-      const backendStatus = uc.status;
-      if (backendStatus === "passed" || backendStatus === "passed_by_agreement" || backendStatus === "failed") {
-        map.set(uc.use_case_id, "Completed");
-        return;
-      }
-      if (backendStatus === "in_progress") {
-        // May still be fully completed client-side — check executions
-        const tcs = uc.useCase?.testCases ?? [];
-        const computed = computeScenarioProgress(tcs, allExecutions);
-        map.set(uc.use_case_id, computed === "Completed" ? "Completed" : "In Progress");
-        return;
-      }
-      // pending — check if any work has started
       const tcs = uc.useCase?.testCases ?? [];
+      // computeScenarioProgress already handles:
+      //   - exec.overall_result != null  → Completed for that case
+      //   - no exec for a tc             → Not Started for that case
+      //   - then rolls up: all Completed → Completed, any In Progress/Completed → In Progress
       map.set(uc.use_case_id, computeScenarioProgress(tcs, allExecutions));
     });
-    console.log("[TesterScenarioPage] computed scenarioProgresses", Object.fromEntries(map));
     return map;
   }, [useCases, allExecutions]);
 

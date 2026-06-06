@@ -47,25 +47,30 @@ export async function syncUseCaseStatus(testRunId: number, useCaseId: number): P
     with: { stepResults: true },
   });
 
+  // A scenario is only terminal when EVERY test case has a terminal execution.
+  // executions only contains rows that exist — missing rows mean Not Started.
+  const allTestCasesHaveTerminalExec =
+    testCaseIds.length > 0 &&
+    testCaseIds.every((tcId) => {
+      const exec = executions.find((e) => e.test_case_id === tcId);
+      return exec && (exec.overall_result === "passed" || exec.overall_result === "failed" || exec.overall_result === "passed_by_agreement");
+    });
+
   let newStatus = "pending";
   if (executions.length > 0) {
     const failed = executions.some((e) => e.overall_result === "failed");
-    const allPassed = executions.every(
-      (e) => e.overall_result === "passed" || e.overall_result === "passed_by_agreement"
-    );
     const hasPassedByAgreement = executions.some((e) => e.overall_result === "passed_by_agreement");
     const hasStepResults = executions.some((e) =>
       (e.stepResults ?? []).length > 0 && (e.stepResults ?? []).some(r => r.passed != null)
     );
     const execInProgress = executions.some((e) => e.status === "in_progress");
 
-    if (failed) {
+    if (failed && allTestCasesHaveTerminalExec) {
+      // Only mark failed when all cases are done (no remaining Not Started)
       newStatus = "failed";
-    } else if (allPassed) {
+    } else if (allTestCasesHaveTerminalExec && !failed) {
       newStatus = hasPassedByAgreement ? "passed_by_agreement" : "passed";
-    } else if (hasStepResults) {
-      newStatus = "in_progress";
-    } else if (execInProgress) {
+    } else if (failed || hasStepResults || execInProgress) {
       newStatus = "in_progress";
     }
   }

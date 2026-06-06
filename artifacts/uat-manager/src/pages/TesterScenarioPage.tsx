@@ -128,6 +128,7 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
     queryKey: ["test-run", testRunId],
     queryFn: () => customFetch<TestRun>(`/test-runs/${testRunId}`),
     enabled: !!testRunId,
+    staleTime: 0, // always refetch so scenario progress is accurate after case submissions
   });
 
   const useCases = useMemo(() => testRun?.useCases ?? [], [testRun]);

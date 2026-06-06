@@ -835,11 +835,11 @@ function StepWizard({
           <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-lg space-y-md">
             <header className="flex items-center gap-md pb-md border-b border-outline-variant">
               <div className="shrink-0 w-12 h-12 rounded-full bg-primary text-on-primary flex items-center justify-center font-headline-md text-headline-md">
-                {currentStep.step_number}
+                {stepIndex + 1}
               </div>
               <div className="min-w-0">
                 <p className="text-label-sm uppercase tracking-wider font-bold text-on-surface-variant">
-                  Step {currentStep.step_number} of {steps.length}
+                  Step {stepIndex + 1} of {steps.length}
                 </p>
                 <h2 className="font-title-sm text-title-sm text-on-surface">
                   Execute the following action
@@ -1114,7 +1114,7 @@ function StepSidebar({
                   ) : isFailed ? (
                     <span className="material-symbols-outlined text-[14px]">close</span>
                   ) : (
-                    s.step_number
+                    i + 1
                   )}
                 </span>
                 <span className="min-w-0 flex-1">
@@ -1430,7 +1430,7 @@ function QuickWizard({
 
       {/* All steps in one scrollable list */}
       <ol className="space-y-md">
-        {steps.map((s) => {
+        {steps.map((s, stepIdx) => {
           const e = entries.get(s.id) ?? { ...EMPTY_ENTRY };
           const persisted = persistedResults.get(s.id);
           const optimistic = localResults.get(s.id);
@@ -1457,12 +1457,12 @@ function QuickWizard({
                   ) : effective === false ? (
                     <span className="material-symbols-outlined text-[18px]">close</span>
                   ) : (
-                    s.step_number
+                    stepIdx + 1
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-label-sm uppercase tracking-wider font-bold text-on-surface-variant">
-                    Step {s.step_number} of {steps.length}
+                    Step {stepIdx + 1} of {steps.length}
                   </p>
                   <p className="text-body-lg text-on-surface leading-relaxed font-body-base mt-1">
                     {s.instruction}

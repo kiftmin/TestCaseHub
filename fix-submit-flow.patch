@@ -1,0 +1,150 @@
+From f4b325500ec370802f4d60035f48920bf9745d76 Mon Sep 17 00:00:00 2001
+From: Fix Bot <fix@testcasehub.dev>
+Date: Sat, 6 Jun 2026 12:41:00 +0000
+Subject: [PATCH] fix: correct submit flow and progress staleness
+
+- QuickWizard handleSubmit: snapshot full step results BEFORE clearing
+  entries, so anyFailed calculation is not reading an emptied map
+- QuickWizard handleSubmit: await test-run cache invalidation before
+  navigating so TestCaseSelector sees fresh data on arrival
+- GuidedWizard: same await on test-run invalidation before navigate
+- TestCaseSelector test-run + use-case queries: staleTime=0 so they
+  always refetch on mount, not serve stale cache
+- TesterScenarioPage test-run query: staleTime=0 for same reason
+---
+ .../uat-manager/src/pages/TesterCasePage.tsx  | 58 +++++++++++--------
+ .../src/pages/TesterScenarioPage.tsx          |  1 +
+ 2 files changed, 36 insertions(+), 23 deletions(-)
+
+diff --git a/artifacts/uat-manager/src/pages/TesterCasePage.tsx b/artifacts/uat-manager/src/pages/TesterCasePage.tsx
+index ee9da15..5edb40f 100644
+--- a/artifacts/uat-manager/src/pages/TesterCasePage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterCasePage.tsx
+@@ -374,6 +374,7 @@ function TestCaseSelector({
+   const { data: testRun } = useQuery({
+     queryKey: ["test-run", testRunId],
+     queryFn: () => customFetch<TestRun>(`/test-runs/${testRunId}`),
++    staleTime: 0, // always refetch on mount so progress reflects latest submissions
+   });
+ 
+   const { data: useCase, isLoading } = useQuery({
+@@ -382,6 +383,7 @@ function TestCaseSelector({
+       customFetch<{ id: number; name: string; code: string; testCases: (TestCase & { steps?: TestStep[]; stepResults?: StepResult[] })[] }>(
+         `/use-cases/${scenarioId}`
+       ),
++    staleTime: 0,
+   });
+ 
+   const testCases = useMemo(() => useCase?.testCases ?? [], [useCase]);
+@@ -989,7 +991,7 @@ function StepWizard({
+                   toast.error(validateFailedSteps[0]);
+                   return;
+                 }
+-                // Determine overall result from step results
++                // Snapshot results before any state mutation
+                 const anyFailed = steps.some((s) => {
+                   const e = entries.get(s.id);
+                   const persisted = execution.stepResults?.find((r) => r.step_id === s.id);
+@@ -1004,8 +1006,8 @@ function StepWizard({
+                     }),
+                   });
+                   toast.success(previouslySubmitted ? "Results updated" : "Test case saved");
++                  await queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+                   queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+-                  queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+                   queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+                   queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
+                   navigate(`/tester/run/${testRunId}/scenario/${scenarioId}`);
+@@ -1254,37 +1256,43 @@ function QuickWizard({
+ 
+   const handleSubmit = async () => {
+     if (!execution || !readyToSubmit || isSubmitting) return;
+-    // Validate failed steps
+     if (validateFailedSteps.length > 0) {
+       toast.error(validateFailedSteps[0]);
+       return;
+     }
+     setIsSubmitting(true);
++
++    // Snapshot the full result set NOW before any state mutations.
++    // For each step: prefer in-memory entry, fall back to persisted result.
++    const stepSnapshot = steps.map((s) => {
++      const e = entries.get(s.id);
++      const persistedResult = execution.stepResults?.find((r) => r.step_id === s.id);
++      return {
++        stepId: s.id,
++        passed: e?.passed ?? persistedResult?.passed ?? null,
++        actual_result: e?.actual_result ?? persistedResult?.actual_result ?? "",
++        comments: e?.comments ?? persistedResult?.comments ?? "",
++        needsSave: e?.passed != null, // only save if there's an in-memory entry
++      };
++    });
++
++    const anyFailed = stepSnapshot.some((r) => r.passed === false);
++
+     try {
+-      for (const s of steps) {
+-        const e = entries.get(s.id);
+-        if (e?.passed == null) continue;
+-        await customFetch(`/executions/${execution.id}/steps/${s.id}/result`, {
++      // 1. Save any unsaved in-memory step results
++      for (const snap of stepSnapshot) {
++        if (!snap.needsSave) continue;
++        await customFetch(`/executions/${execution.id}/steps/${snap.stepId}/result`, {
+           method: "POST",
+           body: JSON.stringify({
+-            passed: e.passed,
+-            actual_result: e.actual_result ?? "",
+-            comments: e.comments ?? "",
++            passed: snap.passed,
++            actual_result: snap.actual_result,
++            comments: snap.comments,
+           }),
+         });
+-        setLocalResults((prev) => {
+-          const next = new Map(prev);
+-          next.set(s.id, e.passed!);
+-          return next;
+-        });
+-        removeDraft(s.id);
+       }
+-      // Determine overall result and mark execution as completed
+-      const anyFailed = steps.some((s) => {
+-        const e = entries.get(s.id);
+-        const persistedResult = execution.stepResults?.find((r) => r.step_id === s.id);
+-        return (e?.passed ?? persistedResult?.passed ?? null) === false;
+-      });
++
++      // 2. Mark execution as completed with correct overall_result
+       await customFetch(`/executions/${execution.id}`, {
+         method: "PATCH",
+         body: JSON.stringify({
+@@ -1292,8 +1300,12 @@ function QuickWizard({
+           overall_result: anyFailed ? "failed" : "passed",
+         }),
+       });
++
++      // 3. Clear drafts after successful save
++      steps.forEach((s) => removeDraft(s.id));
++
+       toast.success(previouslySubmitted ? "Results updated" : "Test case complete");
+-      queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
++      await queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+       queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+       queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
+       queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+diff --git a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+index 18fb1b8..4747af9 100644
+--- a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+@@ -128,6 +128,7 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
+     queryKey: ["test-run", testRunId],
+     queryFn: () => customFetch<TestRun>(`/test-runs/${testRunId}`),
+     enabled: !!testRunId,
++    staleTime: 0, // always refetch so scenario progress is accurate after case submissions
+   });
+ 
+   const useCases = useMemo(() => testRun?.useCases ?? [], [testRun]);
+-- 
+2.43.0
+

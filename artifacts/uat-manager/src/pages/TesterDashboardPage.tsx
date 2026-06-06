@@ -31,6 +31,7 @@ type TestRunSummary = {
 
 type TesterRunItem = TestRunUseCase & {
   testRun?: TestRunSummary;
+  is_mine?: boolean;
 };
 
 type RunGroup = {
@@ -284,12 +285,14 @@ export function TesterDashboardPage() {
     const allUseCases = grouped.flatMap((g) => g.useCases);
     const totalRuns = grouped.length;
     const activeRuns = grouped.filter((g) => g.run.status !== "completed").length;
-    const totalScenarios = allUseCases.length;
-    const completedToday = allUseCases.filter((uc) => {
-      return isToday(uc.updated_at);
-    }).length;
-    const completedRuns = grouped.filter((g) => g.progress === "Completed").length;
-    const passRate = completedRuns > 0 ? Math.round((completedRuns / totalRuns) * 100) : null;
+    // Only count scenarios assigned to this tester
+    const totalScenarios = allUseCases.filter((uc) => uc.is_mine !== false).length;
+    const completedToday = allUseCases.filter((uc) => uc.is_mine !== false && isToday(uc.updated_at)).length;
+    // Pass rate = % of completed executions that passed (across all runs)
+    const allExecs = grouped.flatMap((g) => (g.run as any).executions ?? []);
+    const terminalExecs = allExecs.filter((e: any) => e.overall_result != null);
+    const passedExecs = terminalExecs.filter((e: any) => e.overall_result === "passed" || e.overall_result === "passed_by_agreement");
+    const passRate = terminalExecs.length > 0 ? Math.round((passedExecs.length / terminalExecs.length) * 100) : null;
     return { totalRuns, activeRuns, totalScenarios, completedToday, passRate };
   }, [grouped]);
 
@@ -352,7 +355,7 @@ export function TesterDashboardPage() {
           icon="percent"
           label="Pass Rate"
           value={kpis.passRate != null ? `${kpis.passRate}%` : "—"}
-          hint={kpis.passRate != null ? "Across all completed scenarios" : "No data yet"}
+          hint={kpis.passRate != null ? "Steps passed vs total executed" : "No executions yet"}
           tone={kpis.passRate != null && kpis.passRate < 70 ? "warning" : "default"}
         />
       </section>

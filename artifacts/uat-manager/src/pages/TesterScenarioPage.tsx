@@ -128,7 +128,8 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
     queryKey: ["test-run", testRunId],
     queryFn: () => customFetch<TestRun>(`/test-runs/${testRunId}`),
     enabled: !!testRunId,
-    staleTime: 0, // always refetch so scenario progress is accurate after case submissions
+    staleTime: 0,
+    refetchOnMount: "always", // always fetch fresh — don't serve stale progress
   });
 
   const useCases = useMemo(() => testRun?.useCases ?? [], [testRun]);
@@ -142,7 +143,7 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
       console.log("[TesterScenarioPage] testRun loaded", {
         useCaseCount: useCases.length,
         executionCount: allExecutions.length,
-        executions: allExecutions.map(e => ({ id: e.id, test_case_id: e.test_case_id, stepResultsCount: e.stepResults?.length })),
+        executions: allExecutions.map(e => ({ id: e.id, test_case_id: e.test_case_id, overall_result: e.overall_result, status: e.status, stepResultsCount: e.stepResults?.length })),
         useCases: useCases.map(uc => ({
           use_case_id: uc.use_case_id,
           testCaseCount: uc.useCase?.testCases?.length,
@@ -160,10 +161,24 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
   const scenarioProgresses = useMemo(() => {
     const map = new Map<number, CaseProgress>();
     useCases.forEach(uc => {
+      // First: use the backend-computed status on testRunUseCase — it's authoritative
+      // because syncUseCaseStatus runs server-side after every execution update.
+      const backendStatus = uc.status;
+      if (backendStatus === "passed" || backendStatus === "passed_by_agreement" || backendStatus === "failed") {
+        map.set(uc.use_case_id, "Completed");
+        return;
+      }
+      if (backendStatus === "in_progress") {
+        // May still be fully completed client-side — check executions
+        const tcs = uc.useCase?.testCases ?? [];
+        const computed = computeScenarioProgress(tcs, allExecutions);
+        map.set(uc.use_case_id, computed === "Completed" ? "Completed" : "In Progress");
+        return;
+      }
+      // pending — check if any work has started
       const tcs = uc.useCase?.testCases ?? [];
       map.set(uc.use_case_id, computeScenarioProgress(tcs, allExecutions));
     });
-    // Debug: log computed progress
     console.log("[TesterScenarioPage] computed scenarioProgresses", Object.fromEntries(map));
     return map;
   }, [useCases, allExecutions]);

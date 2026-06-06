@@ -68,6 +68,7 @@ export interface UseCase {
   category: string | null;
   sort_order?: number;
   created_at: string;
+  testCases?: (TestCase & { steps?: TestStep[] })[];
 }
 
 export interface TestCase {
@@ -125,6 +126,8 @@ export interface TestRunUseCase {
   tester_sign_off_at: string | null;
   free_pass: boolean | null;
   free_pass_reason: string | null;
+  created_at: string;
+  updated_at: string;
   useCase?: UseCase;
   tester?: User;
 }
@@ -160,7 +163,7 @@ export interface StepResult {
   step_id: number;
   actual_result: string | null;
   comments: string | null;
-  passed: boolean;
+  passed: boolean | null;
   step?: TestStep;
 }
 

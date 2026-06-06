@@ -190,7 +190,17 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
   }
 
   const allUseCases = (testRun as TestRun & { useCases?: TestRunUseCase[] })?.useCases ?? [];
-  const useCases = allUseCases.filter((uc) => uc.assigned_tester_id === getStoredUser()?.userId);
+  const myUserId = getStoredUser()?.userId;
+  const filteredUseCases = canManage
+    ? allUseCases
+    : allUseCases.filter((uc) => uc.assigned_tester_id === myUserId);
+  const useCases = canManage
+    ? [...filteredUseCases].sort((a, b) => {
+        const aUnassigned = a.assigned_tester_id == null ? 0 : 1;
+        const bUnassigned = b.assigned_tester_id == null ? 0 : 1;
+        return aUnassigned - bUnassigned;
+      })
+    : filteredUseCases;
 
   const handleDownloadQR = () => {
     if (qrData?.qrDataUrl) {
@@ -372,10 +382,19 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
         <div className="col-span-8 space-y-lg">
           <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm">
             <div className="px-lg py-md border-b border-outline-variant flex items-center justify-between">
-              <h2 className="font-title-sm text-title-sm">Execution Scenarios</h2>
+              <div>
+                <h2 className="font-title-sm text-title-sm">
+                  {canManage ? "All Scenarios" : "Execution Scenarios"}
+                </h2>
+                <p className="text-label-sm text-on-surface-variant mt-0.5">
+                  {canManage
+                    ? "Assign testers to scenarios below."
+                    : "Scenarios assigned to you for this run."}
+                </p>
+              </div>
               <div className="flex items-center gap-sm">
                 <span className="px-sm py-xs bg-surface-container-high rounded text-label-sm text-on-surface-variant">
-                  {useCases.length} Total
+                  {useCases.length} {canManage ? "of " + allUseCases.length + " Total" : "Total"}
                 </span>
               </div>
             </div>

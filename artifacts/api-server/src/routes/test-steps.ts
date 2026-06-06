@@ -59,7 +59,13 @@ router.post("/", async (req: AuthenticatedRequest, res, next) => {
     await logAudit({ entityType: "test_step", entityId: inserted.id, changedByUserId: req.user!.userId, toStatus: "created" });
 
     res.status(201).json(inserted);
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("test_steps_test_case_id_step_number_unique")) {
+      res.status(409).json({ message: `Step number already exists in this test case.` });
+      return;
+    }
+    next(err);
+  }
 });
 
 // POST /api/test-steps/bulk
@@ -92,7 +98,13 @@ router.post("/bulk", async (req: AuthenticatedRequest, res, next) => {
     await bumpProjectVersion(useCase.project_id);
 
     res.status(201).json(inserted);
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("test_steps_test_case_id_step_number_unique")) {
+      res.status(409).json({ message: `One or more step numbers already exist in this test case.` });
+      return;
+    }
+    next(err);
+  }
 });
 
 // PUT /api/test-steps/:stepId — Admin, TEST_LEAD, TEST_AUTHOR (with Zod validation)
@@ -127,7 +139,13 @@ router.put("/:stepId", async (req: AuthenticatedRequest, res, next) => {
     await logAudit({ entityType: "test_step", entityId: id, changedByUserId: req.user!.userId, toStatus: "updated" });
 
     res.json(updated);
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("test_steps_test_case_id_step_number_unique")) {
+      res.status(409).json({ message: `Step number already exists in this test case.` });
+      return;
+    }
+    next(err);
+  }
 });
 
 // DELETE /api/test-steps/:stepId — Admin, TEST_LEAD, TEST_AUTHOR

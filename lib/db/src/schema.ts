@@ -209,6 +209,7 @@ export const testRunUseCases = pgTable("test_run_use_cases", {
   tester_sign_off: boolean("tester_sign_off").notNull().default(false),
   tester_sign_off_at: timestamp("tester_sign_off_at", { withTimezone: true }),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const testRunUseCasesRelations = relations(testRunUseCases, ({ one, many }) => ({

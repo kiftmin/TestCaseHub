@@ -47,6 +47,11 @@ router.post("/", authenticate, authorize(["ADMIN"]), async (req: AuthenticatedRe
       designDate: z.string(),
       testLink: z.string().nullable().optional(),
       testLeadId: z.number(),
+      objectives: z.string().nullable().optional(),
+      scope: z.string().nullable().optional(),
+      outOfScope: z.string().nullable().optional(),
+      entryCriteria: z.string().nullable().optional(),
+      exitCriteria: z.string().nullable().optional(),
     });
     const data = bodySchema.parse(req.body);
 
@@ -61,6 +66,11 @@ router.post("/", authenticate, authorize(["ADMIN"]), async (req: AuthenticatedRe
         design_date: data.designDate,
         test_link: data.testLink ?? null,
         test_lead_id: data.testLeadId,
+        objectives: data.objectives ?? null,
+        scope: data.scope ?? null,
+        out_of_scope: data.outOfScope ?? null,
+        entry_criteria: data.entryCriteria ?? null,
+        exit_criteria: data.exitCriteria ?? null,
       })
       .returning();
 

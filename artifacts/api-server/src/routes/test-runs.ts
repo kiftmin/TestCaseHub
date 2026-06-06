@@ -8,6 +8,76 @@ import { logAudit } from "../utils/project.js";
 
 const router = express.Router();
 
+/**
+ * Recalculate a single use case's `status` based on the executions of its
+ * test cases and their step results. Called automatically after any execution
+ * or step result is recorded so the dashboard KPIs and per-run counts stay
+ * accurate.
+ *
+ * Logic:
+ *  1. If any execution has overall_result="failed"                    → "failed"
+ *  2. If all executions have terminal overall_results (passed/pba)    → "passed"/"passed_by_agreement"
+ *  3. If any execution has step results (pass/fail recorded)          → "in_progress"
+ *  4. If any execution exists (status = "in_progress")                → "in_progress"
+ *  5. Otherwise                                                       → "pending"
+ */
+export async function syncUseCaseStatus(testRunId: number, useCaseId: number): Promise<void> {
+  const testRunUseCase = await db.query.testRunUseCases.findFirst({
+    where: and(
+      eq(schema.testRunUseCases.test_run_id, testRunId),
+      eq(schema.testRunUseCases.use_case_id, useCaseId),
+    ),
+  });
+  if (!testRunUseCase) return;
+
+  const useCase = await db.query.useCases.findFirst({
+    where: eq(schema.useCases.id, useCaseId),
+    with: { testCases: true },
+  });
+  if (!useCase) return;
+
+  const testCaseIds = useCase.testCases.map((tc) => tc.id);
+  const executions = await db.query.executions.findMany({
+    where: and(
+      eq(schema.executions.test_run_id, testRunId),
+      testCaseIds.length > 0
+        ? sql`${schema.executions.test_case_id} IN (${sql.join(testCaseIds, sql`,`)})`
+        : sql`1=0`,
+    ),
+    with: { stepResults: true },
+  });
+
+  let newStatus = "pending";
+  if (executions.length > 0) {
+    const failed = executions.some((e) => e.overall_result === "failed");
+    const allPassed = executions.every(
+      (e) => e.overall_result === "passed" || e.overall_result === "passed_by_agreement"
+    );
+    const hasPassedByAgreement = executions.some((e) => e.overall_result === "passed_by_agreement");
+    const hasStepResults = executions.some((e) =>
+      (e.stepResults ?? []).length > 0 && (e.stepResults ?? []).some(r => r.passed != null)
+    );
+    const execInProgress = executions.some((e) => e.status === "in_progress");
+
+    if (failed) {
+      newStatus = "failed";
+    } else if (allPassed) {
+      newStatus = hasPassedByAgreement ? "passed_by_agreement" : "passed";
+    } else if (hasStepResults) {
+      newStatus = "in_progress";
+    } else if (execInProgress) {
+      newStatus = "in_progress";
+    }
+  }
+
+  if (testRunUseCase.status !== newStatus) {
+    await db
+      .update(schema.testRunUseCases)
+      .set({ status: newStatus })
+      .where(eq(schema.testRunUseCases.id, testRunUseCase.id));
+  }
+}
+
 async function recalculateTestRunCompletion(testRunId: number): Promise<void> {
   const allUseCases = await db.query.testRunUseCases.findMany({
     where: eq(schema.testRunUseCases.test_run_id, testRunId),
@@ -47,12 +117,15 @@ router.get("/:testRunId", async (req: AuthenticatedRequest, res, next) => {
       where: eq(schema.testRuns.id, testRunId),
       with: {
         checklistItems: { orderBy: [asc(schema.testRunChecklistItems.sort_order)] },
-        executions: true,
+        executions: { with: { stepResults: { orderBy: [desc(schema.stepResults.recorded_at)] } } },
         useCases: {
           with: {
             useCase: {
               with: {
-                testCases: { orderBy: [asc(schema.testCases.sort_order)] },
+                testCases: {
+                  orderBy: [asc(schema.testCases.sort_order)],
+                  with: { steps: true },
+                },
               },
             },
             tester: true,
@@ -365,6 +438,8 @@ router.post("/:testRunId/use-cases/:useCaseId/sync", async (req: AuthenticatedRe
     const testRunId = Number(req.params.testRunId);
     const useCaseId = Number(req.params.useCaseId);
 
+    await syncUseCaseStatus(testRunId, useCaseId);
+
     const testRunUseCase = await db.query.testRunUseCases.findFirst({
       where: and(
         eq(schema.testRunUseCases.test_run_id, testRunId),
@@ -373,45 +448,9 @@ router.post("/:testRunId/use-cases/:useCaseId/sync", async (req: AuthenticatedRe
     });
     if (!testRunUseCase) { res.status(404).json({ message: "Test run use case not found" }); return; }
 
-    // Recalculate status based on executions of related test cases
-    const useCase = await db.query.useCases.findFirst({
-      where: eq(schema.useCases.id, useCaseId),
-      with: { testCases: true },
-    });
-    if (!useCase) { res.status(404).json({ message: "Use case not found" }); return; }
-
-    const testCaseIds = useCase.testCases.map(tc => tc.id);
-    const executions = await db.query.executions.findMany({
-      where: and(
-        eq(schema.executions.test_run_id, testRunId),
-        testCaseIds.length > 0 ? sql`${schema.executions.test_case_id} IN (${sql.join(testCaseIds, sql`,`)})` : sql`1=0`,
-      ),
-    });
-
-    let newStatus = "pending";
-    if (executions.length > 0) {
-      const failed = executions.some(e => e.overall_result === "failed");
-      const allPassed = executions.every(e => e.overall_result === "passed" || e.overall_result === "passed_by_agreement");
-      const inProgress = executions.some(e => e.status === "in_progress");
-      const hasPassedByAgreement = executions.some(e => e.overall_result === "passed_by_agreement");
-
-      if (failed) {
-        newStatus = "failed";
-      } else if (allPassed) {
-        newStatus = hasPassedByAgreement ? "passed_by_agreement" : "passed";
-      } else if (inProgress) {
-        newStatus = "in_progress";
-      }
-    }
-
-    const [updated] = await db.update(schema.testRunUseCases)
-      .set({ status: newStatus })
-      .where(eq(schema.testRunUseCases.id, testRunUseCase.id))
-      .returning();
-
     await recalculateTestRunCompletion(testRunId);
 
-    res.json(updated);
+    res.json(testRunUseCase);
   } catch (err) { next(err); }
 });
 

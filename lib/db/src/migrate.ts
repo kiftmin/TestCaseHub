@@ -27,6 +27,9 @@ async function main() {
   const rawSqlFiles = [
     "0001_add_sort_order.sql",
     "0003_conformance_audit.sql",
+    "0005_test_run_use_cases_updated_at.sql",
+    "0006_backfill_use_case_status.sql",
+    "0007_test_steps_unique_step_number.sql",
   ];
   for (const file of rawSqlFiles) {
     const rawSqlPath = join(__dirname, "..", "drizzle", file);

@@ -386,17 +386,22 @@ function TestCaseSelector({
 
   const testCases = useMemo(() => useCase?.testCases ?? [], [useCase]);
 
-  // Build a reliable testCaseId → progress map from step results
+  // Build a reliable testCaseId → progress map.
+  // If the execution has been submitted (overall_result set), use that directly.
+  // Otherwise compute from step results so in-progress work is reflected.
   const caseProgressById = useMemo(() => {
     const map = new Map<number, CaseProgress>();
     const execs = testRun?.executions ?? [];
     for (const exec of execs) {
       const tc = testCases.find(t => t.id === exec.test_case_id);
       if (!tc) continue;
-      const progress = computeCaseProgress(
-        tc.steps ?? [],
-        exec.stepResults ?? [],
-      );
+      let progress: CaseProgress;
+      if (exec.overall_result != null) {
+        // Execution was submitted — it's definitively Completed
+        progress = "Completed";
+      } else {
+        progress = computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);
+      }
       map.set(exec.test_case_id, progress);
     }
     return map;
@@ -978,18 +983,35 @@ function StepWizard({
           {/* Next / Submit Case */}
           {isLast ? (
             <button
-              onClick={() => {
-                if (!allStepsRecorded) return;
+              onClick={async () => {
+                if (!allStepsRecorded || !execution) return;
                 if (validateFailedSteps.length > 0) {
                   toast.error(validateFailedSteps[0]);
                   return;
                 }
-                toast.success(previouslySubmitted ? "Results updated" : "Test case saved");
-                queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
-                queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
-                queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
-                queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
-                navigate(`/tester/run/${testRunId}/scenario/${scenarioId}`);
+                // Determine overall result from step results
+                const anyFailed = steps.some((s) => {
+                  const e = entries.get(s.id);
+                  const persisted = execution.stepResults?.find((r) => r.step_id === s.id);
+                  return (e?.passed ?? persisted?.passed ?? null) === false;
+                });
+                try {
+                  await customFetch(`/executions/${execution.id}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({
+                      status: "completed",
+                      overall_result: anyFailed ? "failed" : "passed",
+                    }),
+                  });
+                  toast.success(previouslySubmitted ? "Results updated" : "Test case saved");
+                  queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+                  queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+                  queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+                  queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
+                  navigate(`/tester/run/${testRunId}/scenario/${scenarioId}`);
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : "Failed to save case");
+                }
               }}
               disabled={!allStepsRecorded}
               className="inline-flex items-center gap-xs px-xl py-sm bg-primary text-on-primary rounded-lg font-label-md text-label-md hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1200,23 +1222,32 @@ function QuickWizard({
     return { passed, failed, pending, total: steps.length };
   }, [entries, persistedResults, localResults, steps]);
 
-  const readyToSubmit = summary.pending === 0 && summary.total > 0;
+  // readyToSubmit: all steps must have a pass/fail result (in-memory or persisted)
+  const readyToSubmit = useMemo(() => {
+    if (steps.length === 0) return false;
+    return steps.every((s) => {
+      const e = entries.get(s.id);
+      const persisted = persistedResults.get(s.id);
+      return (e?.passed ?? persisted ?? null) !== null;
+    });
+  }, [steps, entries, persistedResults]);
 
-  // Validate failed steps have actual_result filled
+  // Validate failed steps have actual_result filled (check both entries and persisted)
   const validateFailedSteps = useMemo(() => {
     const failedSteps: string[] = [];
     steps.forEach((s) => {
       const e = entries.get(s.id);
-      const passed = e?.passed ?? null;
+      const persistedResult = execution?.stepResults?.find((r) => r.step_id === s.id);
+      const passed = e?.passed ?? persistedResult?.passed ?? null;
       if (passed === false) {
-        const actual = e?.actual_result ?? "";
+        const actual = e?.actual_result ?? persistedResult?.actual_result ?? "";
         if (!actual.trim()) {
           failedSteps.push(`Step ${s.step_number}: "What actually happened" is required when marking a step as Fail`);
         }
       }
     });
     return failedSteps;
-  }, [steps, entries]);
+  }, [steps, entries, execution?.stepResults]);
 
   // Check if execution already has an overall_result (was previously submitted)
   const previouslySubmitted = execution?.overall_result != null;
@@ -1248,7 +1279,20 @@ function QuickWizard({
         });
         removeDraft(s.id);
       }
-      toast.success(previouslySubmitted ? "Results updated" : "All steps recorded — case complete");
+      // Determine overall result and mark execution as completed
+      const anyFailed = steps.some((s) => {
+        const e = entries.get(s.id);
+        const persistedResult = execution.stepResults?.find((r) => r.step_id === s.id);
+        return (e?.passed ?? persistedResult?.passed ?? null) === false;
+      });
+      await customFetch(`/executions/${execution.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          status: "completed",
+          overall_result: anyFailed ? "failed" : "passed",
+        }),
+      });
+      toast.success(previouslySubmitted ? "Results updated" : "Test case complete");
       queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
       queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
       queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });

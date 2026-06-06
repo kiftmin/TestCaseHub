@@ -56,6 +56,8 @@ function computeScenarioProgress(
   const progresses = testCases.map(tc => {
     const exec = executions.find(e => e && e.test_case_id === tc.id);
     if (!exec) return "Not Started" as CaseProgress;
+    // If execution was submitted (overall_result set) it is definitively Completed
+    if (exec.overall_result != null) return "Completed" as CaseProgress;
     const steps = tc.steps ?? [];
     const stepResults = exec.stepResults ?? [];
     return computeCaseProgress(steps, stepResults);

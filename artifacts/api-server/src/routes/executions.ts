@@ -290,7 +290,7 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
       .where(eq(schema.executions.id, executionId))
       .returning();
 
-    // Auto-create defect on failure — unconditional (spec §7.8)
+    // Auto-create defect on failure — only if one doesn't already exist for this execution
     let defect = null;
     if (parsed.overall_result === "failed") {
       const projectId = execution.testRun?.project_id;
@@ -298,22 +298,29 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
         res.status(400).json({ message: "Cannot create defect: test run has no project" });
         return;
       }
-      const maxBug = await db
-        .select({ max: sql`COALESCE(MAX(bug_number), 0)` })
-        .from(schema.defects)
-        .where(eq(schema.defects.project_id, projectId));
-      const nextBugNumber = (maxBug[0]?.max as number ?? 0) + 1;
-      [defect] = await db
-        .insert(schema.defects)
-        .values({
-          project_id: projectId,
-          bug_number: nextBugNumber,
-          test_run_id: execution.test_run_id!,
-          test_case_id: execution.test_case_id,
-          execution_id: executionId,
-          tester_notes: parsed.notes || "Auto-created from failed execution",
-        })
-        .returning();
+      const existingDefect = await db.query.defects.findFirst({
+        where: eq(schema.defects.execution_id, executionId),
+      });
+      if (!existingDefect) {
+        const maxBug = await db
+          .select({ max: sql`COALESCE(MAX(bug_number), 0)` })
+          .from(schema.defects)
+          .where(eq(schema.defects.project_id, projectId));
+        const nextBugNumber = (maxBug[0]?.max as number ?? 0) + 1;
+        [defect] = await db
+          .insert(schema.defects)
+          .values({
+            project_id: projectId,
+            bug_number: nextBugNumber,
+            test_run_id: execution.test_run_id!,
+            test_case_id: execution.test_case_id,
+            execution_id: executionId,
+            tester_notes: parsed.notes || "Auto-created from failed execution",
+          })
+          .returning();
+      } else {
+        defect = existingDefect;
+      }
     }
 
     await logAudit({ entityType: "execution", entityId: executionId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: parsed.status });

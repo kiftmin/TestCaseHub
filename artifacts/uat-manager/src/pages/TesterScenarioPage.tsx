@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
+import { getStoredUser } from "../lib/auth";
 import {
   BackBar,
   EmptyState,
@@ -132,8 +133,22 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
     refetchOnMount: "always", // always fetch fresh — don't serve stale progress
   });
 
-  const useCases = useMemo(() => testRun?.useCases ?? [], [testRun]);
-  const allExecutions = useMemo(() => testRun?.executions ?? [], [testRun]);
+  const user = getStoredUser();
+
+  // Only show scenarios assigned to this tester — enforces access control
+  const useCases = useMemo(() => {
+    const all = testRun?.useCases ?? [];
+    if (!user?.userId) return all;
+    return all.filter(uc => uc.assigned_tester_id === user.userId);
+  }, [testRun, user?.userId]);
+
+  // Only count executions for test cases within this tester's scenarios
+  const allExecutions = useMemo(() => {
+    const myTcIds = new Set(
+      useCases.flatMap(uc => (uc.useCase?.testCases ?? []).map((tc: TestCase) => tc.id))
+    );
+    return (testRun?.executions ?? []).filter(e => myTcIds.has(e.test_case_id));
+  }, [testRun?.executions, useCases]);
   const isBlocked = !!testRun && !testRun.entry_confirmed;
   const isCompleted = testRun?.status === "completed";
 

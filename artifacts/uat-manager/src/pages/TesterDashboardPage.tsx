@@ -31,7 +31,6 @@ type TestRunSummary = {
 
 type TesterRunItem = TestRunUseCase & {
   testRun?: TestRunSummary;
-  is_mine?: boolean;
 };
 
 type RunGroup = {
@@ -282,17 +281,28 @@ export function TesterDashboardPage() {
   }, [runs]);
 
   const kpis = useMemo(() => {
+    // API already returns ONLY this tester's assigned scenarios — no further filtering needed
     const allUseCases = grouped.flatMap((g) => g.useCases);
     const totalRuns = grouped.length;
     const activeRuns = grouped.filter((g) => g.run.status !== "completed").length;
-    // Only count scenarios assigned to this tester
-    const totalScenarios = allUseCases.filter((uc) => uc.is_mine !== false).length;
-    const completedToday = allUseCases.filter((uc) => uc.is_mine !== false && isToday(uc.updated_at)).length;
-    // Pass rate = % of completed executions that passed (across all runs)
+    const totalScenarios = allUseCases.length;
+    const completedToday = allUseCases.filter((uc) => isToday(uc.updated_at)).length;
+
+    // Pass rate = % of steps that passed across all this tester's test cases.
+    // Each scenario's test cases have executions on testRun.executions — we collect
+    // all step results from those executions scoped to this tester's test case IDs.
+    const myTcIds = new Set(
+      allUseCases.flatMap((uc) => (uc.useCase?.testCases ?? []).map((tc: any) => tc.id))
+    );
     const allExecs = grouped.flatMap((g) => (g.run as any).executions ?? []);
-    const terminalExecs = allExecs.filter((e: any) => e.overall_result != null);
-    const passedExecs = terminalExecs.filter((e: any) => e.overall_result === "passed" || e.overall_result === "passed_by_agreement");
-    const passRate = terminalExecs.length > 0 ? Math.round((passedExecs.length / terminalExecs.length) * 100) : null;
+    const myExecs = allExecs.filter((e: any) => myTcIds.has(e.test_case_id));
+    const allStepResults = myExecs.flatMap((e: any) => e.stepResults ?? []);
+    const recordedSteps = allStepResults.filter((sr: any) => sr.passed != null);
+    const passedSteps = recordedSteps.filter((sr: any) => sr.passed === true);
+    const passRate = recordedSteps.length > 0
+      ? Math.round((passedSteps.length / recordedSteps.length) * 100)
+      : null;
+
     return { totalRuns, activeRuns, totalScenarios, completedToday, passRate };
   }, [grouped]);
 
@@ -355,7 +365,7 @@ export function TesterDashboardPage() {
           icon="percent"
           label="Pass Rate"
           value={kpis.passRate != null ? `${kpis.passRate}%` : "—"}
-          hint={kpis.passRate != null ? "Steps passed vs total executed" : "No executions yet"}
+          hint={kpis.passRate != null ? "Your steps passed vs total recorded" : "No step results yet"}
           tone={kpis.passRate != null && kpis.passRate < 70 ? "warning" : "default"}
         />
       </section>

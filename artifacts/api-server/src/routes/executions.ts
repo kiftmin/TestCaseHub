@@ -131,28 +131,15 @@ router.get("/dashboard/tester/:userId/test-runs", async (req, res, next) => {
   try {
     const userId = Number(req.params.userId);
 
-    // Find all test runs where this user is assigned to at least one scenario
-    const myAssignments = await db.query.testRunUseCases.findMany({
+    // Return ONLY scenarios explicitly assigned to this tester.
+    // This enforces that testers can only see and act on their own work.
+    const myUseCases = await db.query.testRunUseCases.findMany({
       where: eq(schema.testRunUseCases.assigned_tester_id, userId),
-      with: { testRun: true },
-    });
-
-    if (myAssignments.length === 0) {
-      res.json([]);
-      return;
-    }
-
-    // Get unique run IDs this tester participates in
-    const myRunIds = [...new Set(myAssignments.map((a) => a.test_run_id))];
-
-    // Fetch ALL scenarios for those runs (not just the tester's own scenarios)
-    // so the run card can show accurate overall progress
-    const allUseCases = await db.query.testRunUseCases.findMany({
-      where: sql`${schema.testRunUseCases.test_run_id} IN (${sql.join(myRunIds.map(id => sql`${id}`), sql`,`)})`,
       with: {
         testRun: {
           with: {
             project: true,
+            // Only fetch executions for this tester's test cases
             executions: {
               with: { stepResults: true },
             },
@@ -162,13 +149,7 @@ router.get("/dashboard/tester/:userId/test-runs", async (req, res, next) => {
       },
     });
 
-    // Tag each row so the frontend knows which scenarios belong to this tester
-    const result = allUseCases.map((uc) => ({
-      ...uc,
-      is_mine: uc.assigned_tester_id === userId,
-    }));
-
-    res.json(result);
+    res.json(myUseCases);
   } catch (err) {
     next(err);
   }

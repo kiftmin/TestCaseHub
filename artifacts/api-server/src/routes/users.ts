@@ -5,6 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import { db, pool } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, AuthenticatedRequest } from "../middlewares/auth.js";
+import { logAudit } from "../utils/project.js";
 
 const router = express.Router();
 
@@ -39,7 +40,7 @@ const updatePasswordSchema = z.object({
   password: z.string().min(6),
 });
 
-router.post("/", authorize(["ADMIN"]), async (req, res, next) => {
+router.post("/", authorize(["ADMIN"]), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { username, password, name, email, role } = createUserSchema.parse(req.body);
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -48,13 +49,14 @@ router.post("/", authorize(["ADMIN"]), async (req, res, next) => {
       .values({ username, password_hash: hashedPassword, name, email, role })
       .returning();
     const { password_hash, ...safeUser } = user;
+    await logAudit({ entityType: "user", entityId: user.id, changedByUserId: req.user!.userId, toStatus: "created", reason: username });
     res.status(201).json(safeUser);
   } catch (err) {
     next(err);
   }
 });
 
-router.put("/:userId", authorize(["ADMIN"]), async (req, res, next) => {
+router.put("/:userId", authorize(["ADMIN"]), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { name, email, role } = updateUserSchema.parse(req.body);
     const [user] = await db
@@ -63,13 +65,14 @@ router.put("/:userId", authorize(["ADMIN"]), async (req, res, next) => {
       .where(eq(schema.users.id, Number(req.params.userId)))
       .returning();
     const { password_hash, ...safeUser } = user;
+    await logAudit({ entityType: "user", entityId: user.id, changedByUserId: req.user!.userId, toStatus: "updated", reason: user.username });
     res.json(safeUser);
   } catch (err) {
     next(err);
   }
 });
 
-router.put("/:userId/suspend", authorize(["ADMIN"]), async (req, res, next) => {
+router.put("/:userId/suspend", authorize(["ADMIN"]), async (req: AuthenticatedRequest, res, next) => {
   try {
     const userId = Number(req.params.userId);
     const [user] = await db
@@ -78,6 +81,7 @@ router.put("/:userId/suspend", authorize(["ADMIN"]), async (req, res, next) => {
       .where(eq(schema.users.id, userId))
       .returning();
     const { password_hash, ...safeUser } = user;
+    await logAudit({ entityType: "user", entityId: userId, changedByUserId: req.user!.userId, toStatus: user.is_active ? "activated" : "suspended", reason: user.username });
     res.json(safeUser);
   } catch (err) {
     next(err);
@@ -100,7 +104,7 @@ router.put("/:userId/password", authorize(["ADMIN"]), async (req, res, next) => 
   }
 });
 
-router.delete("/:userId", authorize(["ADMIN"]), async (req, res, next) => {
+router.delete("/:userId", authorize(["ADMIN"]), async (req: AuthenticatedRequest, res, next) => {
   try {
     const userId = Number(req.params.userId);
     const targetUser = await db.query.users.findFirst({
@@ -126,6 +130,7 @@ router.delete("/:userId", authorize(["ADMIN"]), async (req, res, next) => {
     }
 
     await db.delete(schema.users).where(eq(schema.users.id, userId));
+    await logAudit({ entityType: "user", entityId: userId, changedByUserId: req.user!.userId, toStatus: "deleted", reason: targetUser.username });
     res.status(204).send();
   } catch (err) {
     next(err);

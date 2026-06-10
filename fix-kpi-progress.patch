@@ -1,0 +1,184 @@
+From eb57aed0ae8b1e528835b3cd659b084411c69fd9 Mon Sep 17 00:00:00 2001
+From: Fix Bot <fix@testcasehub.dev>
+Date: Sat, 6 Jun 2026 17:26:59 +0000
+Subject: [PATCH] fix: progress KPIs now correctly handle partial completion
+ edge cases
+
+Backend syncUseCaseStatus:
+- allPassed now requires ALL test cases to have terminal executions,
+  not just the ones that exist. Previously 1/3 cases passing would
+  mark the whole scenario as 'passed'. Now missing executions keep
+  the status as 'in_progress' until every test case is done.
+
+Frontend TesterScenarioPage:
+- scenarioProgresses now always derives from execution data directly,
+  never blindly trusts uc.status. This prevents stale backend status
+  from showing 'Completed' when test cases are still Not Started.
+
+Frontend TesterDashboardPage RunCard:
+- Stats (To Do / In Progress / Done) now count SCENARIOS not test cases.
+- Progress bar and label updated: 'X / Y scenarios' instead of 'X / Y cases'.
+- Scenario progress is computed correctly per scenario before counting,
+  using the same overall_result-aware logic as TesterScenarioPage.
+---
+ artifacts/api-server/src/routes/test-runs.ts  | 21 ++++++----
+ .../src/pages/TesterDashboardPage.tsx         | 38 +++++++++++--------
+ .../src/pages/TesterScenarioPage.tsx          | 24 ++++--------
+ 3 files changed, 42 insertions(+), 41 deletions(-)
+
+diff --git a/artifacts/api-server/src/routes/test-runs.ts b/artifacts/api-server/src/routes/test-runs.ts
+index ae6cae9..d99c4b6 100644
+--- a/artifacts/api-server/src/routes/test-runs.ts
++++ b/artifacts/api-server/src/routes/test-runs.ts
+@@ -47,25 +47,30 @@ export async function syncUseCaseStatus(testRunId: number, useCaseId: number): P
+     with: { stepResults: true },
+   });
+ 
++  // A scenario is only terminal when EVERY test case has a terminal execution.
++  // executions only contains rows that exist — missing rows mean Not Started.
++  const allTestCasesHaveTerminalExec =
++    testCaseIds.length > 0 &&
++    testCaseIds.every((tcId) => {
++      const exec = executions.find((e) => e.test_case_id === tcId);
++      return exec && (exec.overall_result === "passed" || exec.overall_result === "failed" || exec.overall_result === "passed_by_agreement");
++    });
++
+   let newStatus = "pending";
+   if (executions.length > 0) {
+     const failed = executions.some((e) => e.overall_result === "failed");
+-    const allPassed = executions.every(
+-      (e) => e.overall_result === "passed" || e.overall_result === "passed_by_agreement"
+-    );
+     const hasPassedByAgreement = executions.some((e) => e.overall_result === "passed_by_agreement");
+     const hasStepResults = executions.some((e) =>
+       (e.stepResults ?? []).length > 0 && (e.stepResults ?? []).some(r => r.passed != null)
+     );
+     const execInProgress = executions.some((e) => e.status === "in_progress");
+ 
+-    if (failed) {
++    if (failed && allTestCasesHaveTerminalExec) {
++      // Only mark failed when all cases are done (no remaining Not Started)
+       newStatus = "failed";
+-    } else if (allPassed) {
++    } else if (allTestCasesHaveTerminalExec && !failed) {
+       newStatus = hasPassedByAgreement ? "passed_by_agreement" : "passed";
+-    } else if (hasStepResults) {
+-      newStatus = "in_progress";
+-    } else if (execInProgress) {
++    } else if (failed || hasStepResults || execInProgress) {
+       newStatus = "in_progress";
+     }
+   }
+diff --git a/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx b/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx
+index b9fd8fd..19d8e82 100644
+--- a/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx
+@@ -135,7 +135,7 @@ function RunCard({ group, onOpen }: { group: RunGroup; onOpen: (runId: number) =
+           <div className="flex items-center justify-between text-label-sm">
+             <span className="text-on-surface-variant font-bold uppercase tracking-wider">Progress</span>
+             <span className="font-bold text-on-surface">
+-              {completed} / {totalCases} cases
++              {completed} / {totalCases} scenarios
+             </span>
+           </div>
+           <div className="w-full bg-surface-container-high rounded-full h-2 overflow-hidden">
+@@ -240,34 +240,40 @@ export function TesterDashboardPage() {
+       map.get(runId)!.useCases.push(r);
+     });
+ 
+-    // Compute progress for each run
++    // Compute progress for each run — count scenarios (not test cases)
+     for (const [, group] of map) {
+-      let completed = 0, inProg = 0, notStarted = 0, totalCases = 0;
++      let completed = 0, inProg = 0, notStarted = 0;
+       const runExecs = (group.run as any).executions ?? [];
++
+       for (const uc of group.useCases) {
+         const tcs = uc.useCase?.testCases ?? [];
+-        for (const tc of tcs) {
+-          totalCases++;
++        // Compute this scenario's progress from its test cases
++        const caseProgresses = tcs.map((tc: any) => {
+           const exec = runExecs.find((e: any) => e.test_case_id === tc.id);
+-          if (!exec) {
+-            notStarted++;
+-            continue;
+-          }
+-          const progress = computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);
+-          if (progress === "Completed") completed++;
+-          else if (progress === "In Progress") inProg++;
+-          else notStarted++;
+-        }
++          if (!exec) return "Not Started" as CaseProgress;
++          if (exec.overall_result != null) return "Completed" as CaseProgress;
++          return computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);
++        });
++        const scenarioProgress: CaseProgress =
++          caseProgresses.length === 0 ? "Not Started" :
++          caseProgresses.every((p: CaseProgress) => p === "Completed") ? "Completed" :
++          caseProgresses.some((p: CaseProgress) => p === "In Progress" || p === "Completed") ? "In Progress" :
++          "Not Started";
++
++        if (scenarioProgress === "Completed") completed++;
++        else if (scenarioProgress === "In Progress") inProg++;
++        else notStarted++;
+       }
+ 
++      const totalScenarios = group.useCases.length;
+       let runProgress: CaseProgress = "Not Started";
+-      if (totalCases > 0 && completed === totalCases) runProgress = "Completed";
++      if (totalScenarios > 0 && completed === totalScenarios) runProgress = "Completed";
+       else if (completed > 0 || inProg > 0) runProgress = "In Progress";
+ 
+       group.completed = completed;
+       group.inProgress = inProg;
+       group.notStarted = notStarted;
+-      group.totalCases = totalCases;
++      group.totalCases = totalScenarios; // reusing field — now means totalScenarios
+       group.progress = runProgress;
+     }
+ 
+diff --git a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+index 355741b..23e5f23 100644
+--- a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+@@ -157,29 +157,19 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
+     }
+   }, [testRun, useCases, allExecutions]);
+ 
+-  // Compute scenario-level progress from step results
++  // Compute scenario-level progress — always derive from executions so we
++  // are never fooled by a stale backend status (e.g. "passed" when only
++  // 1 of 3 test cases has been executed).
+   const scenarioProgresses = useMemo(() => {
+     const map = new Map<number, CaseProgress>();
+     useCases.forEach(uc => {
+-      // First: use the backend-computed status on testRunUseCase — it's authoritative
+-      // because syncUseCaseStatus runs server-side after every execution update.
+-      const backendStatus = uc.status;
+-      if (backendStatus === "passed" || backendStatus === "passed_by_agreement" || backendStatus === "failed") {
+-        map.set(uc.use_case_id, "Completed");
+-        return;
+-      }
+-      if (backendStatus === "in_progress") {
+-        // May still be fully completed client-side — check executions
+-        const tcs = uc.useCase?.testCases ?? [];
+-        const computed = computeScenarioProgress(tcs, allExecutions);
+-        map.set(uc.use_case_id, computed === "Completed" ? "Completed" : "In Progress");
+-        return;
+-      }
+-      // pending — check if any work has started
+       const tcs = uc.useCase?.testCases ?? [];
++      // computeScenarioProgress already handles:
++      //   - exec.overall_result != null  → Completed for that case
++      //   - no exec for a tc             → Not Started for that case
++      //   - then rolls up: all Completed → Completed, any In Progress/Completed → In Progress
+       map.set(uc.use_case_id, computeScenarioProgress(tcs, allExecutions));
+     });
+-    console.log("[TesterScenarioPage] computed scenarioProgresses", Object.fromEntries(map));
+     return map;
+   }, [useCases, allExecutions]);
+ 
+-- 
+2.43.0
+

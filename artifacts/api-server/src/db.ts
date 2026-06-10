@@ -18,9 +18,7 @@ export { pool };
 
 async function keepAlive() {
   try {
-    const client = await pool.connect();
-    await client.query("SELECT 1");
-    client.release();
+    await pool.query("SELECT 1");
   } catch {
     // pool will recover on next query
   }
@@ -30,6 +28,7 @@ setInterval(keepAlive, 120_000).unref();
 // Warm up connection on startup
 try {
   const client = await pool.connect();
+  client.on("error", () => {});
   console.log("[startup] Running DB cleanup & index migration...");
 
   // Clean up duplicate executions keeping only the latest per run+case

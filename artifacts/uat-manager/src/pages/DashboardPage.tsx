@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { useAuth } from "../hooks/useAuth";
-import type { DashboardSummary, Defect, ProjectAssignment, TestRunUseCase } from "../types/api";
+import type { DashboardSummary, Defect, ProjectAssignment, TestRunUseCase, StatusAuditLog } from "../types/api";
 import { useState, useEffect, useMemo } from "react";
 
 const severityColors: Record<string, string> = {
@@ -40,9 +40,13 @@ interface RecentDefect {
   created_at: string;
   testCase?: { title: string };
 }
+interface AuditLogEntry extends StatusAuditLog {
+  changedBy?: { id: number; username: string; email: string; role: string };
+}
 interface ActivityResponse {
   recentExecutions?: RecentExecution[];
   recentDefects?: RecentDefect[];
+  auditLogs?: AuditLogEntry[];
 }
 interface GroupedRun {
   id: number;
@@ -66,8 +70,9 @@ export function DashboardPage() {
   });
 
   const { data: activity } = useQuery({
-    queryKey: ["recentActivity"],
-    queryFn: () => customFetch<ActivityResponse>("/dashboard/recent-activity"),
+    queryKey: ["recentActivity", currentRole],
+    queryFn: () => customFetch<ActivityResponse>(`/dashboard/recent-activity?role=${currentRole}`),
+    enabled: !!currentRole,
   });
 
   const { data: assignments } = useQuery({
@@ -150,6 +155,29 @@ export function DashboardPage() {
 
   const recentEvents = useMemo(() => {
     const events: Array<{ icon: string; iconBg: string; description: string; timestamp: string; detail: string }> = [];
+    activity?.auditLogs?.forEach((l) => {
+      const action = l.to_status === "created" ? "created" : l.to_status === "deleted" ? "deleted" : l.to_status === "updated" ? "updated" : l.to_status ?? "updated";
+      const entityMap: Record<string, string> = { user: "User", project: "Project", test_run: "Test Run", execution: "Execution", defect: "Defect", test_scenario: "Scenario", test_case: "Test Case", test_step: "Test Step" };
+      const entity = entityMap[l.entity_type] ?? l.entity_type;
+      const label = l.reason ?? `#${l.entity_id}`;
+      const by = l.changedBy?.username ?? "system";
+      let icon = "info";
+      let iconBg = "bg-surface-container-high text-on-surface-variant";
+      if (l.entity_type === "user") { icon = "person"; }
+      else if (l.entity_type === "project") { icon = "folder"; }
+      else if (l.entity_type === "defect") { icon = "warning"; iconBg = "bg-amber-100 text-amber-700"; }
+      else if (l.entity_type === "execution") { icon = l.to_status === "passed" ? "check_circle" : l.to_status === "failed" ? "cancel" : "play_circle"; iconBg = l.to_status === "passed" ? "bg-green-100 text-green-700" : l.to_status === "failed" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"; }
+      else if (l.entity_type === "test_run") { icon = "playlist_play"; iconBg = "bg-purple-100 text-purple-700"; }
+      else if (l.entity_type === "test_scenario") { icon = "feature_search"; iconBg = "bg-blue-100 text-blue-700"; }
+      else if (l.entity_type === "test_case") { icon = "checklist"; iconBg = "bg-teal-100 text-teal-700"; }
+      events.push({
+        icon,
+        iconBg,
+        description: `${entity} ${action}: ${label}`,
+        timestamp: l.changed_at,
+        detail: `by ${by}`,
+      });
+    });
     activity?.recentExecutions?.forEach((e) => {
       events.push({
         icon: e.overall_result === "passed" ? "check_circle" : "cancel",

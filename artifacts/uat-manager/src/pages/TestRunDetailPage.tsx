@@ -73,7 +73,8 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
 
   const role = useProjectRole(testRun?.project_id ?? null);
   const isCompleted = testRun?.status === "completed";
-  const canManage = (role === "TEST_LEAD" || role === "ADMIN") && !isCompleted;
+  const canViewAll = role === "TEST_LEAD" || role === "ADMIN";
+  const canManage = canViewAll && !isCompleted;
 
   useEffect(() => {
     document.title = `${testRun?.name ?? "Test Run"} | TestCaseHub`;
@@ -191,10 +192,10 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
 
   const allUseCases = (testRun as TestRun & { useCases?: TestRunUseCase[] })?.useCases ?? [];
   const myUserId = getStoredUser()?.userId;
-  const filteredUseCases = canManage
+  const filteredUseCases = canViewAll
     ? allUseCases
     : allUseCases.filter((uc) => uc.assigned_tester_id === myUserId);
-  const useCases = canManage
+  const useCases = canViewAll
     ? [...filteredUseCases].sort((a, b) => {
         const aUnassigned = a.assigned_tester_id == null ? 0 : 1;
         const bUnassigned = b.assigned_tester_id == null ? 0 : 1;
@@ -384,17 +385,17 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
             <div className="px-lg py-md border-b border-outline-variant flex items-center justify-between">
               <div>
                 <h2 className="font-title-sm text-title-sm">
-                  {canManage ? "All Scenarios" : "Execution Scenarios"}
+                  {canViewAll ? "All Scenarios" : "Execution Scenarios"}
                 </h2>
                 <p className="text-label-sm text-on-surface-variant mt-0.5">
-                  {canManage
-                    ? "Assign testers to scenarios below."
+                  {canViewAll
+                    ? "All scenarios for this test run."
                     : "Scenarios assigned to you for this run."}
                 </p>
               </div>
               <div className="flex items-center gap-sm">
                 <span className="px-sm py-xs bg-surface-container-high rounded text-label-sm text-on-surface-variant">
-                  {useCases.length} {canManage ? "of " + allUseCases.length + " Total" : "Total"}
+                  {useCases.length} {canViewAll ? "of " + allUseCases.length + " Total" : "Total"}
                 </span>
               </div>
             </div>

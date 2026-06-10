@@ -1,5 +1,5 @@
 import express from "express";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, desc, and, sql, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
@@ -67,7 +67,7 @@ async function computeScenarioProgress(
     where: and(
       eq(schema.executions.test_run_id, testRunId),
       testCaseIds.length > 0
-        ? sql`${schema.executions.test_case_id} IN (${sql.join(testCaseIds, sql`,`)})`
+        ? inArray(schema.executions.test_case_id, testCaseIds)
         : sql`1=0`,
     ),
   });
@@ -186,10 +186,15 @@ router.post(
         return;
       }
 
-      // Guard: Must be assigned as tester or TEST_LEAD/ADMIN
+      // Guard: Must be assigned as tester to this scenario
       const testerAllowed = await checkProjectRole(req, testRun.project_id, ["TESTER", "TEST_LEAD"]);
       if (!testerAllowed) {
         res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
+        return;
+      }
+      const assigned = await isAssignedTester(testRunId, testCaseId, req.user!.userId);
+      if (!assigned) {
+        res.status(403).json({ message: "Forbidden — you are not assigned to this scenario" });
         return;
       }
 
@@ -283,6 +288,11 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
       res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
       return;
     }
+    const assigned = await isAssignedTester(execution.test_run_id!, execution.test_case_id, req.user!.userId);
+    if (!assigned) {
+      res.status(403).json({ message: "Forbidden — you are not assigned to this scenario" });
+      return;
+    }
 
     const oldStatus = execution.status;
     const [updated] = await db
@@ -291,50 +301,36 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
       .where(eq(schema.executions.id, executionId))
       .returning();
 
-    // Auto-create defect on failure — only if one doesn't already exist for this execution
-    let defect = null;
-    if (parsed.overall_result === "failed") {
-      const projectId = execution.testRun?.project_id;
-      if (!projectId) {
-        res.status(400).json({ message: "Cannot create defect: test run has no project" });
-        return;
-      }
-      const existingDefect = await db.query.defects.findFirst({
-        where: eq(schema.defects.execution_id, executionId),
+    // Check if scenario is locked (tester has signed off) — no further edits allowed
+    const execTc = await db.query.testCases.findFirst({
+      where: eq(schema.testCases.id, execution.test_case_id),
+      columns: { use_case_id: true },
+    });
+    if (execTc) {
+      const truc = await db.query.testRunUseCases.findFirst({
+        where: and(
+          eq(schema.testRunUseCases.test_run_id, execution.test_run_id!),
+          eq(schema.testRunUseCases.use_case_id, execTc.use_case_id),
+        ),
+        columns: { tester_sign_off: true },
       });
-      if (!existingDefect) {
-        const maxBug = await db
-          .select({ max: sql`COALESCE(MAX(bug_number), 0)` })
-          .from(schema.defects)
-          .where(eq(schema.defects.project_id, projectId));
-        const nextBugNumber = (maxBug[0]?.max as number ?? 0) + 1;
-        [defect] = await db
-          .insert(schema.defects)
-          .values({
-            project_id: projectId,
-            bug_number: nextBugNumber,
-            test_run_id: execution.test_run_id!,
-            test_case_id: execution.test_case_id,
-            execution_id: executionId,
-            tester_notes: parsed.notes || "Auto-created from failed execution",
-          })
-          .returning();
-      } else {
-        defect = existingDefect;
+      if (truc?.tester_sign_off) {
+        res.status(423).json({ message: "Scenario is locked — tester has already signed off" });
+        return;
       }
     }
 
     await logAudit({ entityType: "execution", entityId: executionId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: parsed.status });
 
     // Sync the parent use case's status so dashboard KPIs stay accurate
-    const tc = await db.query.testCases.findFirst({
+    const tc = execTc || await db.query.testCases.findFirst({
       where: eq(schema.testCases.id, execution.test_case_id),
     });
     if (tc && execution.test_run_id) {
       await syncUseCaseStatus(execution.test_run_id, tc.use_case_id);
     }
 
-    res.json({ ...updated, defect: defect || undefined });
+    res.json(updated);
   } catch (err) {
     next(err);
   }
@@ -380,6 +376,30 @@ router.post(
       if (!testerAllowed) {
         res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
         return;
+      }
+      const assigned = await isAssignedTester(execution.test_run_id!, execution.test_case_id, req.user!.userId);
+      if (!assigned) {
+        res.status(403).json({ message: "Forbidden — you are not assigned to this scenario" });
+        return;
+      }
+
+      // Check if scenario is locked (tester has signed off)
+      const postTc = await db.query.testCases.findFirst({
+        where: eq(schema.testCases.id, execution.test_case_id),
+        columns: { use_case_id: true },
+      });
+      if (postTc) {
+        const truc = await db.query.testRunUseCases.findFirst({
+          where: and(
+            eq(schema.testRunUseCases.test_run_id, execution.test_run_id!),
+            eq(schema.testRunUseCases.use_case_id, postTc.use_case_id),
+          ),
+          columns: { tester_sign_off: true },
+        });
+        if (truc?.tester_sign_off) {
+          res.status(423).json({ message: "Scenario is locked — tester has already signed off" });
+          return;
+        }
       }
 
       // Upsert: update existing step result or create new one
@@ -488,6 +508,30 @@ router.put(
       if (!testerAllowed) {
         res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
         return;
+      }
+      const assigned = await isAssignedTester(exec.test_run_id!, exec.test_case_id, req.user!.userId);
+      if (!assigned) {
+        res.status(403).json({ message: "Forbidden — you are not assigned to this scenario" });
+        return;
+      }
+
+      // Check if scenario is locked (tester has signed off)
+      const putTc = await db.query.testCases.findFirst({
+        where: eq(schema.testCases.id, exec.test_case_id),
+        columns: { use_case_id: true },
+      });
+      if (putTc) {
+        const truc = await db.query.testRunUseCases.findFirst({
+          where: and(
+            eq(schema.testRunUseCases.test_run_id, exec.test_run_id!),
+            eq(schema.testRunUseCases.use_case_id, putTc.use_case_id),
+          ),
+          columns: { tester_sign_off: true },
+        });
+        if (truc?.tester_sign_off) {
+          res.status(423).json({ message: "Scenario is locked — tester has already signed off" });
+          return;
+        }
       }
 
       console.log(`[exec] PUT step result exec=${executionId} step=${stepId} existingId=${existing.id} body=${JSON.stringify(parsed)}`);
@@ -619,20 +663,33 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
       return;
     }
 
-    // Gather all executions with step results and test cases with steps
-    const allExecutions = await db.query.executions.findMany({
-      where: eq(schema.executions.test_run_id, testRunId),
-      with: {
-        stepResults: true,
-        testCase: { with: { steps: true, useCase: true } },
-      },
-    });
-
-    // Check every test case in every scenario has Completed progress
+    // Only check use cases assigned to this user — no one may submit
+    // scenarios they are not personally assigned to.
     const allUseCases = await db.query.testRunUseCases.findMany({
-      where: eq(schema.testRunUseCases.test_run_id, testRunId),
+      where: and(
+        eq(schema.testRunUseCases.test_run_id, testRunId),
+        eq(schema.testRunUseCases.assigned_tester_id, req.user!.userId),
+      ),
       with: { useCase: { with: { testCases: true } } },
     });
+
+    // Collect test case IDs scoped to the user's assigned use cases
+    const userTcIds = allUseCases.flatMap(
+      truc => truc.useCase?.testCases.map(tc => tc.id) ?? [],
+    );
+
+    const allExecutions = userTcIds.length > 0
+      ? await db.query.executions.findMany({
+          where: and(
+            eq(schema.executions.test_run_id, testRunId),
+            inArray(schema.executions.test_case_id, userTcIds),
+          ),
+          with: {
+            stepResults: true,
+            testCase: { with: { steps: true, useCase: true } },
+          },
+        })
+      : [];
 
     const incompleteCases: string[] = [];
 
@@ -652,8 +709,9 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
     }
 
     if (incompleteCases.length > 0) {
+      const details = incompleteCases.join("\n");
       res.status(400).json({
-        message: "Cannot submit: some test cases are not completed",
+        message: `Cannot submit: some test cases are not completed\n${details}`,
         incompleteCases,
       });
       return;
@@ -730,27 +788,6 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
       }
     }
 
-    // Mark test run as completed
-    const oldStatus = testRun.status;
-    await db.update(schema.testRuns)
-      .set({
-        status: "completed",
-        passed: !anyStepFailed,
-        updated_at: new Date(),
-      })
-      .where(eq(schema.testRuns.id, testRunId));
-
-    await logAudit({
-      entityType: "test_run",
-      entityId: testRunId,
-      changedByUserId: req.user!.userId,
-      fromStatus: oldStatus,
-      toStatus: "completed",
-      reason: anyStepFailed
-        ? `Submitted — ${createdDefects.length} defect(s) created for failed steps`
-        : "Submitted — all steps passed",
-    });
-
     // Sync use case statuses
     for (const truc of allUseCases) {
       if (truc.useCase) {
@@ -758,11 +795,65 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
       }
     }
 
+    // Lock all submitted scenarios — no further step/execution edits allowed
+    const userUseCaseIds = allUseCases.map(truc => truc.id);
+    if (userUseCaseIds.length > 0) {
+      await db.update(schema.testRunUseCases)
+        .set({ tester_sign_off: true, tester_sign_off_at: new Date() })
+        .where(inArray(schema.testRunUseCases.id, userUseCaseIds));
+    }
+
+    // Check if all use cases in the test run are signed off
+    const allRunUseCases = await db.query.testRunUseCases.findMany({
+      where: eq(schema.testRunUseCases.test_run_id, testRunId),
+      columns: { tester_sign_off: true },
+    });
+    const allSignedOff = allRunUseCases.length > 0 && allRunUseCases.every(uc => uc.tester_sign_off);
+
+    if (allSignedOff) {
+      // Determine overall pass/fail across all executions in the run
+      const allExecs = await db.query.executions.findMany({
+        where: eq(schema.executions.test_run_id, testRunId),
+        columns: { overall_result: true },
+      });
+      const anyFailed = allExecs.some(e => e.overall_result === "failed" || e.overall_result === "passed_by_agreement");
+      const allPassed = allExecs.length > 0 && allExecs.every(e => e.overall_result === "passed" || e.overall_result === "passed_by_agreement");
+
+      await db.update(schema.testRuns)
+        .set({
+          status: "completed",
+          passed: allPassed,
+          updated_at: new Date(),
+        })
+        .where(eq(schema.testRuns.id, testRunId));
+
+      await logAudit({
+        entityType: "test_run",
+        entityId: testRunId,
+        changedByUserId: req.user!.userId,
+        fromStatus: testRun.status,
+        toStatus: "completed",
+        reason: anyFailed
+          ? `Submitted — ${createdDefects.length} defect(s) created for failed steps`
+          : "Submitted — all steps passed",
+      });
+    } else {
+      await logAudit({
+        entityType: "test_run",
+        entityId: testRunId,
+        changedByUserId: req.user!.userId,
+        fromStatus: testRun.status,
+        toStatus: "in_progress",
+        reason: `Partial submit — ${createdDefects.length} defect(s) created, ${allRunUseCases.filter(uc => uc.tester_sign_off).length}/${allRunUseCases.length} scenarios signed off`,
+      });
+    }
+
     res.json({
-      message: "Test run submitted successfully",
+      message: allSignedOff ? "Test run completed" : "Your scenarios submitted — waiting for other testers",
       passed: !anyStepFailed,
       defectsCreated: createdDefects.length,
       testRunId,
+      allSignedOff,
     });
   } catch (err) {
     next(err);
@@ -770,3 +861,30 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
 });
 
 export default router;
+
+/* ────────────────────────────────────────────────────────────────────
+   Assignment guard — only the user assigned to a scenario may
+   execute its test cases, record step results, or submit.
+   ──────────────────────────────────────────────────────────────────── */
+
+async function isAssignedTester(
+  testRunId: number,
+  testCaseId: number,
+  userId: number,
+): Promise<boolean> {
+  const testCase = await db.query.testCases.findFirst({
+    where: eq(schema.testCases.id, testCaseId),
+    columns: { use_case_id: true },
+  });
+  if (!testCase) return false;
+
+  const truc = await db.query.testRunUseCases.findFirst({
+    where: and(
+      eq(schema.testRunUseCases.test_run_id, testRunId),
+      eq(schema.testRunUseCases.use_case_id, testCase.use_case_id),
+    ),
+    columns: { assigned_tester_id: true },
+  });
+
+  return truc?.assigned_tester_id === userId;
+}

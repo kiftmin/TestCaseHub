@@ -286,7 +286,9 @@ export function TesterDashboardPage() {
     const totalRuns = grouped.length;
     const activeRuns = grouped.filter((g) => g.run.status !== "completed").length;
     const totalScenarios = allUseCases.length;
-    const completedToday = allUseCases.filter((uc) => isToday(uc.updated_at)).length;
+    const completedToday = allUseCases.filter(
+      (uc) => (uc.status === "passed" || uc.status === "failed" || uc.status === "passed_by_agreement") && isToday(uc.updated_at)
+    ).length;
 
     // Pass rate = % of steps that passed across all this tester's test cases.
     // Each scenario's test cases have executions on testRun.executions — we collect

@@ -151,6 +151,8 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
   }, [testRun?.executions, useCases]);
   const isBlocked = !!testRun && !testRun.entry_confirmed;
   const isCompleted = testRun?.status === "completed";
+  // Has this tester already signed off all their assigned use cases?
+  const testerSignedOff = useCases.length > 0 && useCases.every(uc => uc.tester_sign_off === true);
 
   // Debug: log actual data shape to diagnose progress issues
   useEffect(() => {
@@ -361,8 +363,8 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
         </>
       )}
 
-      {/* Submit Test Run section — only shown when progress is Completed and run is not yet submitted */}
-      {runProgress === "Completed" && !isCompleted && (
+      {/* Submit Test Run section — only shown when progress is Completed, run is not yet fully submitted, and THIS tester hasn't already signed off */}
+      {runProgress === "Completed" && !isCompleted && !testerSignedOff && (
         <div className="bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-300 rounded-2xl p-lg md:p-xl mt-lg">
           <div className="flex items-start justify-between gap-md flex-wrap">
             <div className="min-w-0 space-y-xs">
@@ -500,6 +502,11 @@ function ScenarioRow({
             >
               {PROGRESS_LABELS[progress]}
             </StatusChip>
+            {useCase.tester_sign_off && (
+              <span className="inline-flex items-center gap-0.5 text-gray-400 text-label-sm" title="Already submitted">
+                <span className="material-symbols-outlined text-[14px]">lock</span>
+              </span>
+            )}
           </div>
           <p className="font-title-sm text-title-sm text-on-surface leading-snug">
             {useCase.useCase?.name ?? `Scenario #${useCase.use_case_id}`}

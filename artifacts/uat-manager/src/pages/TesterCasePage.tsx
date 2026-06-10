@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -202,6 +202,13 @@ function ExecutionEngine({
     enabled: !!testCaseId,
   });
 
+  const { data: testRun } = useQuery({
+    queryKey: ["test-run", testRunId],
+    queryFn: () => customFetch<TestRun>(`/test-runs/${testRunId}`),
+    enabled: !!testRunId,
+    staleTime: 0,
+  });
+
   const { data: execution } = useQuery({
     queryKey: ["tester-execution", testRunId, testCaseId],
     queryFn: async () => {
@@ -218,6 +225,13 @@ function ExecutionEngine({
 
   const steps = useMemo(() => testCase?.steps ?? [], [testCase]);
 
+  // Is the current scenario locked because the tester already signed off?
+  const isReadOnly = useMemo(() => {
+    if (!testRun?.useCases) return false;
+    const uc = testRun.useCases.find(u => u.use_case_id === scenarioId);
+    return uc?.tester_sign_off === true;
+  }, [testRun, scenarioId]);
+
   const persistedStepResults = useMemo(() => {
     const map = new Map<number, StepResult>();
     (execution?.stepResults ?? []).forEach((r) => map.set(r.step_id, r));
@@ -229,6 +243,8 @@ function ExecutionEngine({
   const [entries, setEntries] = useState<Map<number, ExecutionEntry>>(new Map());
   // Optimistic pass/fail per step — survives mode switches.
   const [localResults, setLocalResults] = useState<Map<number, boolean>>(new Map());
+  // Tracks in-flight step-result mutations so we can block navigation while saves are pending.
+  const pendingMutations = useRef(0);
 
   // Hydrate entries once from sessionStorage drafts (today only),
   // then from the persisted step results in the API response.
@@ -293,6 +309,18 @@ function ExecutionEngine({
     return () => clearTimeout(timeoutId);
   }, [entries, steps, testRunId, testCaseId]);
 
+  // Warn before browser refresh/close when mutations are in-flight.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (pendingMutations.current > 0) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
+
   const setEntry = (stepId: number, patch: Partial<ExecutionEntry>) => {
     setEntries((prev) => {
       const next = new Map(prev);
@@ -323,6 +351,14 @@ function ExecutionEngine({
     sessionStorage.removeItem(key);
   };
 
+  const guardedOnBack = () => {
+    if (pendingMutations.current > 0) {
+      toast.warning("Please wait — saving your results...");
+      return;
+    }
+    onBack();
+  };
+
   const sharedProps = {
     testRunId,
     scenarioId,
@@ -337,8 +373,10 @@ function ExecutionEngine({
     localResults,
     setLocalResults,
     removeDraft,
-    onBack,
+    onBack: guardedOnBack,
     onModeChange,
+    pendingMutations,
+    isReadOnly,
   };
 
   if (mode === "quick") {
@@ -627,6 +665,8 @@ function StepWizard({
   removeDraft,
   onBack,
   onModeChange,
+  pendingMutations,
+  isReadOnly,
 }: {
   testRunId: number;
   scenarioId: number;
@@ -642,11 +682,14 @@ function StepWizard({
   removeDraft: (stepId: number) => void;
   onBack: () => void;
   onModeChange: (next: "guided" | "quick") => void;
+  pendingMutations: React.MutableRefObject<number>;
+  isReadOnly: boolean;
 }) {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
   const [stepIndex, setStepIndex] = useState(0);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const currentStep = steps[stepIndex];
   const entry = currentStep ? entries.get(currentStep.id) : undefined;
@@ -675,8 +718,7 @@ function StepWizard({
         body: JSON.stringify(data),
       }),
     onMutate: (vars) => {
-      // Optimistic update — apply locally before the network round-trip
-      // so the Pass/Fail highlight is instant.
+      pendingMutations.current++;
       setLocalResults((prev) => {
         const next = new Map(prev);
         next.set(currentStep!.id, vars.passed);
@@ -691,6 +733,7 @@ function StepWizard({
       queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
     },
     onError: (e: Error) => toast.error(e.message),
+    onSettled: () => { pendingMutations.current--; },
   });
 
   // Is the current step recorded? (used to enable Next)
@@ -709,7 +752,7 @@ function StepWizard({
     steps.forEach((s) => {
       const e = entries.get(s.id);
       const persisted = execution?.stepResults?.find(r => r.step_id === s.id);
-      const passed = e?.passed ?? persisted?.passed ?? null;
+      const passed = e?.passed ?? localResults.get(s.id) ?? persisted?.passed ?? null;
       if (passed === false) {
         const actual = e?.actual_result ?? persisted?.actual_result ?? "";
         if (!actual.trim()) {
@@ -718,7 +761,7 @@ function StepWizard({
       }
     });
     return failedSteps;
-  }, [steps, entries, execution]);
+  }, [steps, entries, localResults, execution]);
 
   // Check if execution already has an overall_result (was previously submitted)
   const previouslySubmitted = execution?.overall_result != null;
@@ -759,6 +802,14 @@ function StepWizard({
 
   return (
     <div className="space-y-md max-w-7xl mx-auto w-full">
+      {isReadOnly && (
+        <div className="bg-gray-100 border border-gray-300 rounded-xl p-md flex items-center gap-sm">
+          <span className="material-symbols-outlined text-gray-500">lock</span>
+          <span className="text-label-md text-gray-600">
+            This test case is read-only — you have already submitted this test run.
+          </span>
+        </div>
+      )}
       <BackBar
         back={{ label: "Cases", href: `/tester/run/${testRunId}/scenario/${scenarioId}` }}
         current={`[${testCase.case_number}] ${testCase.title}`}
@@ -882,7 +933,8 @@ function StepWizard({
                 onChange={(e) => setEntry(currentStep.id, { actual_result: e.target.value })}
                 rows={3}
                 placeholder="Describe what you observed while executing this step…"
-                className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base text-on-surface placeholder:text-on-surface-variant/60 focus:ring-2 focus:ring-secondary/20 focus:border-secondary outline-none transition-all resize-y"
+                disabled={isReadOnly}
+                className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base text-on-surface placeholder:text-on-surface-variant/60 focus:ring-2 focus:ring-secondary/20 focus:border-secondary outline-none transition-all resize-y disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-gray-50"
               />
             </div>
 
@@ -903,13 +955,15 @@ function StepWizard({
               </div>
             )}
 
-            <CameraCapture
-              key={currentStep.id}
-              onUploaded={(url) => {
-                const prev = entry?.comments ?? "";
-                setEntry(currentStep.id, { comments: `${prev}\n[photo: ${url}]` });
-              }}
-            />
+            {!isReadOnly && (
+              <CameraCapture
+                key={currentStep.id}
+                onUploaded={(url) => {
+                  const prev = entry?.comments ?? "";
+                  setEntry(currentStep.id, { comments: `${prev}\n[photo: ${url}]` });
+                }}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -938,6 +992,7 @@ function StepWizard({
               role="radio"
               aria-checked={stepResultsByStep.get(currentStep!.id) === false}
               onClick={() => {
+                if (isReadOnly) return;
                 setEntry(currentStep!.id, { passed: false });
                 submitStepMut.mutate({
                   passed: false,
@@ -945,7 +1000,7 @@ function StepWizard({
                   comments: entry?.comments ?? "",
                 });
               }}
-              disabled={submitStepMut.isPending}
+              disabled={submitStepMut.isPending || isReadOnly}
               className={`inline-flex items-center gap-xs px-lg py-sm rounded-md font-label-md text-label-sm transition-all ${
                 stepResultsByStep.get(currentStep!.id) === false
                   ? "bg-error text-on-error shadow-sm"
@@ -961,6 +1016,7 @@ function StepWizard({
               role="radio"
               aria-checked={stepResultsByStep.get(currentStep!.id) === true}
               onClick={() => {
+                if (isReadOnly) return;
                 setEntry(currentStep!.id, { passed: true });
                 submitStepMut.mutate({
                   passed: true,
@@ -968,7 +1024,7 @@ function StepWizard({
                   comments: entry?.comments ?? "",
                 });
               }}
-              disabled={submitStepMut.isPending}
+              disabled={submitStepMut.isPending || isReadOnly}
               className={`inline-flex items-center gap-xs px-lg py-sm rounded-md font-label-md text-label-sm transition-all ${
                 stepResultsByStep.get(currentStep!.id) === true
                   ? "bg-green-600 text-white shadow-sm"
@@ -986,18 +1042,43 @@ function StepWizard({
           {isLast ? (
             <button
               onClick={async () => {
-                if (!allStepsRecorded || !execution) return;
+                if (!allStepsRecorded || !execution || isSubmitting) return;
                 if (validateFailedSteps.length > 0) {
                   toast.error(validateFailedSteps[0]);
                   return;
                 }
-                // Snapshot results before any state mutation
-                const anyFailed = steps.some((s) => {
+                setIsSubmitting(true);
+
+                // Snapshot the full result set from local state before any mutations
+                const stepSnapshot = steps.map((s) => {
                   const e = entries.get(s.id);
                   const persisted = execution.stepResults?.find((r) => r.step_id === s.id);
-                  return (e?.passed ?? persisted?.passed ?? null) === false;
+                  return {
+                    stepId: s.id,
+                    passed: e?.passed ?? persisted?.passed ?? null,
+                    actual_result: e?.actual_result ?? persisted?.actual_result ?? "",
+                    comments: e?.comments ?? persisted?.comments ?? "",
+                    needsSave: entries.has(s.id),
+                  };
                 });
+
+                const anyFailed = stepSnapshot.some((r) => r.passed === false);
+
                 try {
+                  // 1. Re-save step results so the latest actual_result is persisted
+                  for (const snap of stepSnapshot) {
+                    if (!snap.needsSave) continue;
+                    await customFetch(`/executions/${execution.id}/steps/${snap.stepId}/result`, {
+                      method: "POST",
+                      body: JSON.stringify({
+                        passed: snap.passed,
+                        actual_result: snap.actual_result,
+                        comments: snap.comments,
+                      }),
+                    });
+                  }
+
+                  // 2. Mark execution as completed
                   await customFetch(`/executions/${execution.id}`, {
                     method: "PATCH",
                     body: JSON.stringify({
@@ -1005,6 +1086,10 @@ function StepWizard({
                       overall_result: anyFailed ? "failed" : "passed",
                     }),
                   });
+
+                  // 3. Clear drafts
+                  steps.forEach((s) => removeDraft(s.id));
+
                   toast.success(previouslySubmitted ? "Results updated" : "Test case saved");
                   await queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
                   queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
@@ -1013,9 +1098,11 @@ function StepWizard({
                   navigate(`/tester/run/${testRunId}/scenario/${scenarioId}`);
                 } catch (err) {
                   toast.error(err instanceof Error ? err.message : "Failed to save case");
+                } finally {
+                  setIsSubmitting(false);
                 }
               }}
-              disabled={!allStepsRecorded}
+              disabled={!allStepsRecorded || isSubmitting || isReadOnly}
               className="inline-flex items-center gap-xs px-xl py-sm bg-primary text-on-primary rounded-lg font-label-md text-label-md hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               title={
                 !allStepsRecorded
@@ -1025,8 +1112,17 @@ function StepWizard({
                     : undefined
               }
             >
-              <span className="material-symbols-outlined text-[18px]">check</span>
-              {previouslySubmitted ? "Update Results" : "Submit Case"}
+              {isSubmitting ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-on-primary border-t-transparent rounded-full animate-spin" />
+                  Submitting…
+                </>
+              ) : (
+                <>
+                  <span className="material-symbols-outlined text-[18px]">check</span>
+                  {previouslySubmitted ? "Update Results" : "Submit Case"}
+                </>
+              )}
             </button>
           ) : (
             <button
@@ -1154,6 +1250,8 @@ function QuickWizard({
   removeDraft,
   onBack,
   onModeChange,
+  pendingMutations,
+  isReadOnly,
 }: {
   testRunId: number;
   scenarioId: number;
@@ -1169,6 +1267,8 @@ function QuickWizard({
   removeDraft: (stepId: number) => void;
   onBack: () => void;
   onModeChange: (next: "guided" | "quick") => void;
+  pendingMutations: React.MutableRefObject<number>;
+  isReadOnly: boolean;
 }) {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
@@ -1181,10 +1281,12 @@ function QuickWizard({
         method: "POST",
         body: JSON.stringify(data),
       }),
+    onMutate: () => { pendingMutations.current++; },
     onSuccess: (_data, vars) => {
       removeDraft(vars.stepId);
     },
     onError: (e: Error) => toast.error(e.message),
+    onSettled: () => { pendingMutations.current--; },
   });
 
   // Save a single step result when pass/fail is toggled
@@ -1240,7 +1342,7 @@ function QuickWizard({
     steps.forEach((s) => {
       const e = entries.get(s.id);
       const persistedResult = execution?.stepResults?.find((r) => r.step_id === s.id);
-      const passed = e?.passed ?? persistedResult?.passed ?? null;
+      const passed = e?.passed ?? localResults.get(s.id) ?? persistedResult?.passed ?? null;
       if (passed === false) {
         const actual = e?.actual_result ?? persistedResult?.actual_result ?? "";
         if (!actual.trim()) {
@@ -1249,7 +1351,7 @@ function QuickWizard({
       }
     });
     return failedSteps;
-  }, [steps, entries, execution?.stepResults]);
+  }, [steps, entries, localResults, execution?.stepResults]);
 
   // Check if execution already has an overall_result (was previously submitted)
   const previouslySubmitted = execution?.overall_result != null;
@@ -1272,7 +1374,7 @@ function QuickWizard({
         passed: e?.passed ?? persistedResult?.passed ?? null,
         actual_result: e?.actual_result ?? persistedResult?.actual_result ?? "",
         comments: e?.comments ?? persistedResult?.comments ?? "",
-        needsSave: e?.passed != null, // only save if there's an in-memory entry
+        needsSave: entries.has(s.id),
       };
     });
 
@@ -1350,6 +1452,14 @@ function QuickWizard({
 
   return (
     <div className="space-y-md max-w-4xl mx-auto w-full pb-32">
+      {isReadOnly && (
+        <div className="bg-gray-100 border border-gray-300 rounded-xl p-md flex items-center gap-sm">
+          <span className="material-symbols-outlined text-gray-500">lock</span>
+          <span className="text-label-md text-gray-600">
+            This test case is read-only — you have already submitted this test run.
+          </span>
+        </div>
+      )}
       <BackBar
         back={{ label: "Cases", href: `/tester/run/${testRunId}/scenario/${scenarioId}` }}
         current={`[${testCase.case_number}] ${testCase.title}`}
@@ -1500,17 +1610,20 @@ function QuickWizard({
                   onChange={(ev) => setEntry(s.id, { actual_result: ev.target.value })}
                   rows={2}
                   placeholder="Describe what you observed…"
-                  className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base text-on-surface placeholder:text-on-surface-variant/60 focus:ring-2 focus:ring-secondary/20 focus:border-secondary outline-none transition-all resize-y"
+                  disabled={isReadOnly}
+                  className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base text-on-surface placeholder:text-on-surface-variant/60 focus:ring-2 focus:ring-secondary/20 focus:border-secondary outline-none transition-all resize-y disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-gray-50"
                 />
                 <div className="flex items-center gap-sm">
                   <button
                     onClick={() => {
+                      if (isReadOnly) return;
                       setEntry(s.id, { passed: true });
                       if (execution) {
                         handleQuickStepResult(s.id, true, entries.get(s.id) ?? EMPTY_ENTRY);
                       }
                     }}
-                    className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-xs px-lg py-sm rounded-lg font-label-md text-label-sm transition-all ${
+                    disabled={saveStepMut.isPending || isReadOnly}
+                    className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-xs px-lg py-sm rounded-lg font-label-md text-label-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
                       effective === true
                         ? "bg-green-600 text-white shadow-sm"
                         : "bg-surface-container-low text-on-surface border border-outline-variant hover:bg-green-50 hover:border-green-200 hover:text-green-700"
@@ -1521,6 +1634,7 @@ function QuickWizard({
                   </button>
                   <button
                     onClick={() => {
+                      if (isReadOnly) return;
                       // Validate: if marking Fail, check actual_result is filled
                       const entry_ = entries.get(s.id) ?? EMPTY_ENTRY;
                       if (!entry_.actual_result?.trim()) {
@@ -1532,7 +1646,8 @@ function QuickWizard({
                         handleQuickStepResult(s.id, false, entry_);
                       }
                     }}
-                    className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-xs px-lg py-sm rounded-lg font-label-md text-label-sm transition-all ${
+                    disabled={saveStepMut.isPending || isReadOnly}
+                    className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-xs px-lg py-sm rounded-lg font-label-md text-label-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
                       effective === false
                         ? "bg-error text-on-error shadow-sm"
                         : "bg-surface-container-low text-on-surface border border-outline-variant hover:bg-red-50 hover:border-red-200 hover:text-red-700"
@@ -1572,7 +1687,7 @@ function QuickWizard({
             </button>
             <button
               onClick={handleSubmit}
-              disabled={!readyToSubmit || isSubmitting}
+              disabled={!readyToSubmit || isSubmitting || isReadOnly}
               title={validateFailedSteps.length > 0 ? validateFailedSteps[0] : undefined}
               className="inline-flex items-center gap-xs px-xl py-sm bg-primary text-on-primary rounded-lg font-label-md text-label-md hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >

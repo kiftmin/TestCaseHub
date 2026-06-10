@@ -39,6 +39,31 @@ const severityColors: Record<string, string> = {
   Cosmetic: "text-on-surface-variant",
 };
 
+const severityRowBg: Record<string, string> = {
+  Critical: "bg-red-50",
+  Major: "bg-amber-50",
+};
+
+const severityDot: Record<string, string> = {
+  Critical: "bg-red-500",
+  Major: "bg-amber-500",
+  Minor: "bg-gray-400",
+  Cosmetic: "bg-gray-300",
+};
+
+function extractFailedStep(defect: Defect): { stepNumber?: string; instruction?: string } {
+  const notes = defect.tester_notes ?? "";
+  const stepMatch = notes.match(/^Step\s+(\S+?):\s+(.+)$/m);
+  if (stepMatch) {
+    return { stepNumber: stepMatch[1], instruction: stepMatch[2] };
+  }
+  const sr = defect.execution?.stepResults?.find(r => r.passed === false);
+  if (sr?.step) {
+    return { stepNumber: sr.step.step_number, instruction: sr.step.instruction };
+  }
+  return {};
+}
+
 export function DefectLogPage({ params }: { params: { id: string } }) {
   const projectId = Number(params.id);
   const user = getStoredUser();
@@ -239,10 +264,8 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             <thead className="bg-surface-container-low border-b border-outline-variant">
               <tr>
                 <SortTh field="id" label="ID" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="test_case" label="Test Case" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="severity" label="Severity" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="priority" label="Priority" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="test_case" label="Test Case / Failed Step" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="severity" label="Sev" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <SortTh field="created_at" label="Created" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <th className="p-md text-xs font-bold text-outline uppercase text-right whitespace-nowrap">Actions</th>
               </tr>
@@ -263,7 +286,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
               ))}
                 {sorted.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="p-lg text-center text-on-surface-variant font-body-sm">
+                  <td colSpan={5} className="p-lg text-center text-on-surface-variant font-body-sm">
                     No defects found
                   </td>
                 </tr>
@@ -462,29 +485,40 @@ function DefectRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const stepInfo = extractFailedStep(defect);
+
   return (
     <>
       <tr
-        className="group hover:bg-surface-container-low cursor-pointer transition-colors"
+        className={`group hover:bg-surface-container-low cursor-pointer transition-colors ${severityRowBg[defect.severity ?? ""] ?? ""} ${isClosed ? "opacity-60" : ""}`}
         onClick={onToggle}
       >
-        <td className={`p-md font-label-md text-label-md text-secondary font-bold ${isClosed ? "opacity-60" : ""}`}>
-          DEF-{defect.id}
+        <td className="p-md whitespace-nowrap">
+          <div className="flex items-center gap-2">
+            <span className={`inline-block w-2 h-2 rounded-full ${severityDot[defect.severity ?? ""] ?? "bg-gray-300"} shrink-0`} />
+            <span className="font-label-md text-label-md text-secondary font-bold">
+              DEF-{defect.id}
+            </span>
+            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${statusBadge[defect.status] ?? ""}`}>
+              {statusDisplay[defect.status] ?? defect.status}
+            </span>
+          </div>
         </td>
         <td className="p-md">
-          <p className={`font-label-md text-label-md text-on-surface ${isClosed ? "opacity-60" : ""}`}>
-            {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
-          </p>
+          <div className="flex flex-col gap-0.5">
+            <p className="font-label-md text-label-md text-on-surface leading-tight">
+              {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
+            </p>
+            {stepInfo.instruction && (
+              <p className="text-xs text-on-surface-variant leading-tight">
+                Step {stepInfo.stepNumber}: {stepInfo.instruction}
+              </p>
+            )}
+          </div>
         </td>
-        <td className="p-md">
-          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border ${statusBadge[defect.status] ?? ""}`}>
-            {statusDisplay[defect.status] ?? defect.status}
-          </span>
-        </td>
-        <td className={`p-md font-body-sm text-body-sm ${severityColors[defect.severity ?? ""] ?? ""}`}>
+        <td className={`p-md font-body-sm text-body-sm whitespace-nowrap ${severityColors[defect.severity ?? ""] ?? ""}`}>
           {defect.severity ?? "—"}
         </td>
-        <td className="p-md font-body-sm text-body-sm">{defect.priority ?? "—"}</td>
         <td className="p-md font-body-sm text-body-sm text-on-surface-variant whitespace-nowrap">
           {new Date(defect.created_at).toLocaleDateString()}
         </td>
@@ -587,7 +621,7 @@ function DefectRow({
         </td>
       </tr>
       <tr className={`bg-surface-container-lowest ${expanded ? "" : "hidden"}`}>
-        <td className="p-0" colSpan={7}>
+        <td className="p-0" colSpan={5}>
           <div className={`p-lg border-l-4 ${isNew ? "border-error" : isAssigned ? "border-amber-400" : isReady ? "border-blue-500" : "border-green-500"} ml-md my-sm space-y-md`}>
 
             {/* Execution Context — Test Scenario & Test Case Details */}
@@ -602,6 +636,14 @@ function DefectRow({
                   <p className="font-body-sm text-body-sm text-on-surface">
                     {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
                   </p>
+                  {stepInfo.instruction && (
+                    <>
+                      <h4 className="text-xs font-bold text-outline uppercase mt-sm mb-sm">Failed Step</h4>
+                      <p className="font-body-sm text-body-sm text-red-600 font-semibold">
+                        Step {stepInfo.stepNumber}: {stepInfo.instruction}
+                      </p>
+                    </>
+                  )}
                   {defect.testCase?.acceptance_criteria && (
                     <>
                       <h4 className="text-xs font-bold text-outline uppercase mt-sm mb-sm">Acceptance Criteria</h4>
@@ -637,20 +679,25 @@ function DefectRow({
               <div className="mb-md pb-md border-b border-outline-variant">
                 <h4 className="text-xs font-bold text-outline uppercase mb-sm">Test Steps — Expected vs Actual</h4>
                 <div className="space-y-sm">
-                  {defect.execution.stepResults.map((sr) => (
-                    <div key={sr.id} className={`border-l-4 ${sr.passed ? "border-green-500" : "border-error"} bg-surface-container-low rounded-lg p-sm text-sm`}>
-                      <div className="flex items-center gap-sm mb-xs">
-                        <span className="font-bold text-xs">Step {sr.step?.step_number ?? sr.step_id}</span>
-                        <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${sr.passed ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
-                          {sr.passed ? "PASS" : "FAIL"}
-                        </span>
+                  {defect.execution.stepResults.map((sr) => {
+                    const isFailed = sr.passed === false;
+                    const matchesDefect = stepInfo.stepNumber != null && String(sr.step?.step_number) === stepInfo.stepNumber;
+                    const isHighlighted = isFailed && matchesDefect;
+                    return (
+                      <div key={sr.id} className={`border-l-4 ${isFailed ? "border-error" : "border-green-500"} ${isHighlighted ? "bg-red-50 shadow-sm" : "bg-surface-container-low opacity-50"} rounded-lg p-sm text-sm transition-all`}>
+                        <div className="flex items-center gap-sm mb-xs">
+                          <span className="font-bold text-xs">Step {sr.step?.step_number ?? sr.step_id}</span>
+                          <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${isFailed ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}>
+                            {isFailed ? "FAIL" : "PASS"}
+                          </span>
+                        </div>
+                        <p className="text-on-surface mb-xs"><span className="font-semibold">Instruction:</span> {sr.step?.instruction ?? "N/A"}</p>
+                        {sr.step?.expected_result && <p className="text-on-surface mb-xs"><span className="font-semibold">Expected:</span> {sr.step.expected_result}</p>}
+                        {sr.actual_result && <p className="text-on-surface mb-xs"><span className="font-semibold">Actual:</span> {sr.actual_result}</p>}
+                        {sr.comments && <p className="text-on-surface-variant text-xs mt-1"><span className="font-semibold">Comments:</span> {sr.comments}</p>}
                       </div>
-                      <p className="text-on-surface mb-xs"><span className="font-semibold">Instruction:</span> {sr.step?.instruction ?? "N/A"}</p>
-                      {sr.step?.expected_result && <p className="text-on-surface mb-xs"><span className="font-semibold">Expected:</span> {sr.step.expected_result}</p>}
-                      {sr.actual_result && <p className="text-on-surface mb-xs"><span className="font-semibold">Actual:</span> {sr.actual_result}</p>}
-                      {sr.comments && <p className="text-on-surface-variant text-xs mt-1"><span className="font-semibold">Comments:</span> {sr.comments}</p>}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}

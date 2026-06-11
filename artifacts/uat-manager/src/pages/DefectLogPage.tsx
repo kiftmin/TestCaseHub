@@ -514,7 +514,7 @@ function DefectRow({
   });
 
   const bizRejectMut = useMutation({
-    mutationFn: (reason: string) => customFetch(`/defects/${defect.id}/reject`, { method: "PATCH", body: JSON.stringify({ reason }) }),
+    mutationFn: (reason: string) => customFetch(`/defects/${defect.id}/reject-verification`, { method: "PATCH", body: JSON.stringify({ reason }) }),
     onSuccess: () => { invalidateProject(); toast.success("Defect rejected"); setRejectOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });

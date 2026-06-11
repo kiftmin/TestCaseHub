@@ -8,12 +8,23 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
 const db = drizzle(pool);
 
 async function main() {
+  // First, show all system notes with their IDs for debugging
+  const allSystemNotes = await db.execute(sql`
+    SELECT id, LEFT(note, 120) AS preview FROM "defect_notes"
+    WHERE "is_system_note" = true ORDER BY id
+  `);
+  console.log(`Found ${allSystemNotes.rows.length} total system notes`);
+  for (const row of allSystemNotes.rows as { id: number; preview: string }[]) {
+    console.log(`  [${row.id}] ${row.preview}`);
+  }
+
   // Find all system notes referencing "Assigned to user #N"
   const notes = await db.execute(sql`
     SELECT id, note FROM "defect_notes"
     WHERE "is_system_note" = true
-    AND "note" ~ 'Assigned to user #\d+'
+    AND "note" ~ 'Assigned to user #[0-9]+'
   `);
+  console.log(`Found ${notes.rows.length} notes matching 'Assigned to user #N'`);
 
   let updated = 0;
   for (const row of notes.rows as { id: number; note: string }[]) {

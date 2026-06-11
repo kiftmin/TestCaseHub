@@ -23,7 +23,7 @@ export function Stepper({
     <nav aria-label="Progress" className={`w-full ${className}`}>
       <ol className="flex items-start w-full">
         {steps.map((step, idx) => {
-          const isCompleted = completedIndices.includes(idx) || idx < currentIndex;
+          const isCompleted = completedIndices.includes(idx);
           const isCurrent = idx === currentIndex;
           const isClickable = !!onStepClick && (isCompleted || isCurrent);
 

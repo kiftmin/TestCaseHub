@@ -5,7 +5,7 @@ import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
 import { Stepper, type Step } from "../components/ui/stepper";
-import type { Defect, TestRun, ProjectAssignment } from "../types/api";
+import type { Defect, DefectNote, TestRun, ProjectAssignment } from "../types/api";
 
 const statusBadge: Record<string, string> = {
   NEW: "bg-error-container text-on-error-container border-error/20",
@@ -546,9 +546,39 @@ function DefectRow({
     { key: "READY_FOR_VERIFICATION", label: "Verification" },
     { key: "CLOSED", label: "Closed" },
   ];
-  const mainFlow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, RESOLVED_DEV:4, READY_FOR_VERIFICATION:5, CLOSED:6, PASSED_BY_AGREEMENT:6 };
+  const mainFlow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, BLOCKED:3, RESOLVED_DEV:4, READY_FOR_VERIFICATION:5, CLOSED:6, PASSED_BY_AGREEMENT:6, REGRESSED:3 };
   const currentStatusIdx = mainFlow[defect.status] ?? 0;
-  const completedStatusIndices = [0,1,2,3,4,5,6].filter(i => i < currentStatusIdx);
+
+  // Derive actually completed steps from system notes to avoid marking skipped states as completed
+  const visitedFrom = useMemo(() => {
+    const fromStates = new Set<string>();
+    if (defect.notes) {
+      const seen = new Set<string>();
+      for (const n of defect.notes) {
+        if (!n.is_system_note) continue;
+        // Skip duplicate notes (same content + same timestamp)
+        const key = `${n.note}|${n.created_at}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const m = n.note.match(/from '([^']+)' to '([^']+)'/);
+        if (m && m[1] !== m[2]) fromStates.add(m[1]);
+      }
+    }
+    return fromStates;
+  }, [defect.notes]);
+
+  const completedStatusIndices = useMemo(() => {
+    const idx = new Set<number>();
+    for (const s of visitedFrom) {
+      const i = mainFlow[s];
+      if (i != null && i < currentStatusIdx) idx.add(i);
+    }
+    // If defect is in a terminal state, mark the final step as completed too
+    if (defect.status === "CLOSED" || defect.status === "PASSED_BY_AGREEMENT") {
+      idx.add(statusSteps.length - 1);
+    }
+    return [...idx].sort((a, b) => a - b);
+  }, [visitedFrom, currentStatusIdx, defect.status]);
 
   return (
     <>
@@ -561,9 +591,6 @@ function DefectRow({
             <span className={`inline-block w-2 h-2 rounded-full ${severityDot[defect.severity ?? ""] ?? "bg-gray-300"} shrink-0`} />
             <span className="font-label-md text-label-md text-secondary font-bold">
               DEF-{defect.id}
-            </span>
-            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${statusBadge[defect.status] ?? ""}`}>
-              {statusDisplay[defect.status] ?? defect.status}
             </span>
           </div>
         </td>
@@ -581,6 +608,14 @@ function DefectRow({
         </td>
         <td className={`p-md font-body-sm text-body-sm whitespace-nowrap ${severityColors[defect.severity ?? ""] ?? ""}`}>
           {defect.severity ?? "—"}
+        </td>
+        <td className="p-md font-body-sm text-body-sm whitespace-nowrap text-on-surface-variant">
+          {defect.priority ?? "—"}
+        </td>
+        <td className="p-md font-body-sm text-body-sm whitespace-nowrap">
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${statusBadge[defect.status] ?? ""}`}>
+            {statusDisplay[defect.status] ?? defect.status}
+          </span>
         </td>
         <td className="p-md font-body-sm text-body-sm text-on-surface-variant whitespace-nowrap">
           {new Date(defect.created_at).toLocaleDateString()}
@@ -831,16 +866,27 @@ function DefectRow({
                 <div>
                   {defect.notes && defect.notes.length > 0 ? (
                     <div className="space-y-sm max-h-80 overflow-y-auto pr-md">
-                      {defect.notes.map((n) => (
+                      {(() => {
+                        const seen = new Set<string>();
+                        const deduped: DefectNote[] = [];
+                        for (const n of defect.notes ?? []) {
+                          const key = `${n.id}-${n.note}-${n.created_at}`;
+                          if (seen.has(key)) continue;
+                          seen.add(key);
+                          deduped.push(n);
+                        }
+                        return deduped;
+                      })().map((n) => (
                         <div key={n.id} className={`rounded-lg p-sm text-sm ${n.is_system_note ? "bg-surface-container-low border border-outline-variant/30" : "bg-surface-container-high"}`}>
                           <div className="flex items-start gap-2">
                             {n.is_system_note && (<span className="text-on-surface-variant mt-0.5 flex-shrink-0 material-symbols-outlined text-sm">settings</span>)}
                             <div className="flex-1 min-w-0">
                               <p className={`text-on-surface ${n.is_system_note ? "italic text-on-surface-variant text-xs" : ""}`}>{n.note}</p>
-                              <div className="flex items-center gap-2 mt-1">
+                              <div className="flex items-center gap-1 mt-1">
                                 <span className="text-[10px] text-on-surface-variant">{n.addedBy?.name ?? `User #${n.added_by_user_id ?? "system"}`}</span>
+                                <span className="text-[10px] text-on-surface-variant">&middot;</span>
                                 <span className="text-[10px] text-on-surface-variant">{new Date(n.created_at).toLocaleString()}</span>
-                                {n.is_system_note && (<span className="text-[10px] text-on-surface-variant italic">System Note</span>)}
+                                {n.is_system_note && (<><span className="text-[10px] text-on-surface-variant">&middot;</span><span className="text-[10px] text-on-surface-variant italic">System Note</span></>)}
                               </div>
                             </div>
                           </div>

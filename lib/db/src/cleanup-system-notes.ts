@@ -8,14 +8,14 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
 const db = drizzle(pool);
 
 async function main() {
-  // 1. Delete duplicate system notes (same note text and created_at, keep earliest id)
+  // 1. Delete duplicate system notes (same note text per defect, keep earliest id)
   const dupResult = await db.execute(sql`
     DELETE FROM "defect_notes"
     WHERE "is_system_note" = true
     AND "id" NOT IN (
       SELECT MIN("id") FROM "defect_notes"
       WHERE "is_system_note" = true
-      GROUP BY "note", "created_at"
+      GROUP BY "defect_id", "note"
     )
   `);
   console.log(`Deleted duplicate system notes: ${dupResult.rowCount ?? 0} rows`);

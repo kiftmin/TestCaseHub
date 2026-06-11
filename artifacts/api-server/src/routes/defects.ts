@@ -289,6 +289,7 @@ router.patch("/defects/:defectId/start", async (req: AuthenticatedRequest, res, 
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    if (defect.status !== "ASSIGNED") { res.status(409).json({ message: `Cannot start defect in status ${defect.status}. Only ASSIGNED defects can be started.` }); return; }
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
@@ -318,6 +319,7 @@ router.patch("/defects/:defectId/block", async (req: AuthenticatedRequest, res, 
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    if (defect.status !== "ASSIGNED" && defect.status !== "IN_PROGRESS") { res.status(409).json({ message: `Cannot block defect in status ${defect.status}. Only ASSIGNED or IN_PROGRESS defects can be blocked.` }); return; }
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)

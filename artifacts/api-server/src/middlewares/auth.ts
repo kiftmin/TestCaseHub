@@ -52,36 +52,6 @@ export function authorize(roles: string[]) {
   };
 }
 
-export function authorizeProjectRole(allowedRoles: string[]) {
-  return async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
-    const projectId = Number(req.params.projectId);
-    if (!req.user) {
-      res.status(401).json({ message: "Unauthorized" });
-      return;
-    }
-
-    if (req.user.role === "ADMIN") {
-      next();
-      return;
-    }
-
-    const assignment = await db.query.projectAssignments.findFirst({
-      where: (pa, { and }) =>
-        and(
-          eq(pa.project_id, projectId),
-          eq(pa.user_id, req!.user!.userId)
-        ),
-    });
-
-    if (!assignment || !allowedRoles.includes(assignment.role)) {
-      res.status(403).json({ message: "Forbidden" });
-      return;
-    }
-
-    next();
-  };
-}
-
 export async function checkProjectRole(
   req: AuthenticatedRequest,
   projectId: number,

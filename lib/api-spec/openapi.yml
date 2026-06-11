@@ -230,27 +230,6 @@ components:
         retested_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
 
-    # Bug schema is deprecated — consolidated into Defect
-      type: object
-      properties:
-        id: { type: integer }
-        project_id: { type: integer }
-        defect_id: { type: integer }
-        bug_number: { type: integer }
-        support_ticket_number: { type: string, nullable: true }
-        assigned_developer_id: { type: integer, nullable: true }
-        status: { type: string, enum: [OPEN, ASSIGNED, IN_PROGRESS, RESOLVED, FAILED_TO_RESOLVE, CLOSED, REOPENED] }
-        developer_notes: { type: string, nullable: true }
-        failed_to_resolve_reason: { type: string, nullable: true }
-        root_cause_category: { type: string, nullable: true }
-        opened_at: { type: string, format: date-time }
-        assigned_at: { type: string, format: date-time, nullable: true }
-        resolved_at: { type: string, format: date-time, nullable: true }
-        test_at: { type: string, format: date-time, nullable: true }
-        failed_to_resolve_at: { type: string, format: date-time, nullable: true }
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
-
     StatusAuditLog:
       type: object
       properties:
@@ -1396,9 +1375,29 @@ paths:
               schema:
                 $ref: "#/components/schemas/Defect"
 
-  /defects/{defectId}/flag-bug:
+  /projects/{projectId}/defects:
+    get:
+      summary: List defects for project
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Defect"
+
+  /defects/{defectId}/flag-blocked:
     patch:
-      summary: Flag defect as bug
+      summary: Flag NEW defect as blocked
       tags: [Defects]
       parameters:
         - in: path
@@ -1406,6 +1405,59 @@ paths:
           required: true
           schema:
             type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/flag-retest-from-new:
+    patch:
+      summary: Flag NEW defect directly for retest
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+                targetVerificationRunId: { type: integer }
+      responses:
+        "200":
+          description: OK
+
+  /defects/{defectId}/flag-accepted-by-business:
+    patch:
+      summary: Flag NEW defect as accepted by business
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
       responses:
         "200":
           description: OK
@@ -1677,135 +1729,6 @@ paths:
               properties:
                 retestResult: { type: string }
                 retestNotes: { type: string }
-      responses:
-        "200":
-          description: OK
-
-  /projects/{projectId}/bugs:
-    get:
-      summary: List bugs for project
-      tags: [Bugs]
-      parameters:
-        - in: path
-          name: projectId
-          required: true
-          schema:
-            type: integer
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Bug"
-
-  /bugs/{bugId}:
-    get:
-      summary: Get bug by id
-      tags: [Bugs]
-      parameters:
-        - in: path
-          name: bugId
-          required: true
-          schema:
-            type: integer
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Bug"
-
-  /bugs/{bugId}/assign:
-    patch:
-      summary: Assign bug to developer
-      tags: [Bugs]
-      parameters:
-        - in: path
-          name: bugId
-          required: true
-          schema:
-            type: integer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                developerId: { type: integer }
-                supportTicketNumber: { type: string }
-      responses:
-        "200":
-          description: OK
-
-  /bugs/{bugId}/status:
-    patch:
-      summary: Update bug status
-      tags: [Bugs]
-      parameters:
-        - in: path
-          name: bugId
-          required: true
-          schema:
-            type: integer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                status: { type: string }
-                reason: { type: string }
-      responses:
-        "200":
-          description: OK
-
-  /bugs/{bugId}/notes:
-    patch:
-      summary: Add / bug notes
-      tags: [Bugs]
-      parameters:
-        - in: path
-          name: bugId
-          required: true
-          schema:
-            type: integer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                notes: { type: string }
-                rootCauseCategory: { type: string }
-      responses:
-        "200":
-          description: OK
-
-  /bugs/{bugId}/reassign:
-    patch:
-      summary: Reassign bug developer
-      tags: [Bugs]
-      parameters:
-        - in: path
-          name: bugId
-          required: true
-          schema:
-            type: integer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                developerId: { type: integer }
       responses:
         "200":
           description: OK

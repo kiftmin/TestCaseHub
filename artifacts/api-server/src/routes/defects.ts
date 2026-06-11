@@ -3,7 +3,7 @@ import { eq, desc, and, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
 import { logAudit, logSystemNote } from "../utils/project.js";
 
 const router = express.Router();
@@ -150,6 +150,11 @@ router.patch("/defects/:defectId/assign", async (req: AuthenticatedRequest, res,
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    if (defect.status !== "NEW" && defect.status !== "TRIAGED") {
+      res.status(409).json({ message: `Cannot assign defect in status ${defect.status}. Only NEW or TRIAGED defects can be assigned.` });
+      return;
+    }
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
@@ -327,16 +332,42 @@ router.patch("/defects/:defectId/block", async (req: AuthenticatedRequest, res, 
 
 // PATCH /defects/:defectId/unblock — DEVELOPER or TEST_LEAD
 // BLOCKED ─────────────────────────────────────────────────────> IN_PROGRESS
+// Level 1 rollback (quick undo, no approval)
 router.patch("/defects/:defectId/unblock", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({ reason: z.string().min(1, "Reason is required") });
+    const data = bodySchema.parse(req.body);
+
     const projectId = await getProjectId(defectId);
     if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
-    const allowed = await checkProjectRole(req, projectId, ["DEVELOPER", "TEST_LEAD"]);
-    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const role = req.user!.role;
+    const projectRole = (await db.query.projectAssignments.findFirst({
+      where: and(eq(schema.projectAssignments.project_id, projectId), eq(schema.projectAssignments.user_id, req.user!.userId)),
+      columns: { role: true },
+    }))?.role;
+
+    const isAdmin = role === "ADMIN";
+    const isTestLead = projectRole === "TEST_LEAD";
+    const isDeveloper = projectRole === "DEVELOPER";
+    if (!isAdmin && !isTestLead && !isDeveloper) {
+      res.status(403).json({ message: "Only developer or test lead can unblock" });
+      return;
+    }
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    if (defect.status !== "BLOCKED") {
+      res.status(400).json({ message: "Defect is not in BLOCKED state" });
+      return;
+    }
+
+    if (isDeveloper && defect.assigned_to_user_id !== req.user!.userId) {
+      res.status(403).json({ message: "You can only unblock your own assigned defects" });
+      return;
+    }
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
@@ -344,9 +375,14 @@ router.patch("/defects/:defectId/unblock", async (req: AuthenticatedRequest, res
       .where(eq(schema.defects.id, defectId))
       .returning();
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "IN_PROGRESS", reason: "Block lifted" });
-    await logSystemNote(defectId, oldStatus, "IN_PROGRESS", req.user!.userId, "Block lifted");
-    res.json(updated);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "IN_PROGRESS", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "IN_PROGRESS", req.user!.userId, data.reason);
+    res.json({
+      id: updated.id,
+      status: updated.status,
+      assigned_to_user_id: updated.assigned_to_user_id,
+      updated_at: updated.updated_at,
+    });
   } catch (err) { next(err); }
 });
 
@@ -525,32 +561,352 @@ router.patch("/defects/:defectId/accept", async (req: AuthenticatedRequest, res,
   } catch (err) { next(err); }
 });
 
-// PATCH /defects/:defectId/reject — BUSINESS_OWNER only
-// READY_FOR_VERIFICATION ──────────────────────────────────────> READY_FOR_VERIFICATION (re-opened)
-router.patch("/defects/:defectId/reject", async (req: AuthenticatedRequest, res, next) => {
+// ---------------------------------------------------------------------------
+// PHASE 5 — Rollback & Escalation
+// ---------------------------------------------------------------------------
+
+// PATCH /defects/:defectId/resume-work — DEVELOPER or TEST_LEAD
+// RESOLVED_DEV ────────────────────────────────────────────────> IN_PROGRESS
+// Level 1 rollback (quick undo, no approval)
+router.patch("/defects/:defectId/resume-work", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
-    const bodySchema = z.object({ reason: z.string().optional() });
+    const bodySchema = z.object({ reason: z.string().min(1, "Reason is required") });
     const data = bodySchema.parse(req.body);
 
     const projectId = await getProjectId(defectId);
     if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
-    const allowed = await checkProjectRole(req, projectId, ["BUSINESS_OWNER"]);
-    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const role = req.user!.role;
+    const projectRole = (await db.query.projectAssignments.findFirst({
+      where: and(eq(schema.projectAssignments.project_id, projectId), eq(schema.projectAssignments.user_id, req.user!.userId)),
+      columns: { role: true },
+    }))?.role;
+
+    const isAdmin = role === "ADMIN";
+    const isTestLead = projectRole === "TEST_LEAD";
+    const isDeveloper = projectRole === "DEVELOPER";
+    if (!isAdmin && !isTestLead && !isDeveloper) {
+      res.status(403).json({ message: "Only developer or test lead can resume work" });
+      return;
+    }
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
 
+    if (defect.status !== "RESOLVED_DEV") {
+      res.status(400).json({ message: "Defect is not in RESOLVED_DEV state" });
+      return;
+    }
+
+    if (isDeveloper && defect.assigned_to_user_id !== req.user!.userId) {
+      res.status(403).json({ message: "You can only resume work on your own assigned defects" });
+      return;
+    }
+
     const oldStatus = defect.status;
-    const rejectionLog = data.reason ? JSON.stringify({ reason: data.reason, rejectedAt: new Date().toISOString(), rejectedBy: req.user!.userId }) : "{}";
     const [updated] = await db.update(schema.defects)
-      .set({ status: "READY_FOR_VERIFICATION", rejection_log: rejectionLog, updated_at: new Date() })
+      .set({ status: "IN_PROGRESS", resolved_at: null, updated_at: new Date() })
       .where(eq(schema.defects.id, defectId))
       .returning();
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "READY_FOR_VERIFICATION", reason: data.reason });
-    await logSystemNote(defectId, oldStatus, "READY_FOR_VERIFICATION", req.user!.userId, data.reason ?? undefined);
-    res.json(updated);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "IN_PROGRESS", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "IN_PROGRESS", req.user!.userId, data.reason);
+    res.json({
+      id: updated.id,
+      status: updated.status,
+      assigned_to_user_id: updated.assigned_to_user_id,
+      resolved_at: updated.resolved_at,
+      updated_at: updated.updated_at,
+    });
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/reschedule-retest — TEST_LEAD only
+// READY_FOR_VERIFICATION ──────────────────────────────────────> RESOLVED_DEV
+// Level 1 rollback (quick undo, no approval)
+router.patch("/defects/:defectId/reschedule-retest", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({ reason: z.string().min(1, "Reason is required") });
+    const data = bodySchema.parse(req.body);
+
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Only test lead can reschedule retest" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    if (defect.status !== "READY_FOR_VERIFICATION") {
+      res.status(400).json({ message: "Defect is not in READY_FOR_VERIFICATION state" });
+      return;
+    }
+
+    const oldStatus = defect.status;
+    const [updated] = await db.update(schema.defects)
+      .set({ status: "RESOLVED_DEV", updated_at: new Date() })
+      .where(eq(schema.defects.id, defectId))
+      .returning();
+
+    await db.delete(schema.defectRetests)
+      .where(eq(schema.defectRetests.defect_id, defectId));
+
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "RESOLVED_DEV", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "RESOLVED_DEV", req.user!.userId, data.reason);
+    res.json({
+      id: updated.id,
+      status: updated.status,
+      updated_at: updated.updated_at,
+    });
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/reject-verification — BUSINESS_OWNER or TEST_LEAD
+// READY_FOR_VERIFICATION ──────────────────────────────────────> ASSIGNED
+// Level 2 rollback (escalation, requires reason + analytics)
+router.patch("/defects/:defectId/reject-verification", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({
+      reason: z.string().min(10, "Reason is required and must be at least 10 characters"),
+      rejectionType: z.enum(["failed_retest", "failed_qa_review", "other"]).optional(),
+    });
+    const data = bodySchema.parse(req.body);
+
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["BUSINESS_OWNER", "TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Only business owner or test lead can reject verification" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    if (defect.status !== "READY_FOR_VERIFICATION") {
+      res.status(400).json({ message: "Defect is not in READY_FOR_VERIFICATION state" });
+      return;
+    }
+
+    if (!defect.assigned_to_user_id) {
+      res.status(422).json({ message: "Defect has no assigned developer" });
+      return;
+    }
+
+    const oldStatus = defect.status;
+    const newRegressionIndex = (defect.regression_index ?? 0) + 1;
+
+    // Append to rejection_log as JSON array
+    let rejections: Array<{ at: string; by: number; reason: string; type?: string }> = [];
+    if (defect.rejection_log) {
+      try {
+        const parsed = JSON.parse(defect.rejection_log);
+        if (Array.isArray(parsed.rejections)) {
+          rejections = parsed.rejections;
+        }
+      } catch { /* start fresh */ }
+    }
+    rejections.push({
+      at: new Date().toISOString(),
+      by: req.user!.userId,
+      reason: data.reason,
+      ...(data.rejectionType ? { type: data.rejectionType } : {}),
+    });
+
+    const rejectionLog = JSON.stringify({ rejections });
+
+    const [updated] = await db.update(schema.defects)
+      .set({
+        status: "ASSIGNED",
+        regression_index: newRegressionIndex,
+        rejection_log: rejectionLog,
+        updated_at: new Date(),
+      })
+      .where(eq(schema.defects.id, defectId))
+      .returning();
+
+    await db.delete(schema.defectRetests)
+      .where(eq(schema.defectRetests.defect_id, defectId));
+
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "ASSIGNED", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, data.reason);
+
+    // TODO: Notify developer (in-app notification + optional email)
+    // To be implemented when notification infrastructure is available
+
+    res.json({
+      id: updated.id,
+      status: updated.status,
+      assigned_to_user_id: updated.assigned_to_user_id,
+      updated_at: updated.updated_at,
+      regression_index: updated.regression_index,
+    });
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/regress — DEVELOPER, TEST_LEAD, or BUSINESS_OWNER
+// CLOSED | PASSED_BY_AGREEMENT ──────────────────────────────────> REGRESSED
+// Level 2 rollback (escalation — production defect found)
+router.patch("/defects/:defectId/regress", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({
+      reason: z.string().min(20, "Reason must be at least 20 characters (provide details)"),
+      incidentType: z.enum(["production", "staging", "regression"]),
+      customerReference: z.string().optional(),
+      severity: z.enum(["Critical", "Major", "Minor"]).optional(),
+    });
+    const data = bodySchema.parse(req.body);
+
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["DEVELOPER", "TEST_LEAD", "BUSINESS_OWNER"]);
+    if (!allowed) { res.status(403).json({ message: "Insufficient permissions to regress defect" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    if (defect.status !== "CLOSED" && defect.status !== "PASSED_BY_AGREEMENT") {
+      res.status(400).json({ message: "Defect is not in a closeable state (not CLOSED)" });
+      return;
+    }
+
+    const oldStatus = defect.status;
+    const newRegressionIndex = (defect.regression_index ?? 0) + 1;
+
+    // Append to rejection_log as JSON array under regressions key
+    let regressions: Array<{ at: string; by: number; reason: string; type: string; customerReference?: string }> = [];
+    if (defect.rejection_log) {
+      try {
+        const parsed = JSON.parse(defect.rejection_log);
+        if (Array.isArray(parsed.regressions)) {
+          regressions = parsed.regressions;
+        }
+      } catch { /* start fresh */ }
+    }
+    regressions.push({
+      at: new Date().toISOString(),
+      by: req.user!.userId,
+      reason: data.reason,
+      type: data.incidentType,
+      ...(data.customerReference ? { customerReference: data.customerReference } : {}),
+    });
+
+    const rejectionLog = JSON.stringify({ ...(defect.rejection_log ? (() => { try { return JSON.parse(defect.rejection_log); } catch { return {}; } })() : {}), regressions });
+
+    // Set priority to P1 if it was lower
+    const currentPriority = defect.priority ?? "P4";
+    const newPriority = (currentPriority === "P1" || currentPriority === "P2") ? currentPriority : "P1";
+
+    const updateData: Record<string, unknown> = {
+      status: "REGRESSED",
+      regression_index: newRegressionIndex,
+      rejection_log: rejectionLog,
+      priority: newPriority,
+      updated_at: new Date(),
+    };
+
+    const [updated] = await db.update(schema.defects)
+      .set(updateData)
+      .where(eq(schema.defects.id, defectId))
+      .returning();
+
+    // Create a comment/note with full regression details
+    const regressionNote = [
+      `Regression reported: ${data.reason}`,
+      `Incident type: ${data.incidentType}`,
+      data.customerReference ? `Customer reference: ${data.customerReference}` : null,
+      `Severity impact: ${data.severity ?? "Not specified"}`,
+    ].filter(Boolean).join("\n");
+
+    await db.insert(schema.defectNotes).values({
+      defect_id: defectId,
+      added_by_user_id: req.user!.userId,
+      note: `System Note: Regression detected — ${regressionNote}`,
+      is_system_note: true,
+    });
+
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "REGRESSED", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "REGRESSED", req.user!.userId, data.reason);
+
+    // TODO: Notify PROJECT_LEAD and TEST_LEAD urgently (escalation required)
+    // To be implemented when notification infrastructure is available
+
+    res.json({
+      id: updated.id,
+      status: updated.status,
+      updated_at: updated.updated_at,
+      regression_index: updated.regression_index,
+    });
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/retry-after-regression — TEST_LEAD only
+// REGRESSED ───────────────────────────────────────────────────> ASSIGNED
+// Level 2 rollback (escalation — restart dev cycle after root cause analysis)
+router.patch("/defects/:defectId/retry-after-regression", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({
+      reason: z.string().min(1, "Reason is required"),
+      reassignTo: z.number().optional(),
+    });
+    const data = bodySchema.parse(req.body);
+
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Only test lead can retry regressed defects" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    if (defect.status !== "REGRESSED") {
+      res.status(400).json({ message: "Defect is not in REGRESSED state" });
+      return;
+    }
+
+    // If reassignTo provided, verify user exists and has DEVELOPER role
+    if (data.reassignTo !== undefined) {
+      const devAssignment = await db.query.projectAssignments.findFirst({
+        where: and(
+          eq(schema.projectAssignments.project_id, projectId),
+          eq(schema.projectAssignments.user_id, data.reassignTo),
+          eq(schema.projectAssignments.role, "DEVELOPER"),
+        ),
+      });
+      if (!devAssignment) {
+        res.status(422).json({ message: "Developer not found or invalid" });
+        return;
+      }
+    }
+
+    const oldStatus = defect.status;
+    const updateData: Record<string, unknown> = {
+      status: "ASSIGNED",
+      updated_at: new Date(),
+    };
+    if (data.reassignTo !== undefined) {
+      updateData.assigned_to_user_id = data.reassignTo;
+    }
+
+    const [updated] = await db.update(schema.defects)
+      .set(updateData)
+      .where(eq(schema.defects.id, defectId))
+      .returning();
+
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "ASSIGNED", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, data.reason + (data.reassignTo ? ` (reassigned to user #${data.reassignTo})` : ""));
+
+    // TODO: Notify developer of reassignment
+    // To be implemented when notification infrastructure is available
+
+    res.json({
+      id: updated.id,
+      status: updated.status,
+      assigned_to_user_id: updated.assigned_to_user_id,
+      updated_at: updated.updated_at,
+    });
   } catch (err) { next(err); }
 });
 

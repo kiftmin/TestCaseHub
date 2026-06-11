@@ -7,7 +7,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate } from "../middlewares/auth.js";
+import { authenticate, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
 
 const router = express.Router();
 
@@ -39,6 +39,22 @@ const ALLOWED_MIMES = [
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ];
+
+async function resolveProjectId(entityType: string, entityId: number): Promise<number | null> {
+  switch (entityType) {
+    case "defect": {
+      const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, entityId), columns: { project_id: true } });
+      return defect?.project_id ?? null;
+    }
+    case "test_run":
+    case "test-run": {
+      const run = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, entityId), columns: { project_id: true } });
+      return run?.project_id ?? null;
+    }
+    default:
+      return null;
+  }
+}
 
 const upload = multer({
   storage,
@@ -73,7 +89,7 @@ router.post("/upload", authenticate, upload.single("file"), (req, res, next) => 
 });
 
 // POST /api/attachments
-router.post("/attachments", async (req, res, next) => {
+router.post("/attachments", async (req: AuthenticatedRequest, res, next) => {
   try {
     const parsed = z
       .object({
@@ -85,6 +101,17 @@ router.post("/attachments", async (req, res, next) => {
         field: z.string().optional(),
       })
       .parse(req.body);
+
+    const projectId = await resolveProjectId(parsed.entity_type, parsed.entity_id);
+    if (!projectId) {
+      res.status(400).json({ message: "Could not resolve project from entity" });
+      return;
+    }
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD", "TEST_AUTHOR", "TESTER", "DEVELOPER", "BUSINESS_OWNER"]);
+    if (!allowed) {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
 
     const [inserted] = await db
       .insert(schema.attachments)
@@ -116,7 +143,7 @@ router.get("/attachments/:entityType/:entityId", async (req, res, next) => {
 });
 
 // DELETE /api/attachments/:attachmentId
-router.delete("/attachments/:attachmentId", async (req, res, next) => {
+router.delete("/attachments/:attachmentId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const attachmentId = Number(req.params.attachmentId);
 
@@ -126,6 +153,15 @@ router.delete("/attachments/:attachmentId", async (req, res, next) => {
     if (!existing) {
       res.status(404).json({ message: "Attachment not found" });
       return;
+    }
+
+    const projectId = await resolveProjectId(existing.entity_type, existing.entity_id);
+    if (projectId) {
+      const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD", "TEST_AUTHOR", "TESTER", "DEVELOPER", "BUSINESS_OWNER"]);
+      if (!allowed) {
+        res.status(403).json({ message: "Forbidden" });
+        return;
+      }
     }
 
     if (existing.file_url) {

@@ -6,6 +6,7 @@ import {
   timestamp,
   boolean,
   pgTable,
+  pgEnum,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
@@ -257,15 +258,20 @@ export const stepResultsRelations = relations(stepResults, ({ one }) => ({
 }));
 
 // 13. defects
+export const defectStatusEnum = pgEnum("defect_status", [
+  "NEW", "TRIAGED", "ASSIGNED", "IN_PROGRESS", "BLOCKED",
+  "RESOLVED_DEV", "READY_FOR_VERIFICATION", "REGRESSED", "CLOSED", "PASSED_BY_AGREEMENT",
+]);
+
 export const defects = pgTable("defects", {
   id: serial("id").primaryKey(),
   bug_number: integer("bug_number"),
   project_id: integer("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
-  test_run_id: integer("test_run_id").references(() => testRuns.id, { onDelete: "cascade" }),
+  test_run_id: integer("test_run_id").notNull().references(() => testRuns.id, { onDelete: "cascade" }),
   test_case_id: integer("test_case_id").references(() => testCases.id, { onDelete: "cascade" }).notNull(),
   execution_id: integer("execution_id").references(() => executions.id, { onDelete: "cascade" }),
   ticket_type: text("ticket_type").notNull().default("SOFTWARE_BUG"),
-  status: text("status").notNull().default("NEW"),
+  status: defectStatusEnum("status").notNull().default("NEW"),
   severity: text("severity"),
   priority: text("priority"),
   assigned_to_user_id: integer("assigned_to_user_id").references(() => users.id, { onDelete: "set null" }),

@@ -18,7 +18,6 @@ import { TesterScenarioPage } from "./pages/TesterScenarioPage";
 import { TesterCasePage } from "./pages/TesterCasePage";
 import { TesterProjectRedirect } from "./pages/TesterProjectRedirect";
 import { DefectLogPage } from "./pages/DefectLogPage";
-// BugListPage deprecated — bugs consolidated into defects
 import { SignOffCertificatePage } from "./pages/SignOffCertificatePage";
 import { UatSummaryPage } from "./pages/UatSummaryPage";
 import { AuditTrailPage } from "./pages/AuditTrailPage";

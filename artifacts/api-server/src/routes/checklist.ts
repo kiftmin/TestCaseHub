@@ -3,7 +3,7 @@ import { eq, desc } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, authorizeProjectRole, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
 
 const router = express.Router({ mergeParams: true });
 

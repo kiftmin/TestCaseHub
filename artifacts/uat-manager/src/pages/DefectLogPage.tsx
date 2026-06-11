@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
+import { Stepper, type Step } from "../components/ui/stepper";
 import type { Defect, TestRun, ProjectAssignment } from "../types/api";
 
 const statusBadge: Record<string, string> = {
@@ -51,6 +52,71 @@ const severityDot: Record<string, string> = {
   Cosmetic: "bg-gray-300",
 };
 
+const statusIcon: Record<string, string> = {
+  NEW: "fiber_new",
+  TRIAGED: "content_paste_search",
+  ASSIGNED: "assignment_ind",
+  IN_PROGRESS: "play_arrow",
+  BLOCKED: "block",
+  RESOLVED_DEV: "bug_report",
+  READY_FOR_VERIFICATION: "fact_check",
+  REGRESSED: "warning",
+  CLOSED: "check_circle",
+  PASSED_BY_AGREEMENT: "approval",
+};
+
+// ── Status Distribution Card ──
+function StatusDistCard({
+  label,
+  count,
+  total,
+  icon,
+  isActive,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  total: number;
+  icon?: string;
+  isActive: boolean;
+  onClick: () => void;
+}) {
+  const pct = total > 0 ? (count / total) * 100 : 0;
+  return (
+    <button
+      onClick={onClick}
+      className={`relative text-left p-sm rounded-xl border transition-all flex flex-col justify-between h-20 w-full min-w-0 ${
+        isActive
+          ? "bg-surface-container border-secondary shadow-sm"
+          : "bg-surface border-outline-variant hover:bg-surface-container-high"
+      }`}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 min-w-0">
+          {icon && (
+            <span className={`material-symbols-outlined text-lg ${isActive ? "text-secondary" : "text-on-surface-variant"}`}>
+              {icon}
+            </span>
+          )}
+          <span className="font-label-sm text-label-sm text-on-surface-variant truncate">
+            {label}
+          </span>
+        </div>
+        <span className={`text-xl font-bold ml-2 ${isActive ? "text-secondary" : "text-on-surface"}`}>
+          {count}
+        </span>
+      </div>
+      <div className="w-full h-1.5 rounded-full overflow-hidden mt-2 bg-surface-container-highest">
+        <div
+          className={`h-full rounded-full transition-all ${isActive ? "bg-secondary" : "bg-outline-variant/50"}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </button>
+  );
+}
+
+// ── Helper Components ──
 function extractFailedStep(defect: Defect): { stepNumber?: string; instruction?: string } {
   const notes = defect.tester_notes ?? "";
   const stepMatch = notes.match(/^Step\s+(\S+?):\s+(.+)$/m);
@@ -94,15 +160,15 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     enabled: !!projectId,
   });
 
-  const newDefectAnalytics = useMemo(() => {
-    const newDefects = (allDefects ?? []).filter((d) => d.status === "NEW");
-    const count = newDefects.length;
-    const ages = newDefects.map((d) => (Date.now() - new Date(d.created_at).getTime()) / (1000 * 60 * 60));
-    const avgAge = ages.length ? ages.reduce((a, b) => a + b, 0) / ages.length : 0;
-    const maxAge = ages.length ? Math.max(...ages) : 0;
-    const slaBreached = newDefects.filter((d) => (Date.now() - new Date(d.created_at).getTime()) > 48 * 60 * 60 * 1000).length;
-    return { count, avgAge, maxAge, slaBreached, total: allDefects?.length ?? 0 };
+  const statusOrder = ["all","NEW","TRIAGED","ASSIGNED","IN_PROGRESS","BLOCKED","RESOLVED_DEV","READY_FOR_VERIFICATION","REGRESSED","CLOSED","PASSED_BY_AGREEMENT"];
+
+  const statusDist = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const d of allDefects ?? []) map[d.status] = (map[d.status] ?? 0) + 1;
+    return statusOrder.map(s => ({ key: s, label: s === "all" ? "All" : statusDisplay[s] ?? s, icon: s === "all" ? "bar_chart" : statusIcon[s], count: s === "all" ? (allDefects?.length ?? 0) : (map[s] ?? 0) }));
   }, [allDefects]);
+
+  const total = allDefects?.length ?? 0;
 
   const filtered = useMemo(() => {
     return (allDefects ?? []).filter((d) => {
@@ -222,40 +288,21 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
         </div>
       </section>
 
-      {/* NEW Queue Analytics Dashboard */}
-      <section className="grid grid-cols-2 md:grid-cols-4 gap-md">
-        <div className="bg-surface border border-outline-variant rounded-xl p-md shadow-sm">
-          <p className="text-xs font-semibold text-outline uppercase tracking-wider mb-1">NEW Queue</p>
-          <p className="font-display-lg text-display-lg text-primary">{newDefectAnalytics.count}</p>
-          <p className="text-xs text-on-surface-variant">of {newDefectAnalytics.total} total defects</p>
-        </div>
-        <div className="bg-surface border border-outline-variant rounded-xl p-md shadow-sm">
-          <p className="text-xs font-semibold text-outline uppercase tracking-wider mb-1">Avg Age (NEW)</p>
-          <p className="font-display-lg text-display-lg text-on-surface">{newDefectAnalytics.avgAge.toFixed(1)}h</p>
-          <p className="text-xs text-on-surface-variant">Mean duration in NEW state</p>
-        </div>
-        <div className="bg-surface border border-outline-variant rounded-xl p-md shadow-sm">
-          <p className="text-xs font-semibold text-outline uppercase tracking-wider mb-1">Max Age (NEW)</p>
-          <p className="font-display-lg text-display-lg text-on-surface">{newDefectAnalytics.maxAge.toFixed(1)}h</p>
-          <p className="text-xs text-on-surface-variant">Worst-case ceiling spike</p>
-        </div>
-        <div className={`bg-surface border rounded-xl p-md shadow-sm ${newDefectAnalytics.slaBreached > 0 ? "border-error/40 bg-error-container/20" : "border-outline-variant"}`}>
-          <p className="text-xs font-semibold text-outline uppercase tracking-wider mb-1">SLA Alerts</p>
-          <p className={`font-display-lg text-display-lg ${newDefectAnalytics.slaBreached > 0 ? "text-error" : "text-on-surface"}`}>
-            {newDefectAnalytics.slaBreached > 0 ? (
-              <span className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-2xl">warning</span>
-                {newDefectAnalytics.slaBreached}
-              </span>
-            ) : "0"}
-          </p>
-          <p className={`text-xs ${newDefectAnalytics.slaBreached > 0 ? "text-error" : "text-on-surface-variant"}`}>
-            {newDefectAnalytics.slaBreached > 0
-              ? `${newDefectAnalytics.slaBreached} item${newDefectAnalytics.slaBreached > 1 ? "s" : ""} over 48h without triage`
-              : "All items within SLA"}
-          </p>
-        </div>
-      </section>
+      {/* Status Distribution */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
+        {statusDist.map((s) => (
+          <div key={s.key} className="min-w-0">
+            <StatusDistCard
+              label={s.label}
+              count={s.count}
+              total={total}
+              icon={s.icon}
+              isActive={statusFilter === s.key}
+              onClick={() => setStatusFilter(statusFilter === s.key ? "all" : s.key)}
+            />
+          </div>
+        ))}
+      </div>
 
       {/* Defect Table */}
       <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm">
@@ -264,8 +311,10 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             <thead className="bg-surface-container-low border-b border-outline-variant">
               <tr>
                 <SortTh field="id" label="ID" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="test_case" label="Test Case / Failed Step" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="test_case" label="Test Case / Step" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <SortTh field="severity" label="Sev" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="priority" label="Pri" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <SortTh field="created_at" label="Created" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <th className="p-md text-xs font-bold text-outline uppercase text-right whitespace-nowrap">Actions</th>
               </tr>
@@ -286,7 +335,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
               ))}
                 {sorted.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="p-lg text-center text-on-surface-variant font-body-sm">
+                  <td colSpan={7} className="p-lg text-center text-on-surface-variant font-body-sm">
                     No defects found
                   </td>
                 </tr>
@@ -334,6 +383,7 @@ function DefectRow({
   const [flagBusinessOpen, setFlagBusinessOpen] = useState(false);
   const [untriagedAction, setUntriagedAction] = useState<string | null>(null);
   const [pendingAfterClassify, setPendingAfterClassify] = useState<string | null>(null);
+  const [activeDetailTab, setActiveDetailTab] = useState<"overview" | "steps" | "activity">("overview");
 
   const isNew = defect.status === "NEW";
   const isClassified = !!(defect.severity && defect.priority);
@@ -487,6 +537,19 @@ function DefectRow({
 
   const stepInfo = extractFailedStep(defect);
 
+  const statusSteps: Step[] = [
+    { key: "NEW", label: "New" },
+    { key: "TRIAGED", label: "Triaged" },
+    { key: "ASSIGNED", label: "Assigned" },
+    { key: "IN_PROGRESS", label: "In Progress" },
+    { key: "RESOLVED_DEV", label: "Resolved" },
+    { key: "READY_FOR_VERIFICATION", label: "Verification" },
+    { key: "CLOSED", label: "Closed" },
+  ];
+  const mainFlow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, RESOLVED_DEV:4, READY_FOR_VERIFICATION:5, CLOSED:6, PASSED_BY_AGREEMENT:6 };
+  const currentStatusIdx = mainFlow[defect.status] ?? 0;
+  const completedStatusIndices = [0,1,2,3,4,5,6].filter(i => i < currentStatusIdx);
+
   return (
     <>
       <tr
@@ -621,174 +684,173 @@ function DefectRow({
         </td>
       </tr>
       <tr className={`bg-surface-container-lowest ${expanded ? "" : "hidden"}`}>
-        <td className="p-0" colSpan={5}>
-          <div className={`p-lg border-l-4 ${isNew ? "border-error" : isAssigned ? "border-amber-400" : isReady ? "border-blue-500" : "border-green-500"} ml-md my-sm space-y-md`}>
-
-            {/* Execution Context — Test Scenario & Test Case Details */}
-            {defect.execution && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-md mb-md pb-md border-b border-outline-variant">
-                <div>
-                  <h4 className="text-xs font-bold text-outline uppercase mb-sm">Test Scenario</h4>
-                  <p className="font-body-sm text-body-sm text-on-surface font-semibold">
-                    {defect.testCase?.useCase?.name ?? `Scenario #${defect.testCase?.use_case_id}`}
-                  </p>
-                  <h4 className="text-xs font-bold text-outline uppercase mt-sm mb-sm">Test Case</h4>
-                  <p className="font-body-sm text-body-sm text-on-surface">
-                    {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
-                  </p>
-                  {stepInfo.instruction && (
-                    <>
-                      <h4 className="text-xs font-bold text-outline uppercase mt-sm mb-sm">Failed Step</h4>
-                      <p className="font-body-sm text-body-sm text-red-600 font-semibold">
-                        Step {stepInfo.stepNumber}: {stepInfo.instruction}
-                      </p>
-                    </>
-                  )}
-                  {defect.testCase?.acceptance_criteria && (
-                    <>
-                      <h4 className="text-xs font-bold text-outline uppercase mt-sm mb-sm">Acceptance Criteria</h4>
-                      <p className="font-body-sm text-body-sm text-on-surface">{defect.testCase.acceptance_criteria}</p>
-                    </>
-                  )}
-                </div>
-                <div>
-                  <h4 className="text-xs font-bold text-outline uppercase mb-sm">Execution Details</h4>
-                  <p className="font-body-sm text-body-sm text-on-surface">
-                    Tester: {defect.execution.tester?.name ?? defect.execution.tester_name ?? "Unknown"}
-                  </p>
-                  <p className="font-body-sm text-body-sm text-on-surface">
-                    Result: <span className={`font-bold ${defect.execution.overall_result === "failed" ? "text-error" : defect.execution.overall_result === "passed" ? "text-green-600" : ""}`}>
-                      {defect.execution.overall_result ?? "N/A"}
-                    </span>
-                  </p>
-                  <p className="font-body-sm text-body-sm text-on-surface">
-                    Executed: {defect.execution.executed_at ? new Date(defect.execution.executed_at).toLocaleString() : "N/A"}
-                  </p>
-                  {defect.execution.notes && (
-                    <>
-                      <h4 className="text-xs font-bold text-outline uppercase mt-sm mb-sm">Execution Notes</h4>
-                      <p className="font-body-sm text-body-sm text-on-surface">{defect.execution.notes}</p>
-                    </>
-                  )}
-                </div>
+        <td className="p-0" colSpan={7}>
+          <div className="mx-lg my-md border border-outline-variant/40 rounded-2xl overflow-hidden shadow-sm">
+            {/* Header with Stepper */}
+            <div className="p-lg border-b border-outline-variant/40 bg-surface">
+              <div className="flex items-center justify-between mb-md">
+                <h3 className="font-title-sm text-title-sm text-on-surface">
+                  DEF-{defect.id} — {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
+                </h3>
+                <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-bold border ${statusBadge[defect.status] ?? ""}`}>
+                  {statusDisplay[defect.status] ?? defect.status}
+                </span>
               </div>
-            )}
+              <Stepper steps={statusSteps} currentIndex={currentStatusIdx} completedIndices={completedStatusIndices} />
 
-            {/* Test Steps — Expected vs Actual */}
-            {defect.execution?.stepResults && defect.execution.stepResults.length > 0 && (
-              <div className="mb-md pb-md border-b border-outline-variant">
-                <h4 className="text-xs font-bold text-outline uppercase mb-sm">Test Steps — Expected vs Actual</h4>
-                <div className="space-y-sm">
-                  {defect.execution.stepResults.map((sr) => {
-                    const isFailed = sr.passed === false;
-                    const matchesDefect = stepInfo.stepNumber != null && String(sr.step?.step_number) === stepInfo.stepNumber;
-                    const isHighlighted = isFailed && matchesDefect;
-                    return (
-                      <div key={sr.id} className={`border-l-4 ${isFailed ? "border-error" : "border-green-500"} ${isHighlighted ? "bg-red-50 shadow-sm" : "bg-surface-container-low opacity-50"} rounded-lg p-sm text-sm transition-all`}>
-                        <div className="flex items-center gap-sm mb-xs">
-                          <span className="font-bold text-xs">Step {sr.step?.step_number ?? sr.step_id}</span>
-                          <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${isFailed ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}>
-                            {isFailed ? "FAIL" : "PASS"}
-                          </span>
-                        </div>
-                        <p className="text-on-surface mb-xs"><span className="font-semibold">Instruction:</span> {sr.step?.instruction ?? "N/A"}</p>
-                        {sr.step?.expected_result && <p className="text-on-surface mb-xs"><span className="font-semibold">Expected:</span> {sr.step.expected_result}</p>}
-                        {sr.actual_result && <p className="text-on-surface mb-xs"><span className="font-semibold">Actual:</span> {sr.actual_result}</p>}
-                        {sr.comments && <p className="text-on-surface-variant text-xs mt-1"><span className="font-semibold">Comments:</span> {sr.comments}</p>}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Tester Notes & Dates */}
-            <div className="grid grid-cols-2 gap-xl">
-              <div>
-                <h4 className="text-xs font-bold text-outline uppercase mb-sm">Tester Notes</h4>
-                <p className="font-body-sm text-body-sm text-on-surface leading-relaxed">
-                  {defect.tester_notes ?? "No tester notes."}
-                </p>
-                <div className="flex items-center gap-lg mt-sm text-xs text-on-surface-variant">
-                  <span>Created: {new Date(defect.created_at).toLocaleString()}</span>
-                  <span>Updated: {new Date(defect.updated_at).toLocaleString()}</span>
-                </div>
-              </div>
-              <div>
-                {defect.accepted_by_business_note && (
-                  <div className="mb-md">
-                    <h4 className="text-xs font-bold text-outline uppercase mb-sm">Acceptance Note</h4>
-                    <p className="font-body-sm text-body-sm text-on-surface">{defect.accepted_by_business_note}</p>
-                  </div>
-                )}
-                {defect.rejection_log && (() => {
-                  try { const r = JSON.parse(defect.rejection_log); return (
-                    <div className="mb-md">
-                      <h4 className="text-xs font-bold text-outline uppercase mb-sm">Rejection Log</h4>
-                      <p className="font-body-sm text-body-sm text-error">{r.reason ?? "No reason"}</p>
-                    </div>
-                  ); } catch { return null; }
-                })()}
-                {defect.retest_reason && (
-                  <div className="mb-md">
-                    <h4 className="text-xs font-bold text-outline uppercase mb-sm">Retest Reason</h4>
-                    <p className="font-body-sm text-body-sm text-on-surface">{defect.retest_reason}</p>
-                  </div>
-                )}
-                {defect.retests && defect.retests.length > 0 && (
-                  <div>
-                    <h4 className="text-xs font-bold text-outline uppercase mb-sm">Retest History</h4>
-                    {defect.retests.map((rt) => (
-                      <div key={rt.id} className="flex items-center gap-sm text-xs mb-xs">
-                        <span className={`font-bold ${rt.retest_result === "passed" ? "text-green-600" : rt.retest_result === "failed" ? "text-error" : ""}`}>
-                          {rt.retest_result ?? "pending"}
-                        </span>
-                        <span className="text-on-surface-variant">{rt.retest_notes ?? ""}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+              {/* Tab Menu */}
+              <div className="flex gap-xs mt-md border-b border-outline-variant/30">
+                <button
+                  onClick={() => setActiveDetailTab("overview")}
+                  className={`px-md py-sm font-label-sm text-label-sm rounded-t-lg border-b-2 transition-colors ${activeDetailTab === "overview" ? "border-secondary text-secondary" : "border-transparent text-on-surface-variant hover:text-on-surface"}`}
+                >
+                  Overview
+                </button>
+                <button
+                  onClick={() => setActiveDetailTab("steps")}
+                  className={`px-md py-sm font-label-sm text-label-sm rounded-t-lg border-b-2 transition-colors ${activeDetailTab === "steps" ? "border-secondary text-secondary" : "border-transparent text-on-surface-variant hover:text-on-surface"}`}
+                >
+                  Test Steps
+                </button>
+                <button
+                  onClick={() => setActiveDetailTab("activity")}
+                  className={`px-md py-sm font-label-sm text-label-sm rounded-t-lg border-b-2 transition-colors ${activeDetailTab === "activity" ? "border-secondary text-secondary" : "border-transparent text-on-surface-variant hover:text-on-surface"}`}
+                >
+                  Activity
+                </button>
               </div>
             </div>
 
-            {/* Activity Feed / System Notes */}
-            {defect.notes && defect.notes.length > 0 && (
-              <div className="border-t border-outline-variant pt-md mt-md">
-                <h4 className="text-xs font-bold text-outline uppercase mb-sm">
-                  Activity Feed ({defect.notes.length})
-                </h4>
-                <div className="space-y-sm max-h-64 overflow-y-auto">
-                  {defect.notes.map((n) => (
-                    <div
-                      key={n.id}
-                      className={`rounded-lg p-sm text-sm ${n.is_system_note ? "bg-surface-container-low border border-outline-variant/30" : "bg-surface-container-high"}`}
-                    >
-                      <div className="flex items-start gap-2">
-                        {n.is_system_note && (
-                          <span className="text-on-surface-variant mt-0.5 flex-shrink-0 material-symbols-outlined text-sm">settings</span>
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <p className={`text-on-surface ${n.is_system_note ? "italic text-on-surface-variant text-xs" : ""}`}>
-                            {n.note}
-                          </p>
-                          <div className="flex items-center gap-2 mt-1">
-                            <span className="text-[10px] text-on-surface-variant">
-                              {n.addedBy?.name ?? `User #${n.added_by_user_id ?? "system"}`}
-                            </span>
-                            <span className="text-[10px] text-on-surface-variant">
-                              {new Date(n.created_at).toLocaleString()}
-                            </span>
-                            {n.is_system_note && (
-                              <span className="text-[10px] text-on-surface-variant italic">System Note</span>
-                            )}
+            {/* Tab Content */}
+            <div className="p-lg">
+              {activeDetailTab === "overview" && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-xl">
+                  <div className="space-y-md">
+                    <div>
+                      <h4 className="text-xs font-bold text-outline uppercase mb-sm">Test Scenario</h4>
+                      <p className="font-body-sm text-body-sm text-on-surface font-semibold">{defect.testCase?.useCase?.name ?? `Scenario #${defect.testCase?.use_case_id}`}</p>
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-outline uppercase mb-sm">Test Case</h4>
+                      <p className="font-body-sm text-body-sm text-on-surface">{defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}</p>
+                    </div>
+                    {stepInfo.instruction && (
+                      <div className="p-md bg-red-50 border border-red-100 rounded-lg">
+                        <h4 className="text-xs font-bold text-red-700 uppercase mb-sm flex items-center gap-1">
+                          <span className="material-symbols-outlined text-sm">error</span>
+                          Failed Step
+                        </h4>
+                        <p className="font-body-sm text-body-sm text-red-600 font-semibold">Step {stepInfo.stepNumber}: {stepInfo.instruction}</p>
+                      </div>
+                    )}
+                    {defect.testCase?.acceptance_criteria && (
+                      <div>
+                        <h4 className="text-xs font-bold text-outline uppercase mb-sm">Acceptance Criteria</h4>
+                        <p className="font-body-sm text-body-sm text-on-surface">{defect.testCase.acceptance_criteria}</p>
+                      </div>
+                    )}
+                    {defect.execution?.notes && (
+                      <div>
+                        <h4 className="text-xs font-bold text-outline uppercase mb-sm">Execution Notes</h4>
+                        <p className="font-body-sm text-body-sm text-on-surface">{defect.execution.notes}</p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-md">
+                    <div>
+                      <h4 className="text-xs font-bold text-outline uppercase mb-sm">Execution Details</h4>
+                      {defect.execution ? (
+                        <div className="space-y-xs">
+                          <p className="font-body-sm text-body-sm text-on-surface">Tester: {defect.execution.tester?.name ?? defect.execution.tester_name ?? "Unknown"}</p>
+                          <p className="font-body-sm text-body-sm text-on-surface">Result: <span className={`font-bold ${defect.execution.overall_result === "failed" ? "text-error" : defect.execution.overall_result === "passed" ? "text-green-600" : ""}`}>{defect.execution.overall_result ?? "N/A"}</span></p>
+                          <p className="font-body-sm text-body-sm text-on-surface">Executed: {defect.execution.executed_at ? new Date(defect.execution.executed_at).toLocaleString() : "N/A"}</p>
+                        </div>
+                      ) : (<p className="text-sm text-on-surface-variant">No execution record available.</p>)}
+                    </div>
+                    <div className="border-t border-outline-variant/30 pt-md">
+                      <h4 className="text-xs font-bold text-outline uppercase mb-sm">Tester Notes</h4>
+                      <p className="font-body-sm text-body-sm text-on-surface leading-relaxed">{defect.tester_notes ?? "No tester notes."}</p>
+                    </div>
+                    {defect.accepted_by_business_note && (
+                      <div>
+                        <h4 className="text-xs font-bold text-outline uppercase mb-sm">Acceptance Note</h4>
+                        <p className="font-body-sm text-body-sm text-on-surface">{defect.accepted_by_business_note}</p>
+                      </div>
+                    )}
+                    {defect.retest_reason && (
+                      <div>
+                        <h4 className="text-xs font-bold text-outline uppercase mb-sm">Retest Reason</h4>
+                        <p className="font-body-sm text-body-sm text-on-surface">{defect.retest_reason}</p>
+                      </div>
+                    )}
+                    {defect.retests && defect.retests.length > 0 && (
+                      <div>
+                        <h4 className="text-xs font-bold text-outline uppercase mb-sm">Retest History</h4>
+                        {defect.retests.map((rt) => (
+                          <div key={rt.id} className="flex items-center gap-sm text-xs mb-xs">
+                            <span className={`font-bold ${rt.retest_result === "passed" ? "text-green-600" : rt.retest_result === "failed" ? "text-error" : ""}`}>{rt.retest_result ?? "pending"}</span>
+                            <span className="text-on-surface-variant">{rt.retest_notes ?? ""}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-lg mt-sm text-xs text-on-surface-variant">
+                      <span>Created: {new Date(defect.created_at).toLocaleString()}</span>
+                      <span>Updated: {new Date(defect.updated_at).toLocaleString()}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeDetailTab === "steps" && (
+                <div>
+                  {defect.execution?.stepResults && defect.execution.stepResults.length > 0 ? (
+                    <div className="space-y-sm">
+                      {defect.execution.stepResults.map((sr) => {
+                        const isFailed = sr.passed === false;
+                        const matchesDefect = stepInfo.stepNumber != null && String(sr.step?.step_number) === stepInfo.stepNumber;
+                        return (
+                          <div key={sr.id} className={`border-l-4 rounded-lg p-sm text-sm transition-all ${isFailed && matchesDefect ? "border-error bg-red-50 shadow-sm" : isFailed ? "border-error bg-surface-container-high" : "border-green-500 bg-surface-container-high/50 opacity-70"}`}>
+                            <div className="flex items-center gap-sm mb-xs">
+                              <span className="font-bold text-xs">Step {sr.step?.step_number ?? sr.step_id}</span>
+                              <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${isFailed ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}>{isFailed ? "FAIL" : "PASS"}</span>
+                            </div>
+                            <p className="text-on-surface mb-xs"><span className="font-semibold">Instruction:</span> {sr.step?.instruction ?? "N/A"}</p>
+                            {sr.step?.expected_result && <p className="text-on-surface mb-xs"><span className="font-semibold">Expected:</span> {sr.step.expected_result}</p>}
+                            {sr.actual_result && <p className="text-on-surface mb-xs"><span className="font-semibold">Actual:</span> {sr.actual_result}</p>}
+                            {sr.comments && <p className="text-on-surface-variant text-xs mt-1"><span className="font-semibold">Comments:</span> {sr.comments}</p>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (<p className="text-sm text-on-surface-variant text-center py-md">No test steps recorded.</p>)}
+                </div>
+              )}
+
+              {activeDetailTab === "activity" && (
+                <div>
+                  {defect.notes && defect.notes.length > 0 ? (
+                    <div className="space-y-sm max-h-80 overflow-y-auto pr-md">
+                      {defect.notes.map((n) => (
+                        <div key={n.id} className={`rounded-lg p-sm text-sm ${n.is_system_note ? "bg-surface-container-low border border-outline-variant/30" : "bg-surface-container-high"}`}>
+                          <div className="flex items-start gap-2">
+                            {n.is_system_note && (<span className="text-on-surface-variant mt-0.5 flex-shrink-0 material-symbols-outlined text-sm">settings</span>)}
+                            <div className="flex-1 min-w-0">
+                              <p className={`text-on-surface ${n.is_system_note ? "italic text-on-surface-variant text-xs" : ""}`}>{n.note}</p>
+                              <div className="flex items-center gap-2 mt-1">
+                                <span className="text-[10px] text-on-surface-variant">{n.addedBy?.name ?? `User #${n.added_by_user_id ?? "system"}`}</span>
+                                <span className="text-[10px] text-on-surface-variant">{new Date(n.created_at).toLocaleString()}</span>
+                                {n.is_system_note && (<span className="text-[10px] text-on-surface-variant italic">System Note</span>)}
+                              </div>
+                            </div>
                           </div>
                         </div>
-                      </div>
+                      ))}
                     </div>
-                  ))}
+                  ) : (<p className="text-sm text-on-surface-variant text-center py-md">No activity recorded.</p>)}
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </td>
       </tr>

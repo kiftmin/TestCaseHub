@@ -167,8 +167,9 @@ router.patch("/defects/:defectId/assign", async (req: AuthenticatedRequest, res,
       .where(eq(schema.defects.id, defectId))
       .returning();
 
+    const assignedUser = await db.query.users.findFirst({ where: eq(schema.users.id, data.assigned_to_user_id), columns: { name: true } });
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "ASSIGNED" });
-    await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, `Assigned to user #${data.assigned_to_user_id}`);
+    await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, `Assigned to ${assignedUser?.name ?? `user #${data.assigned_to_user_id}`}`);
     res.json(updated);
   } catch (err) { next(err); }
 });

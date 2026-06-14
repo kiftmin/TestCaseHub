@@ -377,6 +377,7 @@ function DefectRow({
   const [assignOpen, setAssignOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [retestOpen, setRetestOpen] = useState(false);
+  const [acceptBizRiskOpen, setAcceptBizRiskOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [flagRetestNewOpen, setFlagRetestNewOpen] = useState(false);
   const [flagBlockedNewOpen, setFlagBlockedNewOpen] = useState(false);
@@ -507,9 +508,9 @@ function DefectRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const exceptionMut = useMutation({
-    mutationFn: (note: string) => customFetch(`/defects/${defect.id}/accept-by-agreement`, { method: "PATCH", body: JSON.stringify({ note }) }),
-    onSuccess: () => { invalidateProject(); toast.success("Accepted by agreement"); },
+  const acceptBizRiskMut = useMutation({
+    mutationFn: (justification: string) => customFetch(`/defects/${defect.id}/accept-by-agreement`, { method: "PATCH", body: JSON.stringify({ justification }) }),
+    onSuccess: () => { invalidateProject(); toast.success("Accepted by agreement"); setAcceptBizRiskOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -720,7 +721,7 @@ function DefectRow({
             )}
             {/* BUSINESS_OWNER: Accept by Agreement (any non-terminal → PASSED_BY_AGREEMENT) */}
             {isBusinessOwner && !isClosed && !isNew && (
-              <button onClick={() => { const n = prompt("Business justification:"); if (n) exceptionMut.mutate(n); }} className="p-1.5 hover:bg-purple-100 hover:text-purple-700 rounded text-on-surface-variant transition-colors" title="Accept by Agreement">
+              <button onClick={() => setAcceptBizRiskOpen(true)} className="p-1.5 hover:bg-purple-100 hover:text-purple-700 rounded text-on-surface-variant transition-colors" title="Accept by Agreement">
                 <span className="material-symbols-outlined text-sm">approval</span>
               </button>
             )}
@@ -954,6 +955,22 @@ function DefectRow({
             onSave={(data) => recordRetestMut.mutate(data)}
             loading={recordRetestMut.isPending}
           />
+        </Dialog>
+      )}
+
+      {/* Accept Biz Risk Dialog */}
+      {acceptBizRiskOpen && (
+        <Dialog onClose={() => setAcceptBizRiskOpen(false)} title="Accept as Business Risk">
+          <div className="space-y-md">
+            <p className="font-body-sm text-on-surface-variant">
+              This defect will be marked as accepted. A go-live justification is required for audit purposes.
+            </p>
+            <AcceptBizRiskForm
+              onSave={(justification) => acceptBizRiskMut.mutate(justification)}
+              onCancel={() => setAcceptBizRiskOpen(false)}
+              loading={acceptBizRiskMut.isPending}
+            />
+          </div>
         </Dialog>
       )}
 
@@ -1252,6 +1269,37 @@ function FlagBusinessForm({ onSave, loading }: { onSave: (note: string) => void;
       <button type="submit" disabled={loading || !note.trim()} className="w-full py-sm bg-purple-600 text-white rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
         {loading ? "Submitting..." : "Accept by Business"}
       </button>
+    </form>
+  );
+}
+
+function AcceptBizRiskForm({ onSave, onCancel, loading }: { onSave: (justification: string) => void; onCancel: () => void; loading: boolean }) {
+  const [justification, setJustification] = useState("");
+  const charsLeft = 10 - justification.length;
+  const isValid = justification.trim().length >= 10;
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave(justification.trim()); }} className="space-y-md">
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Justification *</label>
+        <textarea
+          value={justification}
+          onChange={(e) => setJustification(e.target.value)}
+          className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
+          placeholder="Explain why this defect is accepted as a business risk..."
+          required
+        />
+        <p className={`text-label-xs ${charsLeft <= 0 ? "text-success" : "text-on-surface-variant/60"}`}>
+          {charsLeft <= 0 ? "Minimum length met" : `${charsLeft} characters remaining (minimum 10)`}
+        </p>
+      </div>
+      <div className="flex justify-end gap-md pt-sm">
+        <button type="button" onClick={onCancel} className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors">
+          Cancel
+        </button>
+        <button type="submit" disabled={loading || !isValid} className="px-4 py-sm bg-purple-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
+          {loading ? "Submitting..." : "Confirm & Accept"}
+        </button>
+      </div>
     </form>
   );
 }

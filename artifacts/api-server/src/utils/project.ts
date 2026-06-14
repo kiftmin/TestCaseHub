@@ -19,6 +19,7 @@ export interface AuditLogParams {
   fromStatus?: string | null;
   toStatus?: string | null;
   reason?: string | null;
+  justification?: string | null;
 }
 
 export async function logAudit(params: AuditLogParams): Promise<void> {
@@ -29,6 +30,7 @@ export async function logAudit(params: AuditLogParams): Promise<void> {
     from_status: params.fromStatus ?? null,
     to_status: params.toStatus ?? null,
     reason: params.reason ?? null,
+    justification: params.justification ?? null,
   });
 }
 

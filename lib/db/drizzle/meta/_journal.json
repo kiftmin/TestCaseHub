@@ -16,6 +16,13 @@
       "when": 1780500000000,
       "tag": "0002_corporate_defects",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1739400000000,
+      "tag": "0008_add_justification_column",
+      "breakpoints": true
     }
   ]
 }

@@ -910,7 +910,9 @@ router.patch("/defects/:defectId/retry-after-regression", async (req: Authentica
 router.patch("/defects/:defectId/accept-by-agreement", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
-    const bodySchema = z.object({ note: z.string().min(1, "Business justification note is required") });
+    const bodySchema = z.object({
+      justification: z.string().min(10, "Justification is required and must be at least 10 characters"),
+    });
     const data = bodySchema.parse(req.body);
 
     const projectId = await getProjectId(defectId);
@@ -923,12 +925,12 @@ router.patch("/defects/:defectId/accept-by-agreement", async (req: Authenticated
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
-      .set({ status: "PASSED_BY_AGREEMENT", accepted_by_business_note: data.note, updated_at: new Date() })
+      .set({ status: "PASSED_BY_AGREEMENT", accepted_by_business_note: data.justification, updated_at: new Date() })
       .where(eq(schema.defects.id, defectId))
       .returning();
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PASSED_BY_AGREEMENT", reason: data.note });
-    await logSystemNote(defectId, oldStatus, "PASSED_BY_AGREEMENT", req.user!.userId, data.note);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PASSED_BY_AGREEMENT", reason: data.justification, justification: data.justification });
+    await logSystemNote(defectId, oldStatus, "PASSED_BY_AGREEMENT", req.user!.userId, data.justification);
     res.json(updated);
   } catch (err) { next(err); }
 });

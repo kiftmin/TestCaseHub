@@ -220,6 +220,7 @@ export interface StatusAuditLog {
   from_status: string | null;
   to_status: string | null;
   reason: string | null;
+  justification: string | null;
   changed_at: string;
 }
 

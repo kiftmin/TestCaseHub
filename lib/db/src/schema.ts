@@ -331,6 +331,7 @@ export const statusAuditLog = pgTable("status_audit_log", {
   from_status: text("from_status"),
   to_status: text("to_status"),
   reason: text("reason"),
+  justification: text("justification"),
   changed_at: timestamp("changed_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

@@ -258,6 +258,12 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
                           </p>
                         )}
 
+                        {entry.justification && entry.to_status === "PASSED_BY_AGREEMENT" && (
+                          <p className="text-body-sm text-on-surface-variant/70 mt-1">
+                            <span className="font-medium">Justification:</span> {entry.justification}
+                          </p>
+                        )}
+
                         <p className="text-label-sm text-on-surface-variant/60 mt-1.5">
                           {formatRelativeTime(entry.changed_at)}
                         </p>

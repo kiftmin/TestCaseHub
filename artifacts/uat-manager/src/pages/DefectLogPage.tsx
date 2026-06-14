@@ -473,6 +473,12 @@ function DefectRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const resumeWorkMut = useMutation({
+    mutationFn: (reason: string) => customFetch(`/defects/${defect.id}/resume-work`, { method: "PATCH", body: JSON.stringify({ reason }) }),
+    onSuccess: () => { invalidateProject(); toast.success("Work resumed"); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const flagRetestMut = useMutation({
     mutationFn: () => customFetch(`/defects/${defect.id}/flag-retest`, {
       method: "PATCH",
@@ -681,6 +687,12 @@ function DefectRow({
             {(isDeveloper || canManage) && isBlocked && (
               <button onClick={() => unblockMut.mutate()} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Unblock">
                 <span className="material-symbols-outlined text-sm">check_circle</span>
+              </button>
+            )}
+            {/* DEVELOPER | TEST_LEAD: Resume Work (RESOLVED_DEV → IN_PROGRESS) */}
+            {(isDeveloper || canManage) && isResolved && (
+              <button onClick={() => { const r = prompt("Reason for resuming work:"); if (r) resumeWorkMut.mutate(r); }} className="p-1.5 hover:bg-orange-100 hover:text-orange-700 rounded text-on-surface-variant transition-colors" title="Resume Work">
+                <span className="material-symbols-outlined text-sm">undo</span>
               </button>
             )}
             {/* TEST_LEAD: Flag Retest (RESOLVED_DEV → READY_FOR_VERIFICATION) */}

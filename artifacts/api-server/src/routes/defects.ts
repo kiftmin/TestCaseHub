@@ -579,20 +579,8 @@ router.patch("/defects/:defectId/resume-work", async (req: AuthenticatedRequest,
 
     const projectId = await getProjectId(defectId);
     if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
-
-    const role = req.user!.role;
-    const projectRole = (await db.query.projectAssignments.findFirst({
-      where: and(eq(schema.projectAssignments.project_id, projectId), eq(schema.projectAssignments.user_id, req.user!.userId)),
-      columns: { role: true },
-    }))?.role;
-
-    const isAdmin = role === "ADMIN";
-    const isTestLead = projectRole === "TEST_LEAD";
-    const isDeveloper = projectRole === "DEVELOPER";
-    if (!isAdmin && !isTestLead && !isDeveloper) {
-      res.status(403).json({ message: "Only developer or test lead can resume work" });
-      return;
-    }
+    const allowed = await checkProjectRole(req, projectId, ["DEVELOPER", "TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Only developer or test lead can resume work" }); return; }
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
@@ -602,7 +590,10 @@ router.patch("/defects/:defectId/resume-work", async (req: AuthenticatedRequest,
       return;
     }
 
-    if (isDeveloper && defect.assigned_to_user_id !== req.user!.userId) {
+    const isDeveloper = await checkProjectRole(req, projectId, ["DEVELOPER"]);
+    const isAdmin = req.user!.role === "ADMIN";
+    const isTestLead = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    if (isDeveloper && !isAdmin && !isTestLead && defect.assigned_to_user_id !== req.user!.userId) {
       res.status(403).json({ message: "You can only resume work on your own assigned defects" });
       return;
     }

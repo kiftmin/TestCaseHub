@@ -691,6 +691,11 @@ router.patch("/defects/:defectId/reject-verification", async (req: Authenticated
       return;
     }
 
+    if (!defect.assigned_to_user_id) {
+      res.status(422).json({ message: "Defect has no assigned developer. Assign a developer before rejecting verification." });
+      return;
+    }
+
     const oldStatus = defect.status;
     const newRegressionIndex = (defect.regression_index ?? 0) + 1;
 
@@ -713,13 +718,9 @@ router.patch("/defects/:defectId/reject-verification", async (req: Authenticated
 
     const rejectionLog = JSON.stringify({ rejections });
 
-    // If no developer was ever assigned (e.g. NEW → READY_FOR_VERIFICATION shortcut),
-    // revert to TRIAGED so a TEST_LEAD can assign it; otherwise go back to ASSIGNED
-    const targetStatus = defect.assigned_to_user_id ? "ASSIGNED" : "TRIAGED";
-
     const [updated] = await db.update(schema.defects)
       .set({
-        status: targetStatus,
+        status: "ASSIGNED",
         regression_index: newRegressionIndex,
         rejection_log: rejectionLog,
         updated_at: new Date(),
@@ -730,8 +731,8 @@ router.patch("/defects/:defectId/reject-verification", async (req: Authenticated
     await db.delete(schema.defectRetests)
       .where(eq(schema.defectRetests.defect_id, defectId));
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: targetStatus, reason: data.reason });
-    await logSystemNote(defectId, oldStatus, targetStatus, req.user!.userId, data.reason);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "ASSIGNED", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, data.reason);
 
     // TODO: Notify developer (in-app notification + optional email)
     // To be implemented when notification infrastructure is available

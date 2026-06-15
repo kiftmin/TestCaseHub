@@ -1,0 +1,1789 @@
+========================================
+FILE: package.json
+========================================
+{
+  "name": "testcasehub",
+  "private": true,
+  "version": "1.0.0",
+  "description": "TestCaseHub - UAT Test Case Management System",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "db:generate": "pnpm --filter db generate",
+    "db:migrate": "pnpm --filter db migrate",
+    "db:seed": "pnpm --filter db seed",
+    "db:studio": "pnpm --filter db studio",
+    "api:dev": "pnpm --filter api-server dev",
+    "api:build": "pnpm --filter api-server build",
+    "api:start": "pnpm --filter api-server start",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "workspaces": [
+    "lib/*",
+    "artifacts/*"
+  ]
+}
+
+========================================
+FILE: tsconfig.json
+========================================
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ESNext"],
+    "declaration": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "outDir": "./dist",
+    "rootDir": "."
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+
+========================================
+FILE: pnpm-workspace.yaml
+========================================
+packages:
+  - 'lib/*'
+  - 'artifacts/*'
+allowBuilds:
+  es5-ext: true
+  esbuild: true
+
+========================================
+FILE: .gitignore
+========================================
+node_modules/
+dist/
+.env
+*.log
+artifacts/api-server/uploads/*
+!artifacts/api-server/uploads/.gitkeep
+.DS_Store
+*.tsbuildinfo
+.antigravitycli/
+
+========================================
+FILE: BUG_REPORT.md
+========================================
+# Technical Bug Report — Execution Engine & Test Run Lifecycle
+
+## Overview
+
+Issues found in the Execution Engine (Guided mode) and Test Run completion flow,
+discovered during a multi-user test run with two scenarios assigned to two
+different users.
+
+---
+
+## Bug 1: Test Run auto-completes before all scenarios are done
+
+**Status:** 🔴 Open  
+**Severity:** High  
+**Component:** `artifacts/api-server/src/routes/executions.ts` (lines 183–196)  
+                    `artifacts/api-server/src/routes/test-runs.ts` (lines 11–24, 412)
+
+### Symptom
+A test run with 2 scenarios (scenario 1 → user 1, scenario 2 → user 2) was
+marked `status = "completed"` after user 1 finished scenario 1, before user 2
+had started scenario 2. This prevented user 2 from executing their test cases
+(backend returns 403 "Cannot execute on a completed test run").
+
+### Expected behavior
+The test run should only flip to `"completed"` when ALL scenarios
+(`testRunUseCases`) have terminal statuses (`"passed"`, `"failed"`,
+`"passed_by_agreement"`).
+
+### Analysis
+There are two auto-completion pathways:
+
+1. **`executions.ts:183-196`** — fires inside `PATCH /executions/:id` when
+   `parsed.status === "completed"` or `"failed"`. Queries all
+   `testRunUseCases` and checks if every one is terminal. This runs BEFORE the
+   sync endpoint updates the current use case's status, so it should see the
+   use case as still non-terminal and NOT complete the run.
+
+2. **`test-runs.ts:412` → `recalculateTestRunCompletion()`** — fires AFTER
+   the sync endpoint updates the current use case's status. Checks all use
+   cases. With scenario 1 → terminal, scenario 2 → `"pending"`, this should
+   NOT complete the run.
+
+Both pathways should be safe, yet the run was completed. Possible causes:
+   - A bug in the `allTerminal` check (e.g., empty use case list returns
+     `true` because `allUseCases.length > 0` check is bypassed, but
+     `.every()` on empty array returns `true`)
+   - Race condition between PATCH and sync
+   - Someone manually called `PATCH /test-runs/:id` with `{ status: "completed" }`
+   - `free_pass` column interacting unexpectedly with terminal checks
+
+### To investigate
+- Reproduce with a 2-scenario test run
+- Add logging before the `if (allTerminal)` guard to log each use case's
+  status
+- Verify whether scenario 2's `testRunUseCase` was somehow already terminal
+  before user 1 completed
+
+---
+
+## Bug 2: Guided mode — Previous / Next / Complete buttons don't persist step result
+
+**Status:** ✅ Fixed in commit `f9c2ca2`  
+**Component:** `artifacts/uat-manager/src/pages/TestRunDetailPage.tsx`
+
+### Symptom
+In Guided mode, clicking Previous or Next navigates without saving the current
+step's text fields (`actual_result`, `comments`). Only clicking Pass/Fail
+triggers a save. The Complete button also doesn't save the last step's text
+before the confirmation dialog.
+
+### Fix
+Each navigation handler now calls `submitStepResult(s.id, ...)` before
+changing `currentStep`:
+- Previous (line 1264–1268): saves if passed !== null
+- Next (line 1284–1286): saves current result
+- Complete (line 1243–1247): awaits `submitStepResult` before showing
+  confirmation
+
+---
+
+## Bug 3: Fields appear blank during async initExec
+
+**Status:** ✅ Fixed in commit `f9c2ca2`  
+**Component:** `artifacts/uat-manager/src/pages/TestRunDetailPage.tsx`
+
+### Symptom
+On mount, the execution modal shows empty fields while `initExec` runs
+because `results` state starts as `{}`. No loading indicator is shown.
+
+### Fix
+- Added `initialLoading` state (`useState(true)`)
+- Spinner renders while `initialLoading` is true
+- `setInitialLoading(false)` is called in:
+  - The session-cache early return
+  - The `if (!entryConfirmed)` guard
+  - The `if (!user)` guard
+  - The `finally` block of `initExec` (both success and error paths)
+
+---
+
+## Bug 4: Vite oxc parser chokes on JSX boundary pattern `)}<`
+
+**Status:** ✅ Fixed in commit `f9c2ca2`  
+**Component:** `artifacts/uat-manager/src/pages/TestRunDetailPage.tsx`
+
+### Symptom
+Build error with Vite's `oxc` parser when encountering `</div>)}</div>` —
+the parser misinterprets the closing angle bracket sequence as an unterminated
+regex.
+
+### Fix
+Replaced the inline ternary inside JSX with an IIFE:
+```tsx
+{(() => {
+  if (condition) return (...);
+  return (...);
+})()}
+```
+This avoids the `)}<` sequence entirely.
+
+---
+
+## Bug 5: ReadOnly guard prevents execution creation POST for non-admin users
+
+**Status:** ✅ Fixed in commit `f9c2ca2`  
+**Component:** `artifacts/uat-manager/src/pages/TestRunDetailPage.tsx` (line 812)
+
+### Symptom
+A guard was added (previous session) to skip the execution creation POST when
+`readOnly = true`, to avoid 403 console noise on completed runs. However,
+`readOnly` was incorrectly `true` for user 2 on an `in_progress` test run,
+causing the POST to be skipped entirely. The fallback loaded a stale execution
+with 0 step results, leaving blank fields.
+
+### Fix
+Removed the `readOnly` guard entirely. The POST is always attempted. The
+catch block handles both expected 403 cases gracefully:
+- `"already been executed"` → loads from full-report
+- `"Cannot execute on a completed test run"` → loads from full-report for viewing
+
+---
+
+## Bug 6: Startup cleanup deletes wrong duplicate step_results row
+
+**Status:** ✅ Fixed in commit `f9c2ca2`  
+**Component:** `artifacts/api-server/src/db.ts`
+
+### Symptom
+On startup, duplicate `step_results` rows were cleaned up by keeping `MAX(id)`
+(latest inserted). But the correct row to keep is the one with the most recent
+`recorded_at` (latest update). This caused execution data to regress to an
+older state after a server restart.
+
+### Fix
+Changed from:
+```sql
+DELETE ... WHERE id <> MAX(id)
+```
+To:
+```sql
+DELETE ... WHERE id IN (
+  SELECT id FROM (
+    SELECT id, ROW_NUMBER() OVER (
+      PARTITION BY execution_id, step_id
+      ORDER BY recorded_at DESC, id DESC
+    ) as rn FROM step_results
+  ) ranked WHERE ranked.rn > 1
+)
+```
+This keeps the most recently updated row (ties broken by highest id).
+
+---
+
+## Bug 7: Full-report endpoint returns unsorted stepResults
+
+**Status:** ✅ Fixed in commit `f9c2ca2`  
+**Component:** `artifacts/api-server/src/routes/test-runs.ts` (line 493)
+
+### Symptom
+The `full-report` endpoint's `executions[].stepResults` array had no
+deterministic ordering, causing step results to appear in arbitrary order
+when loaded in the frontend.
+
+### Fix
+Added `orderBy: [desc(schema.stepResults.id)]` to the `stepResults`
+relation in the Drizzle query.
+
+---
+
+## Bug 8: Light pink Fail button color
+
+**Status:** 🔴 Open  
+**Severity:** Low  
+**Component:** `artifacts/uat-manager/src/pages/TestRunDetailPage.tsx`
+
+### Symptom
+The Fail button (or failed status indicator) renders in a light pink color
+instead of the expected stronger red. The issue appeared after the IIFE
+restructure of the body section.
+
+### Likely cause
+CSS class mismatch, missing `bg-red-*` utility, or the button inheriting a
+different color from the restructured DOM tree. The `statusColors` map or
+`ucStatusColors` may need adjustment.
+
+### To investigate
+- Check the button/status element's applied classes
+- Verify that `bg-red-100` / `text-red-700` classes are being applied correctly
+- Compare the rendered HTML before and after the IIFE restructure
+
+---
+
+## Bug 9: Proof upload / camera box not rendering below image field
+
+**Status:** 🔴 Open  
+**Severity:** Medium  
+**Component:** `artifacts/uat-manager/src/pages/TestRunDetailPage.tsx`
+
+### Symptom
+The file upload button for proof images does not appear below the image
+preview field in the execution modal.
+
+### Expected behavior
+A file input or upload button should render below the proof image URL/field,
+allowing the tester to attach screenshots.
+
+### Possible causes
+- The upload button is conditionally hidden when `readOnly` is true
+- The `onProofUpload` callback is undefined
+- The `proofImage` prop is causing the `GuidedMode` component to render a
+  different state without the upload button
+- DOM structure changed after the IIFE restructure
+
+### To investigate
+- Check `GuidedMode` component's rendering logic for proof upload
+- Check whether `onProofUpload` prop is correctly passed
+- Check `readOnly` guard around the upload button
+- Verify the `handleProofUpload` function is accessible
+
+---
+
+## Bug 10: All scenarios visible to all users, no per-user filtering
+
+**Status:** 🔴 Open (Design decision)  
+**Severity:** Low  
+**Component:** `artifacts/uat-manager/src/pages/TestRunDetailPage.tsx` (line 383)
+
+### Symptom
+User 2 (tester) can see and click on user 1's test cases in the UI. All
+scenarios and their test cases are rendered without filtering by the
+currently logged-in user.
+
+### Impact
+- User 2 might accidentally click on user 1's test case and see their data
+- Confusion about which test cases belong to which user
+
+### Fix options
+- Filter `useCases` to only show scenarios assigned to the current user
+- Add a visual indicator (badge, color) to distinguish own vs others' scenarios
+- Keep current behavior (all visible) but improve tester-name labels
+
+---
+
+## Appendix: Commit history since Bug 1–7 fixes
+
+| Commit | Description |
+|---|---|
+| `f9c2ca2` | execution engine data staleness, guided mode persistence, startup cleanup |
+| `a452c92` | add execution session cache module-level Map to survive remounts |
+| `9ca2cc3` | execution data loss, stale data, permissions, and defect lifecycle |
+
+All fixes are on the `main` branch.
+
+========================================
+FILE: BUG_REPORT_execution_engine_stale_data.md
+========================================
+# Bug: Execution Engine loads stale data — database data reverts between sessions
+
+## Symptom (Updated)
+
+The execution engine loads stale data from the database. The step_results rows in the database **have different values between full-report fetches** — same row IDs, but different `actual_result`, `passed`, etc. values. This means something is **reverting the data in the database** between sessions.
+
+### Critical evidence from console logs
+
+**First session** (after user submitted step results):
+```
+Selected execution id=26, stepResults= [
+  {"id":99,"step_id":1,"passed":false,"actual_result":"dfsdf"},
+  {"id":108,"step_id":2,"passed":true,"actual_result":"fgdgf"},
+  {"id":125,"step_id":3,"passed":false,"actual_result":"jhkjhktrytryhtfh"},
+  {"id":126,"step_id":9,"passed":false,"actual_result":"Q4"}
+]
+```
+
+**Current session** (same test case, after server restart):
+```
+Selected execution id=26, stepResults= [
+  {"id":125,"step_id":3,"passed":false,"actual_result":"A3"},
+  {"id":99,"step_id":1,"passed":false,"actual_result":"q"},
+  {"id":108,"step_id":2,"passed":false,"actual_result":"s1"},
+  {"id":126,"step_id":9,"passed":false,"actual_result":"s3"}
+]
+```
+
+The rows with IDs **99, 108, 125, 126** have **different values** between the two fetches. The data in the database was modified between the two sessions by something other than the user's PUT/POST requests.
+
+## Architecture
+
+### Frontend Component Structure (`TestRunDetailPage.tsx`)
+
+The file contains **two components** in the same file:
+
+1. **`TestRunDetailPage`** (line ~54) — The main page component
+   - Holds `execModal` state: `useState<{ testCase: TestCase; testRunUseCase: TestRunUseCase } | null>(null)`
+   - Renders `ExecutionModal` conditionally:
+     ```tsx
+     {execModal && (
+       <ExecutionModal
+         key={execModal.testCase.id}
+         testRunId={testRunId}
+         testCase={execModal.testCase}
+         testRunUseCase={execModal.testRunUseCase}
+         entryConfirmed={testRun.entry_confirmed}
+         readOnly={isCompleted}
+         onClose={() => setExecModal(null)}
+       />
+     )}
+     ```
+
+2. **`ExecutionModal`** (line ~710) — The modal component
+   - Has its own state: `execution`, `results`, `overallResult`, `testerNotes`, `currentStep`, etc.
+   - Has a `useEffect` with deps `[entryConfirmed, testRunId, testCase.id]` (line ~773)
+   - This effect calls `initExec()` to load/create the execution
+   - `initExec`: POST to create execution → if 403 "already executed", fetch full-report → populate state
+   - The full-report includes `executions` with nested `stepResults`
+
+### Key Props
+
+| Prop | Source | Type |
+|------|--------|------|
+| `testCase` | `execModal.testCase` (state) | `TestCase` |
+| `testRunId` | `Number(params.id)` from URL | `number` |
+| `entryConfirmed` | `testRun.entry_confirmed` from `useQuery` | `boolean` |
+| `readOnly` | `testRun.status === "completed"` | `boolean` |
+
+### Backend Step Result Endpoints (`executions.ts`)
+
+1. `POST /api/executions/:executionId/steps/:stepId/result` — **Upsert**: check for existing → update if exists, insert if not. After update, deletes older duplicates for the same `(execution_id, step_id)`.
+
+2. `PUT /api/executions/:executionId/steps/:stepId/result` — Same logic: find latest (`orderBy: desc(id)`), update it, delete older duplicates.
+
+Both endpoints use:
+```typescript
+const existingResult = await db.query.stepResults.findFirst({
+  where: and(
+    eq(schema.stepResults.execution_id, executionId),
+    eq(schema.stepResults.step_id, stepId),
+  ),
+  orderBy: desc(schema.stepResults.id),
+});
+if (existingResult) {
+  // UPDATE existing row, then DELETE older duplicates
+} else {
+  // INSERT new row
+}
+```
+
+3. `GET /api/test-runs/:testRunId/full-report` — Returns all executions with nested stepResults:
+```typescript
+executions: { with: { testCase: true, stepResults: true } },
+```
+
+4. `PATCH /api/executions/:executionId` — Completes the execution (sets status, overall_result, notes)
+
+### Database Schema (`schema.ts`)
+
+```typescript
+export const stepResults = pgTable("step_results", {
+  id: serial("id").primaryKey(),
+  execution_id: integer("execution_id").notNull().references(() => executions.id, { onDelete: "cascade" }),
+  step_id: integer("step_id").notNull().references(() => testSteps.id, { onDelete: "cascade" }),
+  actual_result: text("actual_result"),          // nullable
+  comments: text("comments"),                    // nullable
+  passed: boolean("passed"),                     // NULLABLE! (no .notNull())
+  recorded_at: timestamp("recorded_at", { withTimezone: true }).defaultNow().notNull(),
+});
+```
+
+**Important**: `passed` is nullable (`boolean("passed")` without `.notNull()`). This means `passed` can be `null`, `true`, or `false` in the database.
+
+### Database Unique Indexes (added in `db.ts` startup cleanup)
+
+- `idx_executions_run_case` — `CREATE UNIQUE INDEX ON executions (test_run_id, test_case_id)`
+- `idx_step_results_exec_step` — `CREATE UNIQUE INDEX ON step_results (execution_id, step_id)`
+
+Startup cleanup deletes duplicate rows keeping only the MAX(id) per group. The cleanup runs once on server start.
+
+## What We've Tried (and why it's not enough)
+
+### Backend fixes
+- POST step result changed from always-INSERT to UPSERT ✓
+- PUT endpoint uses `orderBy: desc(id)` to find the latest duplicate ✓
+- Both endpoints delete older duplicates after updating the latest one ✓
+
+### Database fixes
+- Startup cleanup removes duplicate executions and step_results ✓
+- Unique indexes prevent future duplicates ✓
+
+### Frontend fixes
+- `useRef` guard (removed — doesn't survive unmount) ✗
+- Module-level cache (Map) — persists execution data across component remounts ✓
+- Removed unnecessary `invalidateQueries` from `submitStepResult` ✓
+- Restore `overallResult` and `testerNotes` from full-report ✓
+
+### Why the module-level cache doesn't fix the issue
+
+The cache preserves the USER'S in-session state across component remounts. But the **database data itself is stale**. The full-report endpoint returns different values for the same step_result rows between sessions. Since `initExec` loads data from the full-report (both on initial mount AND after the component somehow remounts mid-session), the stale DB data overwrites the user's cached values.
+
+## Root Cause Investigation
+
+### Confirmed: Database data changes between sessions
+
+The SAME step_result rows (IDs 99, 108, 125, 126) for the SAME execution (ID 26) have DIFFERENT values when fetched at different times. No user-facing code directly modifies step_results outside of the PUT/POST endpoints.
+
+### Hypotheses for what causes the data to revert
+
+#### Hypothesis 1: Startup cleanup deletes wrong rows
+
+The cleanup query:
+```sql
+DELETE FROM step_results sr1 USING (
+  SELECT execution_id, step_id, MAX(id) AS max_id
+  FROM step_results
+  GROUP BY execution_id, step_id
+  HAVING COUNT(*) > 1
+) dup
+WHERE sr1.execution_id = dup.execution_id
+  AND sr1.step_id = dup.step_id
+  AND sr1.id <> dup.max_id
+```
+
+This keeps MAX(id) per (execution_id, step_id) group. If the user's PUT/POST updated a row with a LOWER id (because the old backend code used `findFirst` without ordering), the startup cleanup would DELETE that updated row and keep a higher-id row with OLD data.
+
+**Check**: Did the original backend code (before the fix) update the FIRST found row (not the latest)? The PUT endpoint originally used `Array.find()` or `findFirst` without `orderBy: desc(id)`. If so, it could have updated row 97 instead of row 108 for step_id=2. Then the startup cleanup deleted row 97 (not MAX(id)), losing the update.
+
+#### Hypothesis 2: Two backend processes running
+
+If two Node.js processes connect to the same database (one with old code, one with new), they could both write step_results. The old code (without unique index) creates new rows. The new code (with unique index) upserts. This creates conflicting data.
+
+#### Hypothesis 3: The `passed` field being nullable causes wrong HTTP method choice
+
+In the frontend's `submitStepResult`:
+```typescript
+const hasExisting = results[stepId]?.passed != null;
+```
+
+If `results[stepId].passed` is `null` (loaded from DB, since `passed` is nullable), `hasExisting` is `false`, so the frontend sends POST instead of PUT. Both endpoints do upsert, so this shouldn't cause data loss. BUT: if the POST endpoint's `findFirst` returns `undefined` (due to some condition), it would INSERT a new row. The unique index would cause a constraint violation error, and the `catch` block would return a 500 error. The frontend would show a toast error. The data might not be saved.
+
+#### Hypothesis 4: Drizzle relations return incorrect data
+
+The `executions.stepResults` relation (`many(stepResults)`) without explicit `fields`/`references` relies on Drizzle's inverse relation inference. If the inference is wrong, the full-report endpoint might return stepResults from a different execution.
+
+## Files Involved
+
+- `artifacts/uat-manager/src/pages/TestRunDetailPage.tsx` — Frontend (TestRunDetailPage + ExecutionModal)
+- `artifacts/api-server/src/routes/executions.ts` — Backend step result endpoints (POST/PUT)
+- `artifacts/api-server/src/routes/test-runs.ts` — Full-report endpoint (line 479)
+- `artifacts/api-server/src/db.ts` — Startup cleanup and unique indexes
+- `lib/db/src/schema.ts` — Database schema (stepResults, executions)
+- `lib/api-client-react/src/custom-fetch.ts` — HTTP client
+
+## Next Agent: Diagnostic Steps
+
+### Step 1: Check if step_results are actually being updated correctly
+
+Add logging to the PUT/POST step result endpoints to log the CURRENT database values BEFORE the update:
+
+```typescript
+// In POST endpoint (executions.ts line ~247)
+const existingResult = await db.query.stepResults.findFirst({
+  where: and(
+    eq(schema.stepResults.execution_id, executionId),
+    eq(schema.stepResults.step_id, stepId),
+  ),
+  orderBy: desc(schema.stepResults.id),
+});
+console.log(`[exec] POST step result BEFORE: id=${existingResult?.id} passed=${existingResult?.passed} actual_result=${existingResult?.actual_result} body=${JSON.stringify(parsed)}`);
+```
+
+Submit a step result and check BOTH server-side logs AND the subsequent database state.
+
+### Step 2: Write a diagnostic endpoint
+
+Add a `GET /api/executions/:id/debug` endpoint that returns the raw step_results and execution data for debugging:
+```typescript
+router.get("/executions/:id/debug", async (req, res, next) => {
+  const execution = await db.query.executions.findFirst({
+    where: eq(schema.executions.id, Number(req.params.id)),
+    with: { stepResults: true },
+  });
+  res.json(execution);
+});
+```
+
+This bypasses the frontend and the full-report endpoint to check the raw DB state.
+
+### Step 3: Check for duplicate backend processes
+
+Run `netstat -ano | findstr :3000` and `netstat -ano | findstr :3001` to see if there are multiple servers running.
+
+### Step 4: Verify Drizzle relation inference
+
+The `stepResults: many(stepResults)` relation on executions may need explicit `fields`/`references`:
+```typescript
+stepResults: many(stepResults, {
+  fields: [executions.id],
+  references: [stepResults.execution_id],
+}),
+```
+
+Test if the full-report returns correct stepResults for each execution after adding explicit references.
+
+### Step 5: Check if startup cleanup is the culprit
+
+The startup cleanup runs on EVERY server restart. It keeps MAX(id) per group. Add logging to show what it deletes and what it keeps:
+```sql
+SELECT execution_id, step_id, id, actual_result, passed
+FROM step_results
+WHERE (execution_id, step_id) IN (
+  SELECT execution_id, step_id
+  FROM step_results
+  GROUP BY execution_id, step_id
+  HAVING COUNT(*) > 1
+)
+ORDER BY execution_id, step_id, id;
+```
+
+Run this BEFORE the cleanup to see the full picture.
+
+========================================
+FILE: lib\db\package.json
+========================================
+{
+  "name": "@workspace/db",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "generate": "drizzle-kit generate",
+    "migrate": "tsx src/migrate.ts",
+    "seed": "tsx src/seed.ts",
+    "studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.30.0",
+    "drizzle-zod": "^0.5.1",
+    "pg": "^8.11.0",
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.21.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
+
+========================================
+FILE: lib\db\drizzle.config.ts
+========================================
+import { defineConfig } from "drizzle-kit";
+
+export default defineConfig({
+  schema: "./src/schema.ts",
+  out: "./drizzle",
+  dialect: "postgresql",
+  dbCredentials: {
+    url: process.env.DATABASE_URL!,
+  },
+});
+
+========================================
+FILE: lib\db\src\schema.ts
+========================================
+import { relations } from "drizzle-orm";
+import {
+  serial,
+  integer,
+  text,
+  timestamp,
+  boolean,
+  pgTable,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+
+// 1. users
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  username: text("username").notNull().unique(),
+  password_hash: text("password_hash").notNull(),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  role: text("role", { enum: ["ADMIN", "USER"] }).notNull().default("USER"),
+  is_active: boolean("is_active").notNull().default(true),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const usersRelations = relations(users, ({ many }) => ({
+  projectAssignments: many(projectAssignments),
+  projectsAsLead: many(projects),
+  auditLogs: many(statusAuditLog),
+  createdDiscussions: many(teamDiscussions),
+  teamDiscussionParticipants: many(teamDiscussionParticipants),
+  // execution relations
+  executionsAsTester: many(executions),
+  testRunsConfirmed: many(testRuns),
+  checklistItems: many(testRunChecklistItems),
+  defectRetestsAssigned: many(defectRetests),
+  defectsCreated: many(defects),
+  defectNotes: many(defectNotes),
+  testRunUseCasesAssigned: many(testRunUseCases),
+  retestedBy: many(defectRetests),
+}));
+
+// 2. projects
+export const projects = pgTable("projects", {
+  id: serial("id").primaryKey(),
+  project_code: text("project_code").notNull().unique(),
+  name: text("name").notNull(),
+  designed_by: text("designed_by").notNull(),
+  module_name: text("module_name").notNull(),
+  design_date: text("design_date").notNull(),
+  test_link: text("test_link"),
+  version: integer("version").notNull().default(1),
+  version_date: timestamp("version_date", { withTimezone: true }).defaultNow(),
+  test_lead_id: integer("test_lead_id").references(() => users.id, { onDelete: "set null" }),
+  is_signed_off: integer("is_signed_off").notNull().default(0),
+  sign_off_data: text("sign_off_data"),
+  objectives: text("objectives"),
+  scope: text("scope"),
+  out_of_scope: text("out_of_scope"),
+  entry_criteria: text("entry_criteria"),
+  exit_criteria: text("exit_criteria"),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const projectsRelations = relations(projects, ({ one, many }) => ({
+  testLead: one(users, { fields: [projects.test_lead_id], references: [users.id] }),
+  assignments: many(projectAssignments),
+  testRuns: many(testRuns),
+  useCases: many(useCases),
+  auditLogs: many(statusAuditLog), // per spec: status_audit_log references projects
+}));
+
+// 3. project_assignments
+export const projectAssignments = pgTable("project_assignments", {
+  id: serial("id").primaryKey(),
+  project_id: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  user_id: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  role: text("role", {
+    enum: ["TEST_LEAD", "TEST_AUTHOR", "BUSINESS_OWNER", "TESTER", "DEVELOPER", "UAT_COORDINATOR"],
+  }).notNull(),
+  assigned_at: timestamp("assigned_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const projectAssignmentsRelations = relations(projectAssignments, ({ one }) => ({
+  project: one(projects, { fields: [projectAssignments.project_id], references: [projects.id] }),
+  user: one(users, { fields: [projectAssignments.user_id], references: [users.id] }),
+}));
+
+// 4. use_cases (Test Scenarios)
+export const useCases = pgTable("use_cases", {
+  id: serial("id").primaryKey(),
+  project_id: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  code: text("code").notNull(),
+  name: text("name").notNull(),
+  priority: text("priority"),
+  category: text("category"),
+  sort_order: integer("sort_order").default(0).notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const useCasesRelations = relations(useCases, ({ one, many }) => ({
+  project: one(projects, { fields: [useCases.project_id], references: [projects.id] }),
+  testCases: many(testCases),
+  testRunUseCases: many(testRunUseCases),
+}));
+
+// 5. test_cases
+export const testCases = pgTable("test_cases", {
+  id: serial("id").primaryKey(),
+  use_case_id: integer("use_case_id").notNull().references(() => useCases.id, { onDelete: "cascade" }),
+  case_number: text("case_number").notNull(),
+  title: text("title").notNull(),
+  test_type: text("test_type"),
+  estimated_minutes: integer("estimated_minutes"),
+  acceptance_criteria: text("acceptance_criteria"),
+  sort_order: integer("sort_order").default(0).notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const testCasesRelations = relations(testCases, ({ one, many }) => ({
+  useCase: one(useCases, { fields: [testCases.use_case_id], references: [useCases.id] }),
+  steps: many(testSteps),
+  executions: many(executions),
+  defects: many(defects),
+}));
+
+// 6. test_steps
+export const testSteps = pgTable("test_steps", {
+  id: serial("id").primaryKey(),
+  test_case_id: integer("test_case_id").notNull().references(() => testCases.id, { onDelete: "cascade" }),
+  step_number: text("step_number").notNull(),
+  instruction: text("instruction").notNull(),
+  test_data: text("test_data"),
+  expected_result: text("expected_result"),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const testStepsRelations = relations(testSteps, ({ one, many }) => ({
+  testCase: one(testCases, { fields: [testSteps.test_case_id], references: [testCases.id] }),
+  stepResults: many(stepResults),
+}));
+
+// 7. attachments
+export const attachments = pgTable("attachments", {
+  id: serial("id").primaryKey(),
+  entity_type: text("entity_type").notNull(),
+  entity_id: integer("entity_id").notNull(),
+  field: text("field"),
+  file_name: text("file_name").notNull(),
+  file_url: text("file_url").notNull(),
+  file_type: text("file_type"),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// 8. test_runs
+export const testRuns = pgTable("test_runs", {
+  id: serial("id").primaryKey(),
+  project_id: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  status: text("status", { enum: ["scheduled", "in_progress", "completed"] }).notNull().default("scheduled"),
+  scheduled_at: timestamp("scheduled_at", { withTimezone: true }),
+  passed: boolean("passed"),
+  source_test_run_id: integer("source_test_run_id").references(() => testRuns.id, { onDelete: "set null" }),
+  entry_confirmed: boolean("entry_confirmed").notNull().default(false),
+  entry_confirmed_by_user_id: integer("entry_confirmed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  entry_confirmed_at: timestamp("entry_confirmed_at", { withTimezone: true }),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const testRunsRelations = relations(testRuns, ({ one, many }) => ({
+  project: one(projects, { fields: [testRuns.project_id], references: [projects.id] }),
+  entryConfirmedBy: one(users, { fields: [testRuns.entry_confirmed_by_user_id], references: [users.id] }),
+  useCases: many(testRunUseCases),
+  checklistItems: many(testRunChecklistItems),
+  executions: many(executions),
+  defects: many(defects),
+  teamDiscussions: many(teamDiscussions),
+  sourceTestRun: one(testRuns, { fields: [testRuns.source_test_run_id], references: [testRuns.id] }),
+}));
+
+// 9. test_run_checklist_items
+export const testRunChecklistItems = pgTable("test_run_checklist_items", {
+  id: serial("id").primaryKey(),
+  test_run_id: integer("test_run_id").notNull().references(() => testRuns.id, { onDelete: "cascade" }),
+  item_text: text("item_text").notNull(),
+  is_checked: boolean("is_checked").notNull().default(false),
+  checked_by_user_id: integer("checked_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  checked_at: timestamp("checked_at", { withTimezone: true }),
+  sort_order: integer("sort_order").notNull().default(0),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const testRunChecklistItemsRelations = relations(testRunChecklistItems, ({ one }) => ({
+  testRun: one(testRuns, { fields: [testRunChecklistItems.test_run_id], references: [testRuns.id] }),
+  checkedBy: one(users, { fields: [testRunChecklistItems.checked_by_user_id], references: [users.id] }),
+}));
+
+// 10. test_run_use_cases
+export const testRunUseCases = pgTable("test_run_use_cases", {
+  id: serial("id").primaryKey(),
+  test_run_id: integer("test_run_id").notNull().references(() => testRuns.id, { onDelete: "cascade" }),
+  use_case_id: integer("use_case_id").notNull().references(() => useCases.id, { onDelete: "cascade" }),
+  assigned_tester_id: integer("assigned_tester_id").references(() => users.id, { onDelete: "set null" }),
+  free_pass: boolean("free_pass").notNull().default(false),
+  free_pass_reason: text("free_pass_reason"),
+  status: text("status", {
+    enum: ["pending", "in_progress", "passed", "failed", "passed_by_agreement"],
+  }).notNull().default("pending"),
+  tester_sign_off: boolean("tester_sign_off").notNull().default(false),
+  tester_sign_off_at: timestamp("tester_sign_off_at", { withTimezone: true }),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const testRunUseCasesRelations = relations(testRunUseCases, ({ one, many }) => ({
+  testRun: one(testRuns, { fields: [testRunUseCases.test_run_id], references: [testRuns.id] }),
+  useCase: one(useCases, { fields: [testRunUseCases.use_case_id], references: [useCases.id] }),
+  tester: one(users, { fields: [testRunUseCases.assigned_tester_id], references: [users.id] }),
+}));
+
+// 11. executions
+export const executions = pgTable("executions", {
+  id: serial("id").primaryKey(),
+  test_case_id: integer("test_case_id").notNull().references(() => testCases.id, { onDelete: "cascade" }),
+  test_run_id: integer("test_run_id").references(() => testRuns.id, { onDelete: "set null" }),
+  iteration_number: integer("iteration_number").notNull().default(1),
+  tester_name: text("tester_name"),
+  tester_id: integer("tester_id").references(() => users.id, { onDelete: "set null" }),
+  status: text("status", { enum: ["in_progress", "completed", "failed"] }).notNull().default("in_progress"),
+  overall_result: text("overall_result", { enum: ["passed", "failed", "passed_by_agreement"] }),
+  notes: text("notes"),
+  executed_at: timestamp("executed_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const executionsRelations = relations(executions, ({ one, many }) => ({
+  testCase: one(testCases, { fields: [executions.test_case_id], references: [testCases.id] }),
+  testRun: one(testRuns, { fields: [executions.test_run_id], references: [testRuns.id] }),
+  tester: one(users, { fields: [executions.tester_id], references: [users.id] }),
+  stepResults: many(stepResults),
+  defects: many(defects),
+}));
+
+// 12. step_results
+export const stepResults = pgTable("step_results", {
+  id: serial("id").primaryKey(),
+  execution_id: integer("execution_id").notNull().references(() => executions.id, { onDelete: "cascade" }),
+  step_id: integer("step_id").notNull().references(() => testSteps.id, { onDelete: "cascade" }),
+  actual_result: text("actual_result"),
+  comments: text("comments"),
+  passed: boolean("passed"),
+  recorded_at: timestamp("recorded_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const stepResultsRelations = relations(stepResults, ({ one }) => ({
+  execution: one(executions, { fields: [stepResults.execution_id], references: [executions.id] }),
+  step: one(testSteps, { fields: [stepResults.step_id], references: [testSteps.id] }),
+}));
+
+// 13. defects
+export const defects = pgTable("defects", {
+  id: serial("id").primaryKey(),
+  bug_number: integer("bug_number"),
+  project_id: integer("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
+  test_run_id: integer("test_run_id").references(() => testRuns.id, { onDelete: "cascade" }),
+  test_case_id: integer("test_case_id").references(() => testCases.id, { onDelete: "cascade" }).notNull(),
+  execution_id: integer("execution_id").references(() => executions.id, { onDelete: "cascade" }),
+  ticket_type: text("ticket_type").notNull().default("SOFTWARE_BUG"),
+  status: text("status").notNull().default("NEW"),
+  severity: text("severity"),
+  priority: text("priority"),
+  assigned_to_user_id: integer("assigned_to_user_id").references(() => users.id, { onDelete: "set null" }),
+  support_ticket_number: text("support_ticket_number"),
+  root_cause_category: text("root_cause_category"), // 'Requirements Gap' | 'Design Defect' | 'Coding Error' | 'Environment Issue' | 'Test Data Issue' | 'Configuration Error' | 'Third-Party Integration' | 'Other'
+  regression_index: integer("regression_index").notNull().default(0),
+  tester_notes: text("tester_notes"),
+  retest_reason: text("retest_reason"),
+  accepted_by_business_note: text("accepted_by_business_note"),
+  rejection_log: text("rejection_log"),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  resolved_at: timestamp("resolved_at", { withTimezone: true }),
+  closed_at: timestamp("closed_at", { withTimezone: true }),
+});
+
+export const defectsRelations = relations(defects, ({ one, many }) => ({
+  project: one(projects, { fields: [defects.project_id], references: [projects.id] }),
+  testRun: one(testRuns, { fields: [defects.test_run_id], references: [testRuns.id] }),
+  testCase: one(testCases, { fields: [defects.test_case_id], references: [testCases.id] }),
+  execution: one(executions, { fields: [defects.execution_id], references: [executions.id] }),
+  assignedTo: one(users, { fields: [defects.assigned_to_user_id], references: [users.id] }),
+  notes: many(defectNotes),
+  retests: many(defectRetests),
+}));
+
+// 14. defect_retests
+export const defectRetests = pgTable("defect_retests", {
+  id: serial("id").primaryKey(),
+  defect_id: integer("defect_id").notNull().references(() => defects.id, { onDelete: "cascade" }),
+  test_run_id: integer("test_run_id").notNull().references(() => testRuns.id, { onDelete: "cascade" }),
+  target_verification_run_id: integer("target_verification_run_id").references(() => testRuns.id, { onDelete: "set null" }),
+  assigned_tester_id: integer("assigned_tester_id").references(() => users.id, { onDelete: "set null" }),
+  retest_result: text("retest_result", { enum: ["passed", "failed"] }),
+  retest_notes: text("retest_notes"),
+  retested_by_user_id: integer("retested_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  retested_at: timestamp("retested_at", { withTimezone: true }),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const defectRetestsRelations = relations(defectRetests, ({ one }) => ({
+  defect: one(defects, { fields: [defectRetests.defect_id], references: [defects.id] }),
+  testRun: one(testRuns, { fields: [defectRetests.test_run_id], references: [testRuns.id] }),
+  targetVerificationRun: one(testRuns, { fields: [defectRetests.target_verification_run_id], references: [testRuns.id] }),
+  assignedTester: one(users, { fields: [defectRetests.assigned_tester_id], references: [users.id] }),
+  retestedBy: one(users, { fields: [defectRetests.retested_by_user_id], references: [users.id] }),
+}));
+
+// 15. (removed - bugs table consolidated into defects)
+
+// 16. status_audit_log
+export const statusAuditLog = pgTable("status_audit_log", {
+  id: serial("id").primaryKey(),
+  entity_type: text("entity_type").notNull(),
+  entity_id: integer("entity_id").notNull(),
+  changed_by_user_id: integer("changed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  from_status: text("from_status"),
+  to_status: text("to_status"),
+  reason: text("reason"),
+  changed_at: timestamp("changed_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const statusAuditLogRelations = relations(statusAuditLog, ({ one }) => ({
+  changedBy: one(users, { fields: [statusAuditLog.changed_by_user_id], references: [users.id] }),
+}));
+
+// 17. team_discussions
+export const teamDiscussions = pgTable("team_discussions", {
+  id: serial("id").primaryKey(),
+  project_id: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  test_run_id: integer("test_run_id").notNull().references(() => testRuns.id, { onDelete: "cascade" }),
+  initiated_by_user_id: integer("initiated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  meeting_type: text("meeting_type", { enum: ["defect_review", "post_mortem"] }).notNull(),
+  is_active: boolean("is_active").notNull().default(true),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  ended_at: timestamp("ended_at", { withTimezone: true }),
+});
+
+export const teamDiscussionsRelations = relations(teamDiscussions, ({ one, many }) => ({
+  project: one(projects, { fields: [teamDiscussions.project_id], references: [projects.id] }),
+  testRun: one(testRuns, { fields: [teamDiscussions.test_run_id], references: [testRuns.id] }),
+  initiatedBy: one(users, { fields: [teamDiscussions.initiated_by_user_id], references: [users.id] }),
+  participants: many(teamDiscussionParticipants),
+  defectNotes: many(defectNotes),
+}));
+
+// 18. team_discussion_participants
+export const teamDiscussionParticipants = pgTable("team_discussion_participants", {
+  id: serial("id").primaryKey(),
+  discussion_id: integer("discussion_id").notNull().references(() => teamDiscussions.id, { onDelete: "cascade" }),
+  user_id: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  can_add_notes: boolean("can_add_notes").notNull().default(false),
+  added_at: timestamp("added_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const teamDiscussionParticipantsRelations = relations(teamDiscussionParticipants, ({ one }) => ({
+  discussion: one(teamDiscussions, { fields: [teamDiscussionParticipants.discussion_id], references: [teamDiscussions.id] }),
+  user: one(users, { fields: [teamDiscussionParticipants.user_id], references: [users.id] }),
+}));
+
+// 19. defect_notes
+export const defectNotes = pgTable("defect_notes", {
+  id: serial("id").primaryKey(),
+  defect_id: integer("defect_id").notNull().references(() => defects.id, { onDelete: "cascade" }),
+  discussion_id: integer("discussion_id").references(() => teamDiscussions.id, { onDelete: "set null" }),
+  added_by_user_id: integer("added_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  note: text("note").notNull(),
+  is_system_note: boolean("is_system_note").notNull().default(false),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const defectNotesRelations = relations(defectNotes, ({ one }) => ({
+  defect: one(defects, { fields: [defectNotes.defect_id], references: [defects.id] }),
+  discussion: one(teamDiscussions, { fields: [defectNotes.discussion_id], references: [teamDiscussions.id] }),
+  addedBy: one(users, { fields: [defectNotes.added_by_user_id], references: [users.id] }),
+}));
+
+// 20. (removed - bug_notes table consolidated into defect_notes)
+
+========================================
+FILE: lib\db\src\index.ts
+========================================
+export * from "./schema";
+
+========================================
+FILE: lib\db\src\seed.ts
+========================================
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Client } from "pg";
+import * as dotenv from "dotenv";
+import bcrypt from "bcryptjs";
+import { users } from "./schema.js";
+
+dotenv.config();
+
+async function main() {
+  const client = new Client({
+    connectionString: process.env.DATABASE_URL,
+  });
+  await client.connect();
+
+  const db = drizzle(client);
+
+  // Seed initial admin user if doesn't exist
+  const adminPassword = await bcrypt.hash("admin123", 10);
+
+  const result = await client.query(
+    `SELECT id FROM users WHERE username = 'admin'`
+  );
+
+  if (result.rows.length === 0) {
+    await db.insert(users).values({
+      username: "admin",
+      password_hash: adminPassword,
+      name: "System Administrator",
+      email: "admin@testcasehub.com",
+      role: "ADMIN",
+      is_active: true,
+    });
+    console.log("Seeded admin user (admin / admin123)");
+  } else {
+    console.log("Admin user already exists.");
+  }
+
+  await client.end();
+  console.log("Seeding complete!");
+}
+
+main().catch((err) => {
+  console.error("Seeding failed:", err);
+  process.exit(1);
+});
+
+========================================
+FILE: lib\db\src\migrate.ts
+========================================
+import { drizzle } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { Client } from "pg";
+import * as dotenv from "dotenv";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
+import { readFileSync } from "fs";
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+async function main() {
+  const client = new Client({
+    connectionString: process.env.DATABASE_URL,
+  });
+  await client.connect();
+
+  const db = drizzle(client);
+
+  console.log("Running Drizzle migrations...");
+  await migrate(db, {
+    migrationsFolder: join(__dirname, "..", "drizzle"),
+  });
+
+  const rawSqlFiles = [
+    "0001_add_sort_order.sql",
+    "0003_conformance_audit.sql",
+    "0005_test_run_use_cases_updated_at.sql",
+    "0006_backfill_use_case_status.sql",
+    "0007_test_steps_unique_step_number.sql",
+  ];
+  for (const file of rawSqlFiles) {
+    const rawSqlPath = join(__dirname, "..", "drizzle", file);
+    try {
+      const sql = readFileSync(rawSqlPath, "utf-8");
+      const statements = sql.split("--> statement-breakpoint").map(s => s.trim()).filter(Boolean);
+      for (const stmt of statements) {
+        if (stmt) {
+          await client.query(stmt);
+          console.log(`  [${file}] Executed: ${stmt.substring(0, 80)}...`);
+        }
+      }
+      console.log(`Raw SQL migration ${file} complete!`);
+    } catch (err: any) {
+      if (err.code === "ENOENT") {
+        console.log(`No raw SQL migration file found (${file}), skipping.`);
+      } else {
+        console.error(`Raw SQL migration ${file} failed:`, err);
+        process.exit(1);
+      }
+    }
+  }
+
+  await client.end();
+}
+
+main().catch((err) => {
+  console.error("Migration failed:", err);
+  process.exit(1);
+});
+
+========================================
+FILE: lib\db\src\fix-status.ts
+========================================
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+import { sql } from "drizzle-orm";
+import * as dotenv from "dotenv";
+dotenv.config();
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
+const db = drizzle(pool);
+
+const MAPPING: Record<string, string> = {
+  "New Defect": "NEW",
+  "Submitted to Dev to Fix": "ASSIGNED",
+  "Ready for Testing": "READY_FOR_VERIFICATION",
+  "Accepted by Business": "CLOSED",
+};
+
+async function main() {
+  for (const [oldStatus, newStatus] of Object.entries(MAPPING)) {
+    const result = await db.execute(sql`
+      UPDATE "defects" SET "status" = ${newStatus} WHERE "status" = ${oldStatus}
+    `);
+    if (result.rowCount && result.rowCount > 0) {
+      console.log(`Mapped "${oldStatus}" → "${newStatus}": ${result.rowCount} rows`);
+    }
+  }
+
+  const counts = await db.execute(sql`
+    SELECT "status", COUNT(*) FROM "defects" GROUP BY "status" ORDER BY "status"
+  `);
+  console.log("\nFinal status distribution:");
+  for (const row of counts.rows as { status: string; count: string }[]) {
+    const valid = ["NEW", "TRIAGED", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "RESOLVED_DEV", "READY_FOR_VERIFICATION", "REGRESSED", "CLOSED", "PASSED_BY_AGREEMENT"].includes(row.status);
+    console.log(`  ${valid ? "✓" : "✗"} ${row.status}: ${row.count}`);
+  }
+
+  await pool.end();
+}
+
+main().catch((e) => {
+  console.error("ERROR:", e instanceof Error ? e.message : e);
+  process.exit(1);
+});
+
+========================================
+FILE: lib\api-spec\package.json
+========================================
+{
+  "name": "@workspace/api-spec",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "generate": "orval --config orval.config.ts"
+  },
+  "devDependencies": {
+    "orval": "^6.28.0",
+    "typescript": "^5.4.0"
+  }
+}
+
+========================================
+FILE: lib\api-spec\orval.config.ts
+========================================
+import { defineConfig } from "orval";
+
+export default defineConfig({
+  testcasehub: {
+    input: {
+      target: "./openapi.yml",
+    },
+    output: {
+      mode: "tags-split",
+      target: "../api-client-react/src/generated",
+      client: "react-query",
+      schemas: "../api-client-react/src/generated/schemas",
+      mock: false,
+      override: {
+        useDates: false,
+        mutator: {
+          path: "../api-client-react/src/custom-fetch.ts",
+          name: "customFetch",
+        },
+        query: {
+          useQuery: true,
+          useSuspenseQuery: false,
+        },
+      },
+    },
+    hooks: {
+      afterAllFilesWrite: "prettier --write",
+    },
+  },
+});
+
+========================================
+FILE: lib\api-client-react\package.json
+========================================
+{
+  "name": "@workspace/api-client-react",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./custom-fetch": {
+      "types": "./src/custom-fetch.ts",
+      "import": "./src/custom-fetch.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
+
+========================================
+FILE: lib\api-client-react\src\index.ts
+========================================
+export { setAuthTokenGetter, setUnauthorizedHandler, customFetch } from "./custom-fetch.js";
+
+========================================
+FILE: lib\api-client-react\src\custom-fetch.ts
+========================================
+let authTokenGetter: (() => string | null) | null = null;
+let onUnauthorized: (() => void) | null = null;
+
+export function setAuthTokenGetter(fn: () => string | null) {
+  authTokenGetter = fn;
+}
+
+export function setUnauthorizedHandler(fn: (() => void) | null) {
+  onUnauthorized = fn;
+}
+
+export async function customFetch<T>(
+  url: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const token = authTokenGetter ? authTokenGetter() : null;
+  const headers: Record<string, string> = {
+    ...(options.headers as Record<string, string>),
+  };
+
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  if (!(options.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  const response = await fetch(url, { ...options, headers });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: response.statusText }));
+    const err = new Error(error.message || `HTTP ${response.status}`) as Error & { status?: number };
+    err.status = response.status;
+    if (response.status === 401 && onUnauthorized) {
+      onUnauthorized();
+    }
+    throw err;
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return response.json();
+}
+
+========================================
+FILE: lib\api-zod\package.json
+========================================
+{
+  "name": "@workspace/api-zod",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
+
+========================================
+FILE: lib\api-zod\src\index.ts
+========================================
+// Zod types will be generated from OpenAPI spec via Orval
+export {};
+
+========================================
+FILE: artifacts\api-server\package.json
+========================================
+{
+  "name": "@workspace/api-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/index.ts",
+    "build": "tsc",
+    "start": "node --env-file=.env dist/index.js"
+  },
+  "dependencies": {
+    "@workspace/db": "workspace:*",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "drizzle-orm": "^0.30.0",
+    "drizzle-zod": "^0.5.1",
+    "express": "^5.0.0",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
+    "jsonwebtoken": "^9.0.0",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.11.0",
+    "pino": "^9.2.0",
+    "pino-http": "^10.1.0",
+    "qrcode": "^1.5.3",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.0.0",
+    "@types/pg": "^8.11.0",
+    "@types/qrcode": "^1.5.5",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
+
+========================================
+FILE: artifacts\api-server\tsconfig.json
+========================================
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/**/*"]
+}
+
+========================================
+FILE: artifacts\api-server\src\index.ts
+========================================
+import express, { Express } from "express";
+import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import pinoHttp from "pino-http";
+import { logger } from "./utils/logger.js";
+import { errorHandler } from "./middlewares/errorHandler.js";
+import { authenticate } from "./middlewares/auth.js";
+
+import authRoutes from "./routes/auth.js";
+import healthRoutes from "./routes/health.js";
+import userRoutes from "./routes/users.js";
+import projectRoutes from "./routes/projects.js";
+import useCaseRoutes from "./routes/use-cases.js";
+import testCaseRoutes from "./routes/test-cases.js";
+import testStepRoutes from "./routes/test-steps.js";
+import testRunRoutes from "./routes/test-runs.js";
+import checklistRoutes from "./routes/checklist.js";
+import dashboardRoutes from "./routes/dashboard.js";
+
+// Routers that embed full paths - mount at root API level
+import assignmentRoutes from "./routes/project-assignments.js";
+import executionRoutes from "./routes/executions.js";
+import defectRoutes from "./routes/defects.js";
+// bugRoutes deprecated — bugs consolidated into defects
+import discussionRoutes from "./routes/discussions.js";
+import attachmentRoutes from "./routes/attachments.js";
+
+const app: Express = express();
+app.use(
+  cors({
+    origin: process.env.CORS_ORIGIN?.split(",") ?? ["http://localhost:5173", "http://localhost:3001"],
+    credentials: true,
+  }),
+);
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
+app.use(express.json());
+app.use(pinoHttp({ logger }));
+app.use("/uploads", express.static("uploads"));
+
+const api = express.Router();
+
+// Rate limiting on auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { message: "Too many requests, please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Public
+api.use("/auth", authLimiter, authRoutes);
+api.use("/health", healthRoutes);
+
+// Protected — specific mounts first
+api.use("/users", authenticate, userRoutes);
+api.use("/projects", authenticate, projectRoutes);
+api.use("/use-cases", authenticate, useCaseRoutes);
+api.use("/test-cases", authenticate, testCaseRoutes);
+api.use("/test-steps", authenticate, testStepRoutes);
+api.use("/test-runs", authenticate, testRunRoutes);
+api.use("/test-runs/:testRunId/checklist", authenticate, checklistRoutes);
+api.use("/dashboard", authenticate, dashboardRoutes);
+
+// Mount routers with full embedded paths at root level 
+api.use("/", authenticate, executionRoutes);   // /test-runs/:id/test-cases/:id/execute, /executions/:id, /tester/:id/test-runs
+api.use("/", authenticate, assignmentRoutes);  // /projects/:id/users, /users/:id/projects
+api.use("/", authenticate, defectRoutes);      // /defects, /test-runs/:id/defects
+// api.use("/", authenticate, bugRoutes);        // /bugs — deprecated
+api.use("/", authenticate, discussionRoutes);   // /discussions, /test-runs/:id/discussions
+api.use("/", authenticate, attachmentRoutes);   // /upload, /attachments
+
+app.use("/api", api);
+app.use(errorHandler);
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  logger.info(`Server running on port ${PORT}`);
+});
+
+export default app;
+
+========================================
+FILE: artifacts\api-server\src\db.ts
+========================================
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+import * as schema from "@workspace/db";
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 5,
+  idleTimeoutMillis: 300_000,
+  connectionTimeoutMillis: 15000,
+});
+
+pool.on("error", (err) => {
+  console.error("Unexpected pool error", err);
+});
+
+export const db = drizzle(pool, { schema });
+export { pool };
+
+async function keepAlive() {
+  try {
+    await pool.query("SELECT 1");
+  } catch {
+    // pool will recover on next query
+  }
+}
+setInterval(keepAlive, 120_000).unref();
+
+// Warm up connection on startup
+try {
+  const client = await pool.connect();
+  client.on("error", () => {});
+  console.log("[startup] Running DB cleanup & index migration...");
+
+  // Clean up duplicate executions keeping only the latest per run+case
+  const execResult = await client.query(`
+    DELETE FROM executions e1 USING (
+      SELECT test_run_id, test_case_id, MAX(id) AS max_id
+      FROM executions
+      GROUP BY test_run_id, test_case_id
+      HAVING COUNT(*) > 1
+    ) dup
+    WHERE e1.test_run_id = dup.test_run_id
+      AND e1.test_case_id = dup.test_case_id
+      AND e1.id <> dup.max_id
+  `);
+  if (execResult.rowCount && execResult.rowCount > 0) {
+    console.log(`[startup] Removed ${execResult.rowCount} duplicate execution(s)`);
+  }
+
+  await client.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_executions_run_case
+    ON executions (test_run_id, test_case_id)
+  `);
+
+  // Clean up duplicate step_results keeping only the most recently updated row. This prevents startup
+  // cleanup from reverting user data when old duplicate rows exist. We order by recorded_at DESC, then id DESC
+  // to deterministically keep the latest updated row (or the highest id in case of identical timestamps).
+  const srResult = await client.query(`
+    DELETE FROM step_results
+    WHERE id IN (
+      SELECT id
+      FROM (
+        SELECT id, ROW_NUMBER() OVER (PARTITION BY execution_id, step_id ORDER BY recorded_at DESC, id DESC) as rn
+        FROM step_results
+      ) ranked
+      WHERE ranked.rn > 1
+    )
+  `);
+  if (srResult.rowCount && srResult.rowCount > 0) {
+    console.log(`[startup] Removed ${srResult.rowCount} duplicate step_result(s), keeping latest by recorded_at`);
+  }
+
+  await client.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_step_results_exec_step
+    ON step_results (execution_id, step_id)
+  `);
+
+  client.release();
+  console.log("[startup] DB cleanup complete");
+} catch (err) {
+  console.error("[startup] DB cleanup failed:", err);
+}
+
+========================================
+FILE: artifacts\api-server\src\middlewares\auth.ts
+========================================
+import { Request, Response, NextFunction } from "express";
+import jwt from "jsonwebtoken";
+import { db } from "../db.js";
+import { eq, and } from "drizzle-orm";
+import * as schema from "@workspace/db";
+
+const SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET) throw new Error("SESSION_SECRET environment variable is required");
+const JWT_SECRET = SESSION_SECRET;
+
+export interface AuthenticatedRequest extends Request {
+  user?: {
+    userId: number;
+    username: string;
+    role: string;
+  };
+}
+
+export function authenticate(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    res.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+
+  const token = authHeader.split(" ")[1];
+  if (!token) {
+    res.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as {
+      userId: number;
+      username: string;
+      role: string;
+    };
+    req.user = decoded;
+    next();
+  } catch (error) {
+    res.status(401).json({ message: "Invalid token" });
+  }
+}
+
+export function authorize(roles: string[]) {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
+    next();
+  };
+}
+
+export function authorizeProjectRole(allowedRoles: string[]) {
+  return async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
+    const projectId = Number(req.params.projectId);
+    if (!req.user) {
+      res.status(401).json({ message: "Unauthorized" });
+      return;
+    }
+
+    if (req.user.role === "ADMIN") {
+      next();
+      return;
+    }
+
+    const assignment = await db.query.projectAssignments.findFirst({
+      where: (pa, { and }) =>
+        and(
+          eq(pa.project_id, projectId),
+          eq(pa.user_id, req!.user!.userId)
+        ),
+    });
+
+    if (!assignment || !allowedRoles.includes(assignment.role)) {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
+
+    next();
+  };
+}
+
+export async function checkProjectRole(
+  req: AuthenticatedRequest,
+  projectId: number,
+  allowedRoles: string[]
+): Promise<boolean> {
+  if (!req.user) return false;
+  if (req.user.role === "ADMIN") return true;
+
+  const assignment = await db.query.projectAssignments.findFirst({
+    where: (pa, { and }) =>
+      and(
+        eq(pa.project_id, projectId),
+        eq(pa.user_id, req.user!.userId)
+      ),
+  });
+
+  if (assignment && allowedRoles.includes(assignment.role)) return true;
+
+  // Implicit TEST_LEAD via projects.test_lead_id
+  if (allowedRoles.includes("TEST_LEAD")) {
+    const project = await db.query.projects.findFirst({
+      where: eq(schema.projects.id, projectId),
+      columns: { test_lead_id: true },
+    });
+    if (project?.test_lead_id === req.user!.userId) return true;
+  }
+
+  return false;
+}
+
+========================================
+FILE: artifacts\api-server\src\middlewares\errorHandler.ts
+========================================
+import { Request, Response, NextFunction } from "express";
+import { logger } from "../utils/logger.js";
+import { ZodError } from "zod";
+import multer from "multer";
+
+export function errorHandler(
+  err: Error,
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void {
+  if (err instanceof ZodError) {
+    res.status(400).json({
+      message: "Validation error",
+      errors: err.errors,
+    });
+    return;
+  }
+
+  if (err instanceof multer.MulterError) {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      res.status(400).json({ message: "File too large. Maximum size is 10MB." });
+      return;
+    }
+    if (err.code === "LIMIT_UNEXPECTED_FILE") {
+      res.status(400).json({ message: "Unexpected file field." });
+      return;
+    }
+    res.status(400).json({ message: err.message });
+    return;
+  }
+
+  // Handle multer fileFilter errors (thrown as regular errors)
+  if (err.message && err.message.includes("Invalid file type")) {
+    res.status(400).json({ message: err.message });
+    return;
+  }
+
+  // Handle PostgreSQL unique constraint violations
+  if (err.message && err.message.includes("duplicate key value")) {
+    res.status(409).json({ message: "A record with this value already exists." });
+    return;
+  }
+
+  logger.error(err, "Unhandled error");
+  res.status(500).json({ message: "Internal server error" });
+}
+

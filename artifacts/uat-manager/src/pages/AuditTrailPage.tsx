@@ -258,9 +258,18 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
                           </p>
                         )}
 
-                        {entry.justification && entry.to_status === "PASSED_BY_AGREEMENT" && (
+                        {entry.justification && (
+                          entry.to_status === "PASSED_BY_AGREEMENT" ||
+                          entry.to_status === "PENDING_BIZ_ACCEPTANCE"
+                        ) && (
                           <p className="text-body-sm text-on-surface-variant/70 mt-1">
                             <span className="font-medium">Justification:</span> {entry.justification}
+                          </p>
+                        )}
+
+                        {entry.reason && entry.from_status === "PENDING_BIZ_ACCEPTANCE" && (
+                          <p className="text-body-sm text-on-surface-variant/70 mt-1">
+                            <span className="font-medium">Rejection reason:</span> {entry.reason}
                           </p>
                         )}
 

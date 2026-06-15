@@ -1,0 +1,4767 @@
+========================================
+FILE: artifacts\uat-manager\src\pages\TesterCasePage.tsx
+========================================
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "wouter";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { customFetch } from "../lib/api-client";
+import { getStoredUser } from "../lib/auth";
+import { CameraCapture } from "../components/CameraCapture";
+import {
+  BackBar,
+  EmptyState,
+  FilterTabs,
+  StatusChip,
+  progressStatusVariant,
+  type FilterTab,
+} from "../components/ui";
+import type {
+  TestRun,
+  TestCase,
+  TestStep,
+  Execution,
+  StepResult,
+} from "../types/api";
+
+/* ────────────────────────────────────────────────────────────────────
+   Types
+   ──────────────────────────────────────────────────────────────────── */
+
+type CaseProgress = "Not Started" | "In Progress" | "Completed";
+
+interface Draft {
+  stepId: number;
+  passed: boolean | null;
+  actual_result: string;
+  comments: string;
+  savedAt: string;
+}
+
+// Unified per-step entry. Used by both Guided and Quick wizards so the
+// source of truth lives in TesterCasePage and survives mode switches.
+export interface ExecutionEntry {
+  passed: boolean | null;
+  actual_result: string;
+  comments: string;
+}
+
+const EMPTY_ENTRY: ExecutionEntry = { passed: null, actual_result: "", comments: "" };
+
+type CaseFilter = "all" | "not_started" | "in_progress" | "completed";
+
+const PROGRESS_LABELS: Record<CaseProgress, string> = {
+  "Not Started": "Not Started",
+  "In Progress": "In Progress",
+  Completed: "Completed",
+};
+
+const PROGRESS_ICONS: Record<CaseProgress, string> = {
+  "Not Started": "radio_button_unchecked",
+  "In Progress": "autorenew",
+  Completed: "check_circle",
+};
+
+/* ────────────────────────────────────────────────────────────────────
+   Utilities
+   ──────────────────────────────────────────────────────────────────── */
+
+function draftKey(testRunId: number, testCaseId: number, stepId: number) {
+  return `draft_step_${testRunId}_${testCaseId}_${stepId}`;
+}
+
+function isFromToday(savedAt: string): boolean {
+  const d = new Date(savedAt);
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+
+function computeCaseProgress(
+  steps: { id: number }[],
+  stepResults: { step_id: number; passed: boolean | null; actual_result?: string | null }[],
+): CaseProgress {
+  if (steps.length === 0) return "Not Started";
+  const allHavePassFail = steps.every(s =>
+    stepResults.some(r => r.step_id === s.id && r.passed != null),
+  );
+  if (!allHavePassFail) {
+    const someHavePassFail = steps.some(s =>
+      stepResults.some(r => r.step_id === s.id && r.passed != null),
+    );
+    return someHavePassFail ? "In Progress" : "Not Started";
+  }
+  // All steps have pass/fail — verify failed steps have actual_result filled
+  const failedWithoutActual = stepResults.filter(
+    r => r.passed === false && (!r.actual_result || r.actual_result.trim() === ""),
+  );
+  if (failedWithoutActual.length > 0) return "In Progress";
+  return "Completed";
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Page entry — dispatches between selector and wizard
+   ──────────────────────────────────────────────────────────────────── */
+
+export function TesterCasePage({
+  params,
+}: {
+  params: { testRunId: string; scenarioId: string; testCaseId?: string };
+}) {
+  const [, navigate] = useLocation();
+  const testRunId = Number(params.testRunId);
+  const scenarioId = Number(params.scenarioId);
+  const testCaseId = params.testCaseId ? Number(params.testCaseId) : null;
+  const user = getStoredUser();
+
+  // Per-mount override of the mode (set by the in-page "Switch to ..." buttons).
+  // Resets automatically when the user navigates to a different test case.
+  const [modeOverride, setModeOverride] = useState<"guided" | "quick" | null>(null);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset override when test case changes
+    setModeOverride(null);
+  }, [testCaseId]);
+
+  useEffect(() => {
+    document.title = testCaseId ? "Execute Test Case | TestCaseHub" : "Test Cases | TestCaseHub";
+  }, [testCaseId]);
+
+  if (!testCaseId) {
+    return (
+      <TestCaseSelector
+        testRunId={testRunId}
+        scenarioId={scenarioId}
+        onBack={() => navigate(`/tester/run/${testRunId}`)}
+      />
+    );
+  }
+
+  const sessionMode: "guided" | "quick" =
+    (typeof window !== "undefined" && sessionStorage.getItem(`tester_mode_${user?.userId}`) === "quick")
+      ? "quick"
+      : "guided";
+  const mode = modeOverride ?? sessionMode;
+
+  const onModeChange = (next: "guided" | "quick") => {
+    sessionStorage.setItem(`tester_mode_${user?.userId}`, next);
+    setModeOverride(next);
+  };
+
+  if (mode === "quick") {
+    return (
+      <ExecutionEngine
+        mode="quick"
+        testRunId={testRunId}
+        scenarioId={scenarioId}
+        testCaseId={testCaseId}
+        onBack={() => navigate(`/tester/run/${testRunId}/scenario/${scenarioId}`)}
+        onModeChange={onModeChange}
+      />
+    );
+  }
+  return (
+    <ExecutionEngine
+      mode="guided"
+      testRunId={testRunId}
+      scenarioId={scenarioId}
+      testCaseId={testCaseId}
+      onBack={() => navigate(`/tester/run/${testRunId}/scenario/${scenarioId}`)}
+      onModeChange={onModeChange}
+    />
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Execution Engine — owns the shared state (entries, localResults,
+   hydration, sessionStorage sync) so the Guided and Quick wizards
+   always operate on the same source of truth. Switching modes
+   preserves every per-step Pass/Fail selection, actual_result text,
+   and comments.
+   ──────────────────────────────────────────────────────────────────── */
+
+function ExecutionEngine({
+  mode,
+  testRunId,
+  scenarioId,
+  testCaseId,
+  onBack,
+  onModeChange,
+}: {
+  mode: "guided" | "quick";
+  testRunId: number;
+  scenarioId: number;
+  testCaseId: number;
+  onBack: () => void;
+  onModeChange: (next: "guided" | "quick") => void;
+}) {
+  const user = getStoredUser();
+
+  const { data: testCase } = useQuery({
+    queryKey: ["test-case", testCaseId],
+    queryFn: () => customFetch<TestCase & { steps: TestStep[]; stepResults?: StepResult[] }>(`/test-cases/${testCaseId}`),
+    enabled: !!testCaseId,
+  });
+
+  const { data: testRun } = useQuery({
+    queryKey: ["test-run", testRunId],
+    queryFn: () => customFetch<TestRun>(`/test-runs/${testRunId}`),
+    enabled: !!testRunId,
+    staleTime: 0,
+  });
+
+  const { data: execution } = useQuery({
+    queryKey: ["tester-execution", testRunId, testCaseId],
+    queryFn: async () => {
+      const run = await customFetch<{ executions?: Execution[] }>(`/test-runs/${testRunId}`);
+      const existing = run.executions?.find((e) => e.test_case_id === testCaseId);
+      if (existing) return existing;
+      return customFetch<Execution>(`/test-runs/${testRunId}/test-cases/${testCaseId}/execute`, {
+        method: "POST",
+        body: JSON.stringify({ tester_id: user!.userId, tester_name: user!.username }),
+      });
+    },
+    enabled: !!testCaseId && !!user,
+  });
+
+  const steps = useMemo(() => testCase?.steps ?? [], [testCase]);
+
+  // Is the current scenario locked because the tester already signed off?
+  const isReadOnly = useMemo(() => {
+    if (!testRun?.useCases) return false;
+    const uc = testRun.useCases.find(u => u.use_case_id === scenarioId);
+    return uc?.tester_sign_off === true;
+  }, [testRun, scenarioId]);
+
+  const persistedStepResults = useMemo(() => {
+    const map = new Map<number, StepResult>();
+    (execution?.stepResults ?? []).forEach((r) => map.set(r.step_id, r));
+    (testCase?.stepResults ?? []).forEach((r) => map.set(r.step_id, r));
+    return map;
+  }, [execution?.stepResults, testCase?.stepResults]);
+
+  // Per-step entries — the single source of truth for both wizards.
+  const [entries, setEntries] = useState<Map<number, ExecutionEntry>>(new Map());
+  // Optimistic pass/fail per step — survives mode switches.
+  const [localResults, setLocalResults] = useState<Map<number, boolean>>(new Map());
+  // Tracks in-flight step-result mutations so we can block navigation while saves are pending.
+  const pendingMutations = useRef(0);
+
+  // Hydrate entries once from sessionStorage drafts (today only),
+  // then from the persisted step results in the API response.
+  useEffect(() => {
+    if (steps.length === 0) return;
+    const hydrated = new Map<number, ExecutionEntry>();
+    steps.forEach((s) => {
+      const key = draftKey(testRunId, testCaseId, s.id);
+      const stored = sessionStorage.getItem(key);
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored) as Draft;
+          if (parsed.savedAt && isFromToday(parsed.savedAt)) {
+            hydrated.set(s.id, {
+              passed: parsed.passed,
+              actual_result: parsed.actual_result,
+              comments: parsed.comments,
+            });
+            return;
+          }
+          sessionStorage.removeItem(key);
+        } catch {
+          sessionStorage.removeItem(key);
+        }
+      }
+      const persisted = persistedStepResults.get(s.id);
+      if (persisted) {
+        hydrated.set(s.id, {
+          passed: persisted.passed,
+          actual_result: persisted.actual_result ?? "",
+          comments: persisted.comments ?? "",
+        });
+      }
+    });
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate from session storage and persisted step results
+    setEntries(hydrated);
+  }, [steps, testRunId, testCaseId, persistedStepResults]);
+
+  // Persist drafts to sessionStorage (debounced, but writes happen
+  // synchronously before the next render, so a quick mode switch
+  // never loses data).
+  useEffect(() => {
+    if (entries.size === 0) return;
+    const timeoutId = setTimeout(() => {
+      steps.forEach((s) => {
+        const e = entries.get(s.id);
+        if (!e) return;
+        if (e.passed === null && !e.actual_result && !e.comments) return;
+        const key = draftKey(testRunId, testCaseId, s.id);
+        sessionStorage.setItem(
+          key,
+          JSON.stringify({
+            stepId: s.id,
+            passed: e.passed,
+            actual_result: e.actual_result,
+            comments: e.comments,
+            savedAt: new Date().toISOString(),
+          })
+        );
+      });
+    }, 150);
+    return () => clearTimeout(timeoutId);
+  }, [entries, steps, testRunId, testCaseId]);
+
+  // Warn before browser refresh/close when mutations are in-flight.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (pendingMutations.current > 0) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
+
+  const setEntry = (stepId: number, patch: Partial<ExecutionEntry>) => {
+    setEntries((prev) => {
+      const next = new Map(prev);
+      const current = next.get(stepId) ?? { ...EMPTY_ENTRY };
+      next.set(stepId, { ...current, ...patch });
+      return next;
+    });
+    // Keep localResults in sync with the draft's `passed` so the Step wizard
+    // (which reads from stepResultsByStep = persisted + localResults) reflects
+    // Pass/Fail clicks made in Quick mode.
+    if (typeof patch.passed === "boolean") {
+      setLocalResults((prev) => {
+        const next = new Map(prev);
+        next.set(stepId, patch.passed!);
+        return next;
+      });
+    }
+  };
+
+  const removeDraft = (stepId: number) => {
+    setEntries((prev) => {
+      if (!prev.has(stepId)) return prev;
+      const next = new Map(prev);
+      next.delete(stepId);
+      return next;
+    });
+    const key = draftKey(testRunId, testCaseId, stepId);
+    sessionStorage.removeItem(key);
+  };
+
+  const guardedOnBack = () => {
+    if (pendingMutations.current > 0) {
+      toast.warning("Please wait — saving your results...");
+      return;
+    }
+    onBack();
+  };
+
+  const sharedProps = {
+    testRunId,
+    scenarioId,
+    testCaseId,
+    testCase,
+    steps,
+    execution,
+    persistedStepResults,
+    entries,
+    setEntries,
+    setEntry,
+    localResults,
+    setLocalResults,
+    removeDraft,
+    onBack: guardedOnBack,
+    onModeChange,
+    pendingMutations,
+    isReadOnly,
+  };
+
+  if (mode === "quick") {
+    return <QuickWizard {...sharedProps} />;
+  }
+  return <StepWizard {...sharedProps} />;
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Level 2: Test Case Selector
+   ──────────────────────────────────────────────────────────────────── */
+
+function TestCaseSelector({
+  testRunId,
+  scenarioId,
+  onBack,
+}: {
+  testRunId: number;
+  scenarioId: number;
+  onBack: () => void;
+}) {
+  const [, navigate] = useLocation();
+  const [mode, setMode] = useState<"guided" | "quick">(() => {
+    const stored = sessionStorage.getItem(`tester_mode_${getStoredUser()?.userId}`);
+    return stored === "quick" ? "quick" : "guided";
+  });
+  const [filter, setFilter] = useState<CaseFilter>("all");
+
+  useEffect(() => {
+    sessionStorage.setItem(`tester_mode_${getStoredUser()?.userId}`, mode);
+  }, [mode]);
+
+  const { data: testRun } = useQuery({
+    queryKey: ["test-run", testRunId],
+    queryFn: () => customFetch<TestRun>(`/test-runs/${testRunId}`),
+    staleTime: 0, // always refetch on mount so progress reflects latest submissions
+  });
+
+  const { data: useCase, isLoading } = useQuery({
+    queryKey: ["use-case", scenarioId],
+    queryFn: () =>
+      customFetch<{ id: number; name: string; code: string; testCases: (TestCase & { steps?: TestStep[]; stepResults?: StepResult[] })[] }>(
+        `/use-cases/${scenarioId}`
+      ),
+    staleTime: 0,
+  });
+
+  const testCases = useMemo(() => useCase?.testCases ?? [], [useCase]);
+
+  // Build a reliable testCaseId → progress map.
+  // If the execution has been submitted (overall_result set), use that directly.
+  // Otherwise compute from step results so in-progress work is reflected.
+  const caseProgressById = useMemo(() => {
+    const map = new Map<number, CaseProgress>();
+    const execs = testRun?.executions ?? [];
+    for (const exec of execs) {
+      const tc = testCases.find(t => t.id === exec.test_case_id);
+      if (!tc) continue;
+      let progress: CaseProgress;
+      if (exec.overall_result != null) {
+        // Execution was submitted — it's definitively Completed
+        progress = "Completed";
+      } else {
+        progress = computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);
+      }
+      map.set(exec.test_case_id, progress);
+    }
+    return map;
+  }, [testRun?.executions, testCases]);
+
+  const caseProgresses = useMemo(
+    () => testCases.map((tc) => caseProgressById.get(tc.id) ?? "Not Started"),
+    [testCases, caseProgressById]
+  );
+  const summary = useMemo(() => {
+    const total = testCases.length;
+    const completed = caseProgresses.filter((s) => s === "Completed").length;
+    const inProgress = caseProgresses.filter((s) => s === "In Progress").length;
+    const notStarted = caseProgresses.filter((s) => s === "Not Started").length;
+    return { total, completed, inProgress, notStarted, progress: total > 0 ? Math.round((completed / total) * 100) : 0 };
+  }, [testCases, caseProgresses]);
+
+  const filteredIndices = useMemo(() => {
+    return testCases
+      .map((tc, i) => ({ tc, progress: caseProgresses[i], index: i }))
+      .filter(({ progress }) => {
+        if (filter === "all") return true;
+        if (filter === "not_started") return progress === "Not Started";
+        if (filter === "in_progress") return progress === "In Progress";
+        if (filter === "completed") return progress === "Completed";
+        return true;
+      });
+  }, [testCases, caseProgresses, filter]);
+
+  const filterTabs: FilterTab<CaseFilter>[] = [
+    { key: "all", label: "All", count: testCases.length, icon: "view_module" },
+    { key: "not_started", label: "Not Started", count: summary.notStarted, icon: "radio_button_unchecked" },
+    { key: "in_progress", label: "In Progress", count: summary.inProgress, icon: "autorenew" },
+    { key: "completed", label: "Completed", count: summary.completed, icon: "check_circle" },
+  ];
+
+  return (
+    <div className="space-y-lg max-w-5xl mx-auto w-full">
+      <BackBar
+        back={{ label: "Scenarios", href: `/tester/run/${testRunId}` }}
+        current={useCase?.code ?? `Scenario #${scenarioId}`}
+        context={useCase?.name}
+        onBack={onBack}
+      />
+
+      <header className="bg-surface-container-lowest border border-outline-variant rounded-xl p-lg space-y-md">
+        <div className="space-y-xs">
+          <p className="text-label-sm uppercase tracking-widest font-bold text-on-surface-variant">
+            {testRun?.project?.name ?? "Project"} • {testRun?.name ?? "Test Run"}
+          </p>
+          <h1 className="font-display-md text-display-md text-primary leading-tight">
+            {useCase?.name ?? "Test Scenario"}
+          </h1>
+          <div className="flex items-center gap-sm pt-sm">
+            <Stat label="Total" value={summary.total} />
+            <Stat label="Completed" value={summary.completed} tone="success" />
+            <Stat label="In Progress" value={summary.inProgress} tone="warning" />
+            <Stat label="Not Started" value={summary.notStarted} tone="neutral" />
+          </div>
+          <div className="space-y-xs pt-sm">
+            <div className="flex items-center justify-between text-label-sm">
+              <span className="font-bold uppercase tracking-wider text-on-surface-variant">Progress</span>
+              <span>{summary.completed} / {summary.total} cases</span>
+            </div>
+            <div className="w-full bg-surface-container-high rounded-full h-2 overflow-hidden">
+              <div
+                className="bg-secondary h-full rounded-full transition-all duration-500"
+                style={{ width: `${summary.progress}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-sm pt-sm border-t border-outline-variant/50">
+          <div>
+            <p className="text-label-sm uppercase tracking-wider font-bold text-on-surface-variant">
+              Execution mode
+            </p>
+            <p className="text-body-sm text-on-surface-variant mt-0.5">
+              Choose how testers work through this scenario.
+            </p>
+          </div>
+          <div role="tablist" className="inline-flex items-center gap-xs bg-surface-container p-xs rounded-lg shrink-0">
+            {(["guided", "quick"] as const).map((m) => (
+              <button
+                key={m}
+                role="tab"
+                aria-selected={mode === m}
+                onClick={() => setMode(m)}
+                className={`px-md py-xs rounded-md font-label-md text-label-sm transition-all ${
+                  mode === m
+                    ? "bg-surface-container-lowest text-secondary shadow-sm"
+                    : "text-on-surface-variant hover:text-on-surface"
+                }`}
+              >
+                {m === "guided" ? "Guided" : "Quick"}
+              </button>
+            ))}
+          </div>
+        </div>
+      </header>
+
+      {isLoading ? (
+        <div className="space-y-sm">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="h-24 bg-surface-container-low border border-outline-variant rounded-xl animate-pulse" />
+          ))}
+        </div>
+      ) : testCases.length === 0 ? (
+        <EmptyState
+          icon="inbox"
+          title="No test cases in this scenario"
+          description="The Test Lead has not added any test cases to this scenario yet."
+        />
+      ) : (
+        <>
+          <div className="flex items-center justify-between gap-md flex-wrap">
+            <FilterTabs<CaseFilter> tabs={filterTabs} active={filter} onChange={setFilter} />
+            <p className="text-label-sm text-on-surface-variant">
+              Showing {filteredIndices.length} of {testCases.length}
+            </p>
+          </div>
+
+          {filteredIndices.length === 0 ? (
+            <EmptyState
+              icon="filter_alt_off"
+              title="Nothing matches this filter"
+              description="Try a different filter to see more test cases."
+            />
+          ) : (
+            <div className="space-y-sm">
+              {filteredIndices.map(({ tc, progress }) => {
+                const actionLabel = progress === "Completed" ? "Review" : progress === "In Progress" ? "Continue" : "Start";
+                return (
+                  <article
+                    key={tc.id}
+                    className="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden hover:shadow-md transition-all"
+                  >
+                    <button
+                      onClick={() => navigate(`/tester/run/${testRunId}/scenario/${scenarioId}/case/${tc.id}`)}
+                      className="w-full p-md flex items-start gap-md text-left"
+                    >
+                      <div className="flex-1 min-w-0 space-y-xs">
+                        <div className="flex items-center gap-sm flex-wrap">
+                          <span className="text-label-md font-label-md text-secondary font-bold">
+                            [{tc.case_number}]
+                          </span>
+                          {tc.test_type && (
+                            <span className="text-[10px] uppercase tracking-wider font-bold text-on-secondary-container bg-secondary-container px-2 py-0.5 rounded-full">
+                              {tc.test_type}
+                            </span>
+                          )}
+                          {tc.estimated_minutes != null && (
+                            <span className="text-label-sm text-on-surface-variant inline-flex items-center gap-1">
+                              <span className="material-symbols-outlined text-[14px]">schedule</span>
+                              ~{tc.estimated_minutes}m
+                            </span>
+                          )}
+                          <StatusChip variant={progressStatusVariant[progress]} icon={PROGRESS_ICONS[progress]}>
+                            {PROGRESS_LABELS[progress]}
+                          </StatusChip>
+                        </div>
+                        <p className="font-title-sm text-title-sm text-on-surface leading-snug">
+                          {tc.title}
+                        </p>
+                        {tc.acceptance_criteria && (
+                          <p className="text-body-sm text-on-surface-variant line-clamp-2">
+                            <span className="font-bold uppercase tracking-wider text-[10px]">Acceptance: </span>
+                            {tc.acceptance_criteria}
+                          </p>
+                        )}
+                      </div>
+                      <div className="shrink-0 flex items-center gap-sm">
+                        <span className="hidden sm:inline-flex items-center gap-xs px-md py-1.5 rounded-lg bg-primary text-on-primary text-label-sm font-label-md hover:opacity-90 transition-all">
+                          {actionLabel}
+                          <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
+                        </span>
+                        <span className="material-symbols-outlined text-on-surface-variant sm:hidden">chevron_right</span>
+                      </div>
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, tone }: { label: string; value: number; tone?: "success" | "warning" | "error" | "neutral" }) {
+  const toneClass =
+    tone === "success" ? "text-green-700" :
+    tone === "warning" ? "text-amber-700" :
+    tone === "error" ? "text-red-700" :
+    "text-on-surface";
+  return (
+    <div className="flex items-center gap-xs">
+      <span className={`font-headline-sm text-headline-sm ${toneClass}`}>{value}</span>
+      <span className="text-label-sm uppercase tracking-wider font-bold text-on-surface-variant">{label}</span>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Level 3: Step Wizard
+   ──────────────────────────────────────────────────────────────────── */
+
+function StepWizard({
+  testRunId,
+  scenarioId,
+  testCaseId,
+  testCase,
+  steps,
+  execution,
+  entries,
+  setEntry,
+  localResults,
+  setLocalResults,
+  removeDraft,
+  onBack,
+  onModeChange,
+  pendingMutations,
+  isReadOnly,
+}: {
+  testRunId: number;
+  scenarioId: number;
+  testCaseId: number;
+  testCase: (TestCase & { steps: TestStep[]; stepResults?: StepResult[] }) | undefined;
+  steps: TestStep[];
+  execution: Execution | undefined;
+  entries: Map<number, ExecutionEntry>;
+  setEntries: React.Dispatch<React.SetStateAction<Map<number, ExecutionEntry>>>;
+  setEntry: (stepId: number, patch: Partial<ExecutionEntry>) => void;
+  localResults: Map<number, boolean>;
+  setLocalResults: React.Dispatch<React.SetStateAction<Map<number, boolean>>>;
+  removeDraft: (stepId: number) => void;
+  onBack: () => void;
+  onModeChange: (next: "guided" | "quick") => void;
+  pendingMutations: React.MutableRefObject<number>;
+  isReadOnly: boolean;
+}) {
+  const [, navigate] = useLocation();
+  const queryClient = useQueryClient();
+  const [stepIndex, setStepIndex] = useState(0);
+  const [showSidebar, setShowSidebar] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const currentStep = steps[stepIndex];
+  const entry = currentStep ? entries.get(currentStep.id) : undefined;
+
+  // Merge persisted step results with optimistic local ones and any draft
+  // entries (highest priority — the user's in-progress Pass/Fail click).
+  // Including `entries` here is what keeps the Pass button + sidebar in sync
+  // with the Quick wizard, which reads `entries.passed` first.
+  const stepResultsByStep = useMemo(() => {
+    const map = new Map<number, boolean | null>();
+    (execution?.stepResults ?? []).forEach((r) => map.set(r.step_id, r.passed));
+    (testCase?.stepResults ?? []).forEach((r) => map.set(r.step_id, r.passed));
+    localResults.forEach((v, k) => map.set(k, v));
+    entries.forEach((entry, k) => {
+      if (entry.passed !== null) {
+        map.set(k, entry.passed);
+      }
+    });
+    return map;
+  }, [execution?.stepResults, testCase?.stepResults, localResults, entries]);
+
+  const submitStepMut = useMutation({
+    mutationFn: (data: { passed: boolean; actual_result: string; comments: string }) =>
+      customFetch(`/executions/${execution!.id}/steps/${currentStep!.id}/result`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onMutate: (vars) => {
+      pendingMutations.current++;
+      setLocalResults((prev) => {
+        const next = new Map(prev);
+        next.set(currentStep!.id, vars.passed);
+        return next;
+      });
+    },
+    onSuccess: (_data, vars) => {
+      removeDraft(currentStep!.id);
+      toast.success(`Step ${stepIndex + 1} recorded as ${vars.passed ? "Pass" : "Fail"}`);
+      queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+      queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+      queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+    onSettled: () => { pendingMutations.current--; },
+  });
+
+  // Is the current step recorded? (used to enable Next)
+  const currentStepRecorded =
+    stepResultsByStep.get(currentStep?.id ?? -1) != null;
+
+  // Are all steps recorded? (used to enable Submit Case on the last step)
+  const allStepsRecorded = useMemo(() => {
+    if (steps.length === 0) return false;
+    return steps.every((s) => stepResultsByStep.get(s.id) != null);
+  }, [steps, stepResultsByStep]);
+
+  // Check if all failed steps have actual_result filled
+  const validateFailedSteps = useMemo(() => {
+    const failedSteps: string[] = [];
+    steps.forEach((s) => {
+      const e = entries.get(s.id);
+      const persisted = execution?.stepResults?.find(r => r.step_id === s.id);
+      const passed = e?.passed ?? localResults.get(s.id) ?? persisted?.passed ?? null;
+      if (passed === false) {
+        const actual = e?.actual_result ?? persisted?.actual_result ?? "";
+        if (!actual.trim()) {
+          failedSteps.push(`Step ${s.step_number}: "What actually happened" is required when marking a step as Fail`);
+        }
+      }
+    });
+    return failedSteps;
+  }, [steps, entries, localResults, execution]);
+
+  // Check if execution already has an overall_result (was previously submitted)
+  const previouslySubmitted = execution?.overall_result != null;
+
+  if (!testCase) {
+    return (
+      <div className="max-w-2xl mx-auto py-2xl text-center">
+        <div className="w-10 h-10 mx-auto border-4 border-secondary border-t-transparent rounded-full animate-spin" />
+        <p className="mt-md text-on-surface-variant">Loading test case…</p>
+      </div>
+    );
+  }
+
+  if (!currentStep) {
+    return (
+      <div className="max-w-2xl mx-auto py-2xl">
+        <EmptyState
+          icon="inbox"
+          title="This test case has no steps"
+          description="Ask your Test Lead to add at least one step before executing."
+          action={
+            <button
+              onClick={onBack}
+              className="inline-flex items-center gap-xs px-lg py-sm bg-primary text-on-primary rounded-lg font-label-md hover:opacity-90 transition-all"
+            >
+              <span className="material-symbols-outlined text-[16px]">arrow_back</span>
+              Back to Cases
+            </button>
+          }
+        />
+      </div>
+    );
+  }
+
+  const overallProgress = ((stepIndex + 1) / steps.length) * 100;
+  const canPrev = stepIndex > 0;
+  const isLast = stepIndex === steps.length - 1;
+
+  return (
+    <div className="space-y-md max-w-7xl mx-auto w-full">
+      {isReadOnly && (
+        <div className="bg-gray-100 border border-gray-300 rounded-xl p-md flex items-center gap-sm">
+          <span className="material-symbols-outlined text-gray-500">lock</span>
+          <span className="text-label-md text-gray-600">
+            This test case is read-only — you have already submitted this test run.
+          </span>
+        </div>
+      )}
+      <BackBar
+        back={{ label: "Cases", href: `/tester/run/${testRunId}/scenario/${scenarioId}` }}
+        current={`[${testCase.case_number}] ${testCase.title}`}
+        context={`Step ${stepIndex + 1} of ${steps.length}`}
+        onBack={onBack}
+        right={
+          <div className="flex items-center gap-xs">
+            <button
+              onClick={() => onModeChange("quick")}
+              className="inline-flex items-center gap-xs px-sm py-xs text-label-sm text-on-surface-variant hover:text-on-surface border border-outline-variant rounded-md hover:bg-surface-container-low transition-colors"
+            >
+              <span className="material-symbols-outlined text-[16px]">bolt</span>
+              Switch to Quick
+            </button>
+            <button
+              onClick={() => setShowSidebar((s) => !s)}
+              className="inline-flex items-center gap-xs px-sm py-xs text-label-sm text-on-surface-variant hover:text-on-surface border border-outline-variant rounded-md hover:bg-surface-container-low transition-colors"
+              aria-pressed={showSidebar}
+            >
+              <span className="material-symbols-outlined text-[16px]">
+                {showSidebar ? "view_list" : "view_headline"}
+              </span>
+              {showSidebar ? "Hide steps" : "Show steps"}
+            </button>
+          </div>
+        }
+      />
+
+      <div className="grid gap-md" style={{ gridTemplateColumns: showSidebar ? "minmax(0, 280px) minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+        {showSidebar && (
+          <StepSidebar
+            steps={steps}
+            currentIndex={stepIndex}
+            stepResults={stepResultsByStep}
+            onJump={(i) => setStepIndex(i)}
+          />
+        )}
+
+        <div className="space-y-md min-w-0">
+          {/* Progress bar */}
+          <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-md">
+            <div className="flex items-center justify-between text-label-sm mb-xs">
+              <span className="font-bold uppercase tracking-wider text-on-surface-variant">
+                Overall progress
+              </span>
+              <span className="font-bold text-on-surface">
+                {stepIndex + 1} / {steps.length} steps
+              </span>
+            </div>
+            <div className="w-full bg-surface-container-high rounded-full h-2 overflow-hidden">
+              <div
+                className="bg-secondary h-full rounded-full transition-all duration-500"
+                style={{ width: `${overallProgress}%` }}
+              />
+            </div>
+          </div>
+
+          {testCase.acceptance_criteria && (
+            <div className="bg-secondary-container border-l-4 border-secondary rounded-xl p-md flex gap-md">
+              <div className="shrink-0 w-8 h-8 rounded-full bg-secondary text-on-secondary flex items-center justify-center">
+                <span className="material-symbols-outlined text-[18px]">flag</span>
+              </div>
+              <div className="min-w-0">
+                <p className="text-label-sm uppercase tracking-wider font-bold text-on-secondary-container mb-1">
+                  Acceptance criteria
+                </p>
+                <p className="text-body-base text-on-secondary-container">
+                  {testCase.acceptance_criteria}
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-lg space-y-md">
+            <header className="flex items-center gap-md pb-md border-b border-outline-variant">
+              <div className="shrink-0 w-12 h-12 rounded-full bg-primary text-on-primary flex items-center justify-center font-headline-md text-headline-md">
+                {stepIndex + 1}
+              </div>
+              <div className="min-w-0">
+                <p className="text-label-sm uppercase tracking-wider font-bold text-on-surface-variant">
+                  Step {stepIndex + 1} of {steps.length}
+                </p>
+                <h2 className="font-title-sm text-title-sm text-on-surface">
+                  Execute the following action
+                </h2>
+              </div>
+            </header>
+
+            <p className="text-body-lg text-on-surface leading-relaxed font-body-base">
+              {currentStep.instruction}
+            </p>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-md">
+              <p className="text-label-sm uppercase tracking-wider font-bold text-amber-800 mb-1 inline-flex items-center gap-1">
+                <span className="material-symbols-outlined text-[14px]">data_object</span>
+                Test data
+              </p>
+              <p className={`text-body-base whitespace-pre-wrap ${currentStep.test_data ? "text-amber-900" : "text-amber-700/60 italic"}`}>
+                {currentStep.test_data || "Not provided"}
+              </p>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-md">
+              <p className="text-label-sm uppercase tracking-wider font-bold text-blue-800 mb-1 inline-flex items-center gap-1">
+                <span className="material-symbols-outlined text-[14px]">target</span>
+                Expected result
+              </p>
+              <p className={`text-body-base whitespace-pre-wrap ${currentStep.expected_result ? "text-blue-900" : "text-blue-700/60 italic"}`}>
+                {currentStep.expected_result || "Not provided"}
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-md space-y-md">
+            <div>
+              <label className="text-label-md font-label-md text-on-surface mb-xs block">
+                What actually happened?
+              </label>
+              <textarea
+                value={entry?.actual_result ?? ""}
+                onChange={(e) => setEntry(currentStep.id, { actual_result: e.target.value })}
+                rows={3}
+                placeholder="Describe what you observed while executing this step…"
+                disabled={isReadOnly}
+                className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base text-on-surface placeholder:text-on-surface-variant/60 focus:ring-2 focus:ring-secondary/20 focus:border-secondary outline-none transition-all resize-y disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-gray-50"
+              />
+            </div>
+
+            {entry && (entry.actual_result || entry.comments) && (
+              <div className="bg-amber-100 border border-amber-300 rounded-lg p-sm flex items-center justify-between text-label-sm">
+                <span className="text-amber-900 inline-flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[14px]">schedule</span>
+                  Draft saved automatically
+                </span>
+                <button
+                  onClick={() => {
+                    removeDraft(currentStep.id);
+                  }}
+                  className="text-amber-900 hover:text-amber-700 font-bold underline"
+                >
+                  Clear
+                </button>
+              </div>
+            )}
+
+            {!isReadOnly && (
+              <CameraCapture
+                key={currentStep.id}
+                onUploaded={(url) => {
+                  const prev = entry?.comments ?? "";
+                  setEntry(currentStep.id, { comments: `${prev}\n[photo: ${url}]` });
+                }}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Sticky action bar */}
+      <div className="sticky bottom-0 left-0 right-0 bg-surface-container-lowest border-t border-outline-variant -mx-lg px-lg py-md shadow-[0_-4px_12px_rgba(0,0,0,0.04)]">
+        <div className="max-w-7xl mx-auto flex items-center gap-sm flex-wrap">
+          <button
+            disabled={!canPrev}
+            onClick={() => setStepIndex((i) => Math.max(0, i - 1))}
+            className="inline-flex items-center gap-xs px-lg py-sm border border-outline-variant text-on-surface rounded-lg font-label-md text-label-sm hover:bg-surface-container-low transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+            Previous
+          </button>
+
+          <div className="flex-1" />
+
+          {/* Pass / Fail segmented control — neutral until selected */}
+          <div
+            role="radiogroup"
+            aria-label="Step result"
+            className="inline-flex items-center bg-surface-container rounded-lg p-0.5"
+          >
+            <button
+              role="radio"
+              aria-checked={stepResultsByStep.get(currentStep!.id) === false}
+              onClick={() => {
+                if (isReadOnly) return;
+                setEntry(currentStep!.id, { passed: false });
+                submitStepMut.mutate({
+                  passed: false,
+                  actual_result: entry?.actual_result ?? "",
+                  comments: entry?.comments ?? "",
+                });
+              }}
+              disabled={submitStepMut.isPending || isReadOnly}
+              className={`inline-flex items-center gap-xs px-lg py-sm rounded-md font-label-md text-label-sm transition-all ${
+                stepResultsByStep.get(currentStep!.id) === false
+                  ? "bg-error text-on-error shadow-sm"
+                  : "text-on-surface hover:bg-surface-container-low"
+              } disabled:opacity-50`}
+            >
+              <span className="material-symbols-outlined text-[18px]">
+                {stepResultsByStep.get(currentStep!.id) === false ? "cancel" : "circle"}
+              </span>
+              Fail
+            </button>
+            <button
+              role="radio"
+              aria-checked={stepResultsByStep.get(currentStep!.id) === true}
+              onClick={() => {
+                if (isReadOnly) return;
+                setEntry(currentStep!.id, { passed: true });
+                submitStepMut.mutate({
+                  passed: true,
+                  actual_result: entry?.actual_result ?? "",
+                  comments: entry?.comments ?? "",
+                });
+              }}
+              disabled={submitStepMut.isPending || isReadOnly}
+              className={`inline-flex items-center gap-xs px-lg py-sm rounded-md font-label-md text-label-sm transition-all ${
+                stepResultsByStep.get(currentStep!.id) === true
+                  ? "bg-green-600 text-white shadow-sm"
+                  : "text-on-surface hover:bg-surface-container-low"
+              } disabled:opacity-50`}
+            >
+              <span className="material-symbols-outlined text-[18px]">
+                {stepResultsByStep.get(currentStep!.id) === true ? "check_circle" : "circle"}
+              </span>
+              Pass
+            </button>
+          </div>
+
+          {/* Next / Submit Case */}
+          {isLast ? (
+            <button
+              onClick={async () => {
+                if (!allStepsRecorded || !execution || isSubmitting) return;
+                if (validateFailedSteps.length > 0) {
+                  toast.error(validateFailedSteps[0]);
+                  return;
+                }
+                setIsSubmitting(true);
+
+                // Snapshot the full result set from local state before any mutations
+                const stepSnapshot = steps.map((s) => {
+                  const e = entries.get(s.id);
+                  const persisted = execution.stepResults?.find((r) => r.step_id === s.id);
+                  return {
+                    stepId: s.id,
+                    passed: e?.passed ?? persisted?.passed ?? null,
+                    actual_result: e?.actual_result ?? persisted?.actual_result ?? "",
+                    comments: e?.comments ?? persisted?.comments ?? "",
+                    needsSave: entries.has(s.id),
+                  };
+                });
+
+                const anyFailed = stepSnapshot.some((r) => r.passed === false);
+
+                try {
+                  // 1. Re-save step results so the latest actual_result is persisted
+                  for (const snap of stepSnapshot) {
+                    if (!snap.needsSave) continue;
+                    await customFetch(`/executions/${execution.id}/steps/${snap.stepId}/result`, {
+                      method: "POST",
+                      body: JSON.stringify({
+                        passed: snap.passed,
+                        actual_result: snap.actual_result,
+                        comments: snap.comments,
+                      }),
+                    });
+                  }
+
+                  // 2. Mark execution as completed
+                  await customFetch(`/executions/${execution.id}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({
+                      status: "completed",
+                      overall_result: anyFailed ? "failed" : "passed",
+                    }),
+                  });
+
+                  // 3. Clear drafts
+                  steps.forEach((s) => removeDraft(s.id));
+
+                  toast.success(previouslySubmitted ? "Results updated" : "Test case saved");
+                  await queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+                  queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+                  queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+                  queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
+                  navigate(`/tester/run/${testRunId}/scenario/${scenarioId}`);
+                } catch (err) {
+                  toast.error(err instanceof Error ? err.message : "Failed to save case");
+                } finally {
+                  setIsSubmitting(false);
+                }
+              }}
+              disabled={!allStepsRecorded || isSubmitting || isReadOnly}
+              className="inline-flex items-center gap-xs px-xl py-sm bg-primary text-on-primary rounded-lg font-label-md text-label-md hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              title={
+                !allStepsRecorded
+                  ? "Record a result for every step before submitting"
+                  : validateFailedSteps.length > 0
+                    ? "Fill in 'What actually happened' for failed steps"
+                    : undefined
+              }
+            >
+              {isSubmitting ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-on-primary border-t-transparent rounded-full animate-spin" />
+                  Submitting…
+                </>
+              ) : (
+                <>
+                  <span className="material-symbols-outlined text-[18px]">check</span>
+                  {previouslySubmitted ? "Update Results" : "Submit Case"}
+                </>
+              )}
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                // Validate current step before advancing
+                if (currentStepRecorded) {
+                  const entry = entries.get(currentStep!.id);
+                  const persisted = execution?.stepResults?.find(r => r.step_id === currentStep!.id);
+                  const passed = entry?.passed ?? persisted?.passed ?? null;
+                  if (passed === false) {
+                    const actual = entry?.actual_result ?? persisted?.actual_result ?? "";
+                    if (!actual.trim()) {
+                      toast.error('Please describe "What actually happened" before continuing');
+                      return;
+                    }
+                  }
+                }
+                setStepIndex((i) => Math.min(steps.length - 1, i + 1));
+              }}
+              disabled={!currentStepRecorded}
+              className="inline-flex items-center gap-xs px-xl py-sm bg-primary text-on-primary rounded-lg font-label-md text-label-md hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              title={!currentStepRecorded ? "Mark this step as Pass or Fail before continuing" : undefined}
+            >
+              Next
+              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
+            </button>
+          )}
+        </div>
+        {!currentStepRecorded && (
+          <p className="max-w-7xl mx-auto mt-sm text-label-sm text-on-surface-variant text-center">
+            Mark this step as <span className="font-bold text-on-surface">Pass</span> or <span className="font-bold text-on-surface">Fail</span> to continue.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Step Sidebar
+   ──────────────────────────────────────────────────────────────────── */
+
+function StepSidebar({
+  steps,
+  currentIndex,
+  stepResults,
+  onJump,
+}: {
+  steps: TestStep[];
+  currentIndex: number;
+  onJump: (index: number) => void;
+  stepResults: Map<number, boolean | null>;
+}) {
+  return (
+    <aside className="bg-surface-container-lowest border border-outline-variant rounded-xl p-md self-start sticky top-md max-h-[calc(100vh-2rem)] overflow-y-auto">
+      <h2 className="text-label-md font-label-md uppercase tracking-wider font-bold text-on-surface-variant mb-sm px-sm">
+        Steps ({steps.length})
+      </h2>
+      <ol className="space-y-xs">
+        {steps.map((s, i) => {
+          const isCurrent = i === currentIndex;
+          const result = stepResults.get(s.id);
+          const isPassed = result === true;
+          const isFailed = result === false;
+          return (
+            <li key={s.id}>
+              <button
+                onClick={() => onJump(i)}
+                className={`w-full text-left p-sm rounded-lg flex items-start gap-sm transition-all ${
+                  isCurrent
+                    ? "bg-secondary-container text-on-secondary-container"
+                    : "hover:bg-surface-container-low text-on-surface"
+                }`}
+              >
+                <span
+                  className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-label-sm font-bold ${
+                    isPassed ? "bg-green-600 text-white" :
+                    isFailed ? "bg-error text-on-error" :
+                    isCurrent ? "bg-primary text-on-primary" :
+                    "bg-surface-container-high text-on-surface-variant"
+                  }`}
+                >
+                  {isPassed ? (
+                    <span className="material-symbols-outlined text-[14px]">check</span>
+                  ) : isFailed ? (
+                    <span className="material-symbols-outlined text-[14px]">close</span>
+                  ) : (
+                    i + 1
+                  )}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <p className={`text-label-sm line-clamp-2 ${isCurrent ? "font-bold" : ""}`}>
+                    {s.instruction}
+                  </p>
+                  {isCurrent && (
+                    <p className="text-[10px] uppercase tracking-wider font-bold mt-1 opacity-80">
+                      Current
+                    </p>
+                  )}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+    </aside>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Level 3 (Quick mode): all steps on one scrollable page
+   ──────────────────────────────────────────────────────────────────── */
+
+function QuickWizard({
+  testRunId,
+  scenarioId,
+  testCaseId,
+  testCase,
+  steps,
+  execution,
+  entries,
+  setEntry,
+  localResults,
+  setLocalResults,
+  removeDraft,
+  onBack,
+  onModeChange,
+  pendingMutations,
+  isReadOnly,
+}: {
+  testRunId: number;
+  scenarioId: number;
+  testCaseId: number;
+  testCase: (TestCase & { steps: TestStep[]; stepResults?: StepResult[] }) | undefined;
+  steps: TestStep[];
+  execution: Execution | undefined;
+  entries: Map<number, ExecutionEntry>;
+  setEntries: React.Dispatch<React.SetStateAction<Map<number, ExecutionEntry>>>;
+  setEntry: (stepId: number, patch: Partial<ExecutionEntry>) => void;
+  localResults: Map<number, boolean>;
+  setLocalResults: React.Dispatch<React.SetStateAction<Map<number, boolean>>>;
+  removeDraft: (stepId: number) => void;
+  onBack: () => void;
+  onModeChange: (next: "guided" | "quick") => void;
+  pendingMutations: React.MutableRefObject<number>;
+  isReadOnly: boolean;
+}) {
+  const [, navigate] = useLocation();
+  const queryClient = useQueryClient();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Per-step save mutation (saves individual step results as they're entered)
+  const saveStepMut = useMutation({
+    mutationFn: ({ stepId, data }: { stepId: number; data: { passed: boolean; actual_result: string; comments: string } }) =>
+      customFetch(`/executions/${execution!.id}/steps/${stepId}/result`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onMutate: () => { pendingMutations.current++; },
+    onSuccess: (_data, vars) => {
+      removeDraft(vars.stepId);
+    },
+    onError: (e: Error) => toast.error(e.message),
+    onSettled: () => { pendingMutations.current--; },
+  });
+
+  // Save a single step result when pass/fail is toggled
+  const handleQuickStepResult = (stepId: number, passed: boolean, entry: ExecutionEntry) => {
+    saveStepMut.mutate({
+      stepId,
+      data: {
+        passed,
+        actual_result: entry.actual_result ?? "",
+        comments: entry.comments ?? "",
+      },
+    });
+    setLocalResults((prev) => {
+      const next = new Map(prev);
+      next.set(stepId, passed);
+      return next;
+    });
+  };
+
+  // Persisted pass/fail only — used for sidebar indicators and per-step status
+  const persistedResults = useMemo(() => {
+    const map = new Map<number, boolean | null>();
+    (execution?.stepResults ?? []).forEach((r) => map.set(r.step_id, r.passed));
+    (testCase?.stepResults ?? []).forEach((r) => map.set(r.step_id, r.passed));
+    return map;
+  }, [execution?.stepResults, testCase?.stepResults]);
+
+  const summary = useMemo(() => {
+    let passed = 0, failed = 0, pending = 0;
+    steps.forEach((s) => {
+      const e = entries.get(s.id);
+      const r = e?.passed ?? persistedResults.get(s.id) ?? localResults.get(s.id) ?? null;
+      if (r === true) passed++;
+      else if (r === false) failed++;
+      else pending++;
+    });
+    return { passed, failed, pending, total: steps.length };
+  }, [entries, persistedResults, localResults, steps]);
+
+  // readyToSubmit: all steps must have a pass/fail result (in-memory or persisted)
+  const readyToSubmit = useMemo(() => {
+    if (steps.length === 0) return false;
+    return steps.every((s) => {
+      const e = entries.get(s.id);
+      const persisted = persistedResults.get(s.id);
+      return (e?.passed ?? persisted ?? null) !== null;
+    });
+  }, [steps, entries, persistedResults]);
+
+  // Validate failed steps have actual_result filled (check both entries and persisted)
+  const validateFailedSteps = useMemo(() => {
+    const failedSteps: string[] = [];
+    steps.forEach((s) => {
+      const e = entries.get(s.id);
+      const persistedResult = execution?.stepResults?.find((r) => r.step_id === s.id);
+      const passed = e?.passed ?? localResults.get(s.id) ?? persistedResult?.passed ?? null;
+      if (passed === false) {
+        const actual = e?.actual_result ?? persistedResult?.actual_result ?? "";
+        if (!actual.trim()) {
+          failedSteps.push(`Step ${s.step_number}: "What actually happened" is required when marking a step as Fail`);
+        }
+      }
+    });
+    return failedSteps;
+  }, [steps, entries, localResults, execution?.stepResults]);
+
+  // Check if execution already has an overall_result (was previously submitted)
+  const previouslySubmitted = execution?.overall_result != null;
+
+  const handleSubmit = async () => {
+    if (!execution || !readyToSubmit || isSubmitting) return;
+    if (validateFailedSteps.length > 0) {
+      toast.error(validateFailedSteps[0]);
+      return;
+    }
+    setIsSubmitting(true);
+
+    // Snapshot the full result set NOW before any state mutations.
+    // For each step: prefer in-memory entry, fall back to persisted result.
+    const stepSnapshot = steps.map((s) => {
+      const e = entries.get(s.id);
+      const persistedResult = execution.stepResults?.find((r) => r.step_id === s.id);
+      return {
+        stepId: s.id,
+        passed: e?.passed ?? persistedResult?.passed ?? null,
+        actual_result: e?.actual_result ?? persistedResult?.actual_result ?? "",
+        comments: e?.comments ?? persistedResult?.comments ?? "",
+        needsSave: entries.has(s.id),
+      };
+    });
+
+    const anyFailed = stepSnapshot.some((r) => r.passed === false);
+
+    try {
+      // 1. Save any unsaved in-memory step results
+      for (const snap of stepSnapshot) {
+        if (!snap.needsSave) continue;
+        await customFetch(`/executions/${execution.id}/steps/${snap.stepId}/result`, {
+          method: "POST",
+          body: JSON.stringify({
+            passed: snap.passed,
+            actual_result: snap.actual_result,
+            comments: snap.comments,
+          }),
+        });
+      }
+
+      // 2. Mark execution as completed with correct overall_result
+      await customFetch(`/executions/${execution.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          status: "completed",
+          overall_result: anyFailed ? "failed" : "passed",
+        }),
+      });
+
+      // 3. Clear drafts after successful save
+      steps.forEach((s) => removeDraft(s.id));
+
+      toast.success(previouslySubmitted ? "Results updated" : "Test case complete");
+      await queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+      queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+      queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
+      queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+      navigate(`/tester/run/${testRunId}/scenario/${scenarioId}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to submit case";
+      toast.error(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (!testCase) {
+    return (
+      <div className="max-w-2xl mx-auto py-2xl text-center">
+        <div className="w-10 h-10 mx-auto border-4 border-secondary border-t-transparent rounded-full animate-spin" />
+        <p className="mt-md text-on-surface-variant">Loading test case…</p>
+      </div>
+    );
+  }
+
+  if (steps.length === 0) {
+    return (
+      <div className="max-w-2xl mx-auto py-2xl">
+        <EmptyState
+          icon="inbox"
+          title="This test case has no steps"
+          description="Ask your Test Lead to add at least one step before executing."
+          action={
+            <button
+              onClick={onBack}
+              className="inline-flex items-center gap-xs px-lg py-sm bg-primary text-on-primary rounded-lg font-label-md hover:opacity-90 transition-all"
+            >
+              <span className="material-symbols-outlined text-[16px]">arrow_back</span>
+              Back to Cases
+            </button>
+          }
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-md max-w-4xl mx-auto w-full pb-32">
+      {isReadOnly && (
+        <div className="bg-gray-100 border border-gray-300 rounded-xl p-md flex items-center gap-sm">
+          <span className="material-symbols-outlined text-gray-500">lock</span>
+          <span className="text-label-md text-gray-600">
+            This test case is read-only — you have already submitted this test run.
+          </span>
+        </div>
+      )}
+      <BackBar
+        back={{ label: "Cases", href: `/tester/run/${testRunId}/scenario/${scenarioId}` }}
+        current={`[${testCase.case_number}] ${testCase.title}`}
+        context="Quick mode"
+        onBack={onBack}
+        right={
+          <button
+            onClick={() => onModeChange("guided")}
+            className="inline-flex items-center gap-xs px-sm py-xs text-label-sm text-on-surface-variant hover:text-on-surface border border-outline-variant rounded-md hover:bg-surface-container-low transition-colors"
+          >
+            <span className="material-symbols-outlined text-[16px]">view_kanban</span>
+            Switch to Guided
+          </button>
+        }
+      />
+
+      {/* Summary progress card */}
+      <div className="bg-gradient-to-br from-primary to-primary/80 text-on-primary rounded-2xl p-lg shadow-sm relative overflow-hidden">
+        <div className="absolute right-0 top-0 w-64 h-64 bg-on-primary/5 rounded-full -translate-y-1/2 translate-x-1/4" aria-hidden="true" />
+        <div className="relative space-y-md">
+          <div className="flex items-start justify-between gap-md flex-wrap">
+            <div className="min-w-0">
+              <p className="text-label-sm uppercase tracking-widest font-bold opacity-80">
+                Quick mode — record all steps at once
+              </p>
+              <h1 className="font-display-md text-display-md leading-tight mt-1">
+                [{testCase.case_number}] {testCase.title}
+              </h1>
+            </div>
+            <StatusChip variant="info" icon="bolt" size="md" className="!bg-on-primary/15 !text-on-primary">
+              Quick
+            </StatusChip>
+          </div>
+          <div className="grid grid-cols-3 gap-sm">
+            <div className="bg-on-primary/10 rounded-lg p-sm">
+              <p className="text-label-sm uppercase tracking-wider opacity-80 font-bold">Passed</p>
+              <p className="font-headline-md text-headline-md leading-none mt-1">{summary.passed}</p>
+            </div>
+            <div className="bg-on-primary/10 rounded-lg p-sm">
+              <p className="text-label-sm uppercase tracking-wider opacity-80 font-bold">Failed</p>
+              <p className="font-headline-md text-headline-md leading-none mt-1">{summary.failed}</p>
+            </div>
+            <div className="bg-on-primary/10 rounded-lg p-sm">
+              <p className="text-label-sm uppercase tracking-wider opacity-80 font-bold">Pending</p>
+              <p className="font-headline-md text-headline-md leading-none mt-1">{summary.pending}</p>
+            </div>
+          </div>
+          <div className="space-y-xs">
+            <div className="flex items-center justify-between text-label-sm opacity-90">
+              <span className="font-bold uppercase tracking-wider">Progress</span>
+              <span>{summary.passed + summary.failed} / {summary.total} steps</span>
+            </div>
+            <div className="w-full bg-on-primary/20 rounded-full h-2 overflow-hidden">
+              <div
+                className="h-full bg-on-primary rounded-full transition-all duration-500"
+                style={{ width: `${summary.total > 0 ? ((summary.passed + summary.failed) / summary.total) * 100 : 0}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {testCase.acceptance_criteria && (
+        <div className="bg-secondary-container border-l-4 border-secondary rounded-xl p-md flex gap-md">
+          <div className="shrink-0 w-8 h-8 rounded-full bg-secondary text-on-secondary flex items-center justify-center">
+            <span className="material-symbols-outlined text-[18px]">flag</span>
+          </div>
+          <div className="min-w-0">
+            <p className="text-label-sm uppercase tracking-wider font-bold text-on-secondary-container mb-1">
+              Acceptance criteria
+            </p>
+            <p className="text-body-base text-on-secondary-container">
+              {testCase.acceptance_criteria}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* All steps in one scrollable list */}
+      <ol className="space-y-md">
+        {steps.map((s, stepIdx) => {
+          const e = entries.get(s.id) ?? { ...EMPTY_ENTRY };
+          const persisted = persistedResults.get(s.id);
+          const optimistic = localResults.get(s.id);
+          const effective = e.passed ?? optimistic ?? persisted ?? null;
+          return (
+            <li
+              key={s.id}
+              className={`bg-surface-container-lowest border rounded-xl p-lg space-y-md transition-colors ${
+                effective === true ? "border-green-200 bg-green-50/30" :
+                effective === false ? "border-red-200 bg-red-50/30" :
+                "border-outline-variant"
+              }`}
+            >
+              <div className="flex items-start gap-md">
+                <div
+                  className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center font-headline-sm text-headline-sm ${
+                    effective === true ? "bg-green-600 text-white" :
+                    effective === false ? "bg-error text-on-error" :
+                    "bg-primary text-on-primary"
+                  }`}
+                >
+                  {effective === true ? (
+                    <span className="material-symbols-outlined text-[18px]">check</span>
+                  ) : effective === false ? (
+                    <span className="material-symbols-outlined text-[18px]">close</span>
+                  ) : (
+                    stepIdx + 1
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-label-sm uppercase tracking-wider font-bold text-on-surface-variant">
+                    Step {stepIdx + 1} of {steps.length}
+                  </p>
+                  <p className="text-body-lg text-on-surface leading-relaxed font-body-base mt-1">
+                    {s.instruction}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-sm pl-0 sm:pl-13">
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-sm">
+                  <p className="text-label-sm uppercase tracking-wider font-bold text-amber-800 mb-1 inline-flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[14px]">data_object</span>
+                    Test data
+                  </p>
+                  <p className={`text-body-sm whitespace-pre-wrap ${s.test_data ? "text-amber-900" : "text-amber-700/60 italic"}`}>
+                    {s.test_data || "Not provided"}
+                  </p>
+                </div>
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-sm">
+                  <p className="text-label-sm uppercase tracking-wider font-bold text-blue-800 mb-1 inline-flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[14px]">target</span>
+                    Expected result
+                  </p>
+                  <p className={`text-body-sm whitespace-pre-wrap ${s.expected_result ? "text-blue-900" : "text-blue-700/60 italic"}`}>
+                    {s.expected_result || "Not provided"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-sm pl-0 sm:pl-13">
+                <label className="text-label-md font-label-md text-on-surface block">
+                  What actually happened?
+                </label>
+                <textarea
+                  value={e.actual_result}
+                  onChange={(ev) => setEntry(s.id, { actual_result: ev.target.value })}
+                  rows={2}
+                  placeholder="Describe what you observed…"
+                  disabled={isReadOnly}
+                  className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base text-on-surface placeholder:text-on-surface-variant/60 focus:ring-2 focus:ring-secondary/20 focus:border-secondary outline-none transition-all resize-y disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-gray-50"
+                />
+                <div className="flex items-center gap-sm">
+                  <button
+                    onClick={() => {
+                      if (isReadOnly) return;
+                      setEntry(s.id, { passed: true });
+                      if (execution) {
+                        handleQuickStepResult(s.id, true, entries.get(s.id) ?? EMPTY_ENTRY);
+                      }
+                    }}
+                    disabled={saveStepMut.isPending || isReadOnly}
+                    className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-xs px-lg py-sm rounded-lg font-label-md text-label-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                      effective === true
+                        ? "bg-green-600 text-white shadow-sm"
+                        : "bg-surface-container-low text-on-surface border border-outline-variant hover:bg-green-50 hover:border-green-200 hover:text-green-700"
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[18px]">check_circle</span>
+                    Pass
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (isReadOnly) return;
+                      // Validate: if marking Fail, check actual_result is filled
+                      const entry_ = entries.get(s.id) ?? EMPTY_ENTRY;
+                      if (!entry_.actual_result?.trim()) {
+                        toast.error('Please describe "What actually happened" before marking as Fail');
+                        return;
+                      }
+                      setEntry(s.id, { passed: false });
+                      if (execution) {
+                        handleQuickStepResult(s.id, false, entry_);
+                      }
+                    }}
+                    disabled={saveStepMut.isPending || isReadOnly}
+                    className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-xs px-lg py-sm rounded-lg font-label-md text-label-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                      effective === false
+                        ? "bg-error text-on-error shadow-sm"
+                        : "bg-surface-container-low text-on-surface border border-outline-variant hover:bg-red-50 hover:border-red-200 hover:text-red-700"
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[18px]">cancel</span>
+                    Fail
+                  </button>
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+
+      {/* Sticky submit bar */}
+      <div className="sticky bottom-0 left-0 right-0 bg-surface-container-lowest border-t border-outline-variant -mx-lg px-lg py-md shadow-[0_-4px_12px_rgba(0,0,0,0.04)]">
+        <div className="max-w-4xl mx-auto flex items-center justify-between gap-sm flex-wrap">
+          <div className="text-label-sm text-on-surface-variant">
+            {readyToSubmit ? (
+              <span className="inline-flex items-center gap-xs text-green-700 font-bold">
+                <span className="material-symbols-outlined text-[16px]">check_circle</span>
+                All steps recorded — ready to submit
+              </span>
+            ) : (
+              <span>
+                {summary.pending} of {summary.total} step{summary.total === 1 ? "" : "s"} still pending
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-sm">
+            <button
+              onClick={onBack}
+              className="px-lg py-sm border border-outline-variant text-on-surface rounded-lg font-label-md text-label-sm hover:bg-surface-container-low transition-all"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={!readyToSubmit || isSubmitting || isReadOnly}
+              title={validateFailedSteps.length > 0 ? validateFailedSteps[0] : undefined}
+              className="inline-flex items-center gap-xs px-xl py-sm bg-primary text-on-primary rounded-lg font-label-md text-label-md hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isSubmitting ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-on-primary border-t-transparent rounded-full animate-spin" />
+                  Submitting…
+                </>
+              ) : (
+                <>
+                  <span className="material-symbols-outlined text-[18px]">check</span>
+                  {previouslySubmitted ? "Update Results" : "Submit Case"}
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+========================================
+FILE: artifacts\uat-manager\src\components\layout\AppShell.tsx
+========================================
+import { useEffect, useState } from "react";
+import { useLocation } from "wouter";
+import { getToken } from "../../lib/auth";
+import { Sidebar } from "./Sidebar";
+import { TopBar } from "./TopBar";
+
+interface AppShellProps {
+  children: React.ReactNode;
+}
+
+export function AppShell({ children }: AppShellProps) {
+  const [, navigate] = useLocation();
+  const token = getToken();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    if (!token) {
+      navigate("/login?redirect=" + window.location.pathname, { replace: true });
+    }
+  }, [token, navigate]);
+
+  if (!token) return null;
+
+  return (
+    <div className="flex h-screen overflow-hidden bg-background text-on-surface font-body-base">
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/20 z-30 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      <main className="flex-1 flex flex-col overflow-hidden">
+        <TopBar onMenuClick={() => setSidebarOpen(true)} />
+        <div className="flex-1 overflow-y-auto p-lg">
+          {children}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+========================================
+FILE: artifacts\uat-manager\src\components\layout\Sidebar.tsx
+========================================
+import { useLocation, useRoute } from "wouter";
+import { useAuth } from "../../hooks/useAuth";
+
+interface NavItem {
+  href: string;
+  label: string;
+  icon: string;
+}
+
+const mainNav: NavItem[] = [
+  { href: "/dashboard", label: "Dashboard", icon: "dashboard" },
+  { href: "/projects", label: "Projects", icon: "inventory_2" },
+];
+
+const projectSubLinks: NavItem[] = [
+  { href: "", label: "Test Plan", icon: "assignment" },
+  { href: "/team", label: "Team", icon: "group" },
+  { href: "/test-runs", label: "Test Runs", icon: "play_circle" },
+  { href: "/defects", label: "Defects", icon: "error" },
+  { href: "/sign-off", label: "Sign-off", icon: "verified" },
+  { href: "/uat-summary", label: "UAT Summary", icon: "analytics" },
+  { href: "/audit", label: "Audit", icon: "history" },
+];
+
+export function Sidebar({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [location, navigate] = useLocation();
+  const { isAdmin } = useAuth();
+  const [, params] = useRoute<{ id: string }>("/projects/:id/*?");
+  const projectId = params?.id;
+
+  const baseProjectPath = projectId ? `/projects/${projectId}` : null;
+
+  const isProjectPage = !!baseProjectPath;
+
+  const isActive = (href: string) => {
+    if (href === "/dashboard") return location === "/dashboard";
+    if (href === "/projects") return location === "/projects" || (isProjectPage && !projectSubLinks.some((s) => s.href && location.includes(s.href)));
+    return location.startsWith(href);
+  };
+
+  const handleNav = (href: string) => {
+    navigate(href);
+    onClose();
+  };
+
+  const items = [
+    ...mainNav,
+    ...(isAdmin ? [{ href: "/users", label: "Users", icon: "group" } as NavItem] : []),
+    { href: "/tester", label: "My Runs", icon: "play_circle" },
+  ];
+
+  return (
+    <aside
+      className={`fixed inset-y-0 left-0 z-40 w-[280px] border-r border-outline-variant bg-surface flex flex-col p-md gap-sm transition-transform duration-300 ease-in-out ${
+        open ? "translate-x-0" : "-translate-x-full"
+      } lg:translate-x-0 lg:static lg:inset-auto`}
+    >
+      <div className="flex items-center gap-md mb-xl">
+        <div className="w-10 h-10 bg-primary rounded-lg flex items-center justify-center text-on-primary">
+          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" />
+          </svg>
+        </div>
+        <div>
+          <h1 className="font-title-sm text-title-sm text-primary leading-none">
+            TestCaseHub
+          </h1>
+          <p className="text-[10px] text-on-surface-variant uppercase tracking-widest mt-1">
+            Enterprise UAT
+          </p>
+        </div>
+        <button onClick={onClose} className="lg:hidden ml-auto p-1 text-on-surface-variant">
+          <span className="material-symbols-outlined">close</span>
+        </button>
+      </div>
+      <nav className="flex-1 flex flex-col gap-xs overflow-y-auto">
+        {items.map((item) => {
+          const active = isActive(item.href);
+          return (
+            <a
+              key={item.href}
+              onClick={(e) => {
+                e.preventDefault();
+                handleNav(item.href);
+              }}
+              href={item.href}
+              className={`flex items-center gap-md px-md py-sm rounded-lg transition-colors duration-200 ease-in-out font-label-md text-label-md cursor-pointer ${
+                active
+                  ? "bg-secondary-container text-on-secondary-container"
+                  : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
+              }`}
+            >
+              <span className="material-symbols-outlined text-[20px]">
+                {item.icon}
+              </span>
+              {item.label}
+            </a>
+          );
+        })}
+
+        {isProjectPage && (
+          <div className="mt-md pt-md border-t border-outline-variant">
+            <p className="px-md mb-xs text-[10px] text-on-surface-variant uppercase tracking-widest font-bold">
+              Current Project
+            </p>
+            {projectSubLinks.map((sub) => {
+              const href = `${baseProjectPath}${sub.href}`;
+              const active = sub.href === ""
+                ? location === baseProjectPath
+                : location === href || location.startsWith(href + "/");
+              return (
+                <a
+                  key={sub.href}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    handleNav(href);
+                  }}
+                  href={href}
+                  className={`flex items-center gap-md px-md py-sm rounded-lg transition-colors duration-200 ease-in-out font-label-md text-label-md cursor-pointer ${
+                    active
+                      ? "bg-secondary-container text-on-secondary-container"
+                      : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[20px]">
+                    {sub.icon}
+                  </span>
+                  {sub.label}
+                </a>
+              );
+            })}
+          </div>
+        )}
+      </nav>
+    </aside>
+  );
+}
+
+========================================
+FILE: artifacts\uat-manager\src\components\layout\TopBar.tsx
+========================================
+import { useAuth } from "../../hooks/useAuth";
+import { Avatar } from "../ui/avatar";
+import { Badge } from "../ui/badge";
+import { DropdownMenu, DropdownMenuItem } from "../ui/dropdown-menu";
+
+export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
+  const { user, isAdmin, logout } = useAuth();
+
+  return (
+    <header className="flex justify-between items-center h-16 px-lg w-full sticky top-0 z-40 bg-surface/80 backdrop-blur-md border-b border-outline-variant">
+      <div className="flex items-center gap-md flex-1">
+        <button onClick={onMenuClick} className="lg:hidden p-2 text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-colors">
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+        <div className="relative w-full max-w-md">
+          <svg
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant"
+            width="20"
+            height="20"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+            />
+          </svg>
+          <input
+            className="w-full bg-surface-container-low border-none rounded-full py-2 pl-10 pr-4 text-body-sm focus:ring-2 focus:ring-secondary/20"
+            placeholder="Search projects..."
+            type="text"
+          />
+        </div>
+      </div>
+      <div className="flex items-center gap-md">
+        <button className="p-2 hover:bg-surface-container-low rounded-full transition-colors relative">
+          <svg
+            className="text-on-surface-variant"
+            width="20"
+            height="20"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
+            />
+          </svg>
+          <span className="absolute top-2 right-2 w-2 h-2 bg-error rounded-full" />
+        </button>
+        <button className="p-2 hover:bg-surface-container-low rounded-full transition-colors">
+          <svg
+            className="text-on-surface-variant"
+            width="20"
+            height="20"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+            />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+            />
+          </svg>
+        </button>
+        <div className="h-8 w-[1px] bg-outline-variant mx-2" />
+        <DropdownMenu
+          trigger={
+            <div className="flex items-center gap-sm cursor-pointer active:opacity-80">
+              <Avatar size="sm" fallback={user?.username?.[0]} />
+              <div className="hidden lg:block text-left">
+                <p className="font-label-md text-label-md text-on-surface leading-none">
+                  {user?.username || "User"}
+                </p>
+                <div className="mt-1">
+                  <Badge variant={isAdmin ? "purple" : "blue"}>
+                    {isAdmin ? "ADMIN" : "USER"}
+                  </Badge>
+                </div>
+              </div>
+            </div>
+          }
+        >
+          <DropdownMenuItem onClick={logout}>Sign Out</DropdownMenuItem>
+        </DropdownMenu>
+      </div>
+    </header>
+  );
+}
+
+========================================
+FILE: artifacts\uat-manager\src\components\test-plan-form.tsx
+========================================
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Button } from "./ui/button";
+import { Field, inputBaseClass, inputInvalidClass, inputValidClass } from "./ui/field";
+import { Textarea } from "./ui/textarea";
+import { Select } from "./ui/select";
+import { Stepper, type Step } from "./ui/stepper";
+import { FormSection } from "./ui/form-section";
+import { SlideOver } from "./ui/slide-over";
+import { customFetch } from "../lib/api-client";
+import { getStoredUser } from "../lib/auth";
+import type { Project, User } from "../types/api";
+
+export interface TestPlanFormData {
+  name: string;
+  moduleName: string;
+  testLink: string;
+  designedBy: string;
+  designDate: string;
+  testLeadId: number | null;
+  objectives: string;
+  scope: string;
+  outOfScope: string;
+  entryCriteria: string;
+  exitCriteria: string;
+}
+
+interface TestPlanFormProps {
+  mode: "create" | "edit";
+  open: boolean;
+  onClose: () => void;
+  onSave: (data: TestPlanFormData) => void;
+  saving: boolean;
+  initial?: Project;
+}
+
+const STEPS: Step[] = [
+  { key: "overview", label: "Overview" },
+  { key: "team", label: "Team & Timeline" },
+  { key: "scope", label: "Scope & Criteria" },
+  { key: "review", label: "Review" },
+];
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function makeEmpty(): TestPlanFormData {
+  return {
+    name: "",
+    moduleName: "",
+    testLink: "",
+    designedBy: "",
+    designDate: todayIso(),
+    testLeadId: null,
+    objectives: "",
+    scope: "",
+    outOfScope: "",
+    entryCriteria: "",
+    exitCriteria: "",
+  };
+}
+
+function fromProject(p: Project): TestPlanFormData {
+  return {
+    name: p.name,
+    moduleName: p.module_name,
+    testLink: p.test_link ?? "",
+    designedBy: p.designed_by,
+    designDate: p.design_date,
+    testLeadId: p.test_lead_id,
+    objectives: p.objectives ?? "",
+    scope: p.scope ?? "",
+    outOfScope: p.out_of_scope ?? "",
+    entryCriteria: p.entry_criteria ?? "",
+    exitCriteria: p.exit_criteria ?? "",
+  };
+}
+
+type FormErrors = Partial<Record<keyof TestPlanFormData, string>>;
+
+export function TestPlanForm({
+  mode,
+  open,
+  onClose,
+  onSave,
+  saving,
+  initial,
+}: TestPlanFormProps) {
+  const currentUser = getStoredUser();
+  const [step, setStep] = useState(0);
+  const [form, setForm] = useState<TestPlanFormData>(() =>
+    mode === "edit" && initial ? fromProject(initial) : makeEmpty()
+  );
+  const [errors, setErrors] = useState<FormErrors>({});
+  const [completed, setCompleted] = useState<number[]>([]);
+
+  const { data: users } = useQuery({
+    queryKey: ["users"],
+    queryFn: () => customFetch<User[]>("/users"),
+    enabled: open,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  useEffect(() => {
+    if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setStep(0);
+      setErrors({});
+      setCompleted([]);
+      setForm(
+        mode === "edit" && initial
+          ? fromProject(initial)
+          : { ...makeEmpty(), testLeadId: currentUser?.userId ?? null }
+      );
+    }
+  }, [open, mode, initial, currentUser?.userId]);
+
+  const set = <K extends keyof TestPlanFormData>(
+    key: K,
+    value: TestPlanFormData[K]
+  ) => {
+    setForm((f) => ({ ...f, [key]: value }));
+    setErrors((e) => {
+      if (!e[key]) return e;
+      const next = { ...e };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const activeUsers = useMemo(
+    () => (users ?? []).filter((u) => u.is_active),
+    [users]
+  );
+
+  const validateStep = (s: number): FormErrors => {
+    const errs: FormErrors = {};
+    if (s === 0) {
+      if (!form.name.trim()) errs.name = "Project name is required";
+      if (!form.moduleName.trim()) errs.moduleName = "Module is required";
+      if (form.testLink.trim() && !/^https?:\/\/\S+$/i.test(form.testLink.trim())) {
+        errs.testLink = "Enter a valid URL (http:// or https://)";
+      }
+    } else if (s === 1) {
+      if (!form.designedBy.trim()) errs.designedBy = "Designer name is required";
+      if (!form.designDate) errs.designDate = "Design date is required";
+      if (mode === "create" && form.testLeadId == null) {
+        errs.testLeadId = "Test lead is required";
+      }
+    }
+    return errs;
+  };
+
+  const handleNext = () => {
+    const errs = validateStep(step);
+    setErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+    setCompleted((c) => (c.includes(step) ? c : [...c, step]));
+    setStep((s) => Math.min(s + 1, STEPS.length - 1));
+  };
+
+  const handleBack = () => {
+    setErrors({});
+    setStep((s) => Math.max(s - 1, 0));
+  };
+
+  const handleStepClick = (idx: number) => {
+    if (idx <= step || completed.includes(idx)) {
+      setErrors({});
+      setStep(idx);
+    }
+  };
+
+  const handleSubmit = () => {
+    for (let s = 0; s < STEPS.length - 1; s++) {
+      const errs = validateStep(s);
+      if (Object.keys(errs).length > 0) {
+        setErrors(errs);
+        setStep(s);
+        return;
+      }
+    }
+    onSave(form);
+  };
+
+  const title = mode === "create" ? "Create Test Plan" : "Edit Test Plan";
+  const subtitle =
+    mode === "create"
+      ? "Define the scope, ownership, and entry/exit criteria for this test plan."
+      : "Update this test plan's metadata. The project code cannot be changed.";
+  const submitLabel = mode === "create" ? "Create Project" : "Save Changes";
+  const submittingLabel = mode === "create" ? "Creating..." : "Saving...";
+
+  return (
+    <SlideOver open={open} onClose={onClose} title={title} subtitle={subtitle}>
+      <div className="p-lg space-y-lg">
+        <Stepper
+          steps={STEPS}
+          currentIndex={step}
+          completedIndices={completed}
+          onStepClick={handleStepClick}
+        />
+
+        <div className="min-h-[360px]">
+          {step === 0 && <OverviewStep form={form} errors={errors} set={set} />}
+          {step === 1 && (
+            <TeamStep
+              form={form}
+              errors={errors}
+              set={set}
+              users={activeUsers}
+              allowNullLead={mode === "edit"}
+            />
+          )}
+          {step === 2 && <ScopeStep form={form} errors={errors} set={set} />}
+          {step === 3 && (
+            <ReviewStep
+              form={form}
+              users={activeUsers}
+              projectCode={initial?.project_code}
+              onJumpToStep={handleStepClick}
+            />
+          )}
+        </div>
+      </div>
+
+      <div className="sticky bottom-0 px-lg py-md border-t border-outline-variant bg-surface flex items-center justify-between gap-md">
+        <Button variant="ghost" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <div className="flex items-center gap-sm">
+          {step > 0 && (
+            <Button variant="secondary" onClick={handleBack} disabled={saving}>
+              <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+              Back
+            </Button>
+          )}
+          {step < STEPS.length - 1 ? (
+            <Button variant="primary" onClick={handleNext} disabled={saving}>
+              Continue
+              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
+            </Button>
+          ) : (
+            <Button variant="primary" onClick={handleSubmit} loading={saving}>
+              {saving ? submittingLabel : submitLabel}
+            </Button>
+          )}
+        </div>
+      </div>
+    </SlideOver>
+  );
+}
+
+/* ───────────── Step 1: Overview ───────────── */
+
+function OverviewStep({
+  form,
+  errors,
+  set,
+}: {
+  form: TestPlanFormData;
+  errors: FormErrors;
+  set: <K extends keyof TestPlanFormData>(
+    key: K,
+    value: TestPlanFormData[K]
+  ) => void;
+}) {
+  return (
+    <FormSection
+      title="Overview"
+      description="Tell us what this test plan is for. The project code is generated automatically."
+    >
+      <Field
+        label="Project Name"
+        required
+        htmlFor="tp-name"
+        error={errors.name}
+        helper="A short, recognisable name shown in lists and reports."
+      >
+        <input
+          id="tp-name"
+          type="text"
+          value={form.name}
+          onChange={(e) => set("name", e.target.value)}
+          placeholder="e.g. Q4 Mobile Banking UAT"
+          className={`${inputBaseClass} text-title-sm font-title-sm ${
+            errors.name ? inputInvalidClass : inputValidClass
+          }`}
+        />
+      </Field>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-md">
+        <Field
+          label="Module"
+          required
+          htmlFor="tp-module"
+          error={errors.moduleName}
+          helper="Feature, epic, or component under test."
+        >
+          <input
+            id="tp-module"
+            type="text"
+            value={form.moduleName}
+            onChange={(e) => set("moduleName", e.target.value)}
+            placeholder="e.g. Mobile App"
+            className={`${inputBaseClass} ${
+              errors.moduleName ? inputInvalidClass : inputValidClass
+            }`}
+          />
+        </Field>
+
+        <Field
+          label="Test Link"
+          htmlFor="tp-link"
+          error={errors.testLink}
+          helper="Optional. Link to Jira, ticket, or build under test."
+        >
+          <div className="relative">
+            <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-[18px]">
+              link
+            </span>
+            <input
+              id="tp-link"
+              type="url"
+              value={form.testLink}
+              onChange={(e) => set("testLink", e.target.value)}
+              placeholder="https://..."
+              className={`${inputBaseClass} pl-10 ${
+                errors.testLink ? inputInvalidClass : inputValidClass
+              }`}
+            />
+          </div>
+        </Field>
+      </div>
+    </FormSection>
+  );
+}
+
+/* ───────────── Step 2: Team & Timeline ───────────── */
+
+function TeamStep({
+  form,
+  errors,
+  set,
+  users,
+  allowNullLead,
+}: {
+  form: TestPlanFormData;
+  errors: FormErrors;
+  set: <K extends keyof TestPlanFormData>(
+    key: K,
+    value: TestPlanFormData[K]
+  ) => void;
+  users: User[];
+  allowNullLead: boolean;
+}) {
+  return (
+    <FormSection
+      title="Team & Timeline"
+      description="Who owns this test plan and when was it designed."
+    >
+      <Field
+        label="Designed By"
+        required
+        htmlFor="tp-designed-by"
+        error={errors.designedBy}
+        helper="The person who wrote this test plan."
+      >
+        <input
+          id="tp-designed-by"
+          type="text"
+          value={form.designedBy}
+          onChange={(e) => set("designedBy", e.target.value)}
+          placeholder="Full name"
+          className={`${inputBaseClass} ${
+            errors.designedBy ? inputInvalidClass : inputValidClass
+          }`}
+        />
+      </Field>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-md">
+        <Field
+          label="Design Date"
+          required
+          htmlFor="tp-design-date"
+          error={errors.designDate}
+        >
+          <input
+            id="tp-design-date"
+            type="date"
+            value={form.designDate}
+            onChange={(e) => set("designDate", e.target.value)}
+            className={`${inputBaseClass} ${
+              errors.designDate ? inputInvalidClass : inputValidClass
+            }`}
+          />
+        </Field>
+
+        <Field
+          label="Test Lead"
+          required={!allowNullLead}
+          htmlFor="tp-test-lead"
+          error={errors.testLeadId}
+          helper="The user accountable for executing this test plan."
+        >
+          <Select
+            id="tp-test-lead"
+            value={form.testLeadId == null ? "" : String(form.testLeadId)}
+            onChange={(e) =>
+              set("testLeadId", e.target.value ? Number(e.target.value) : null)
+            }
+            invalid={!!errors.testLeadId}
+          >
+            {allowNullLead && <option value="">No test lead</option>}
+            <option value="" disabled={!allowNullLead}>
+              Select a user...
+            </option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name} ({u.username})
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </div>
+    </FormSection>
+  );
+}
+
+/* ───────────── Step 3: Scope & Criteria ───────────── */
+
+function ScopeStep({
+  form,
+  errors,
+  set,
+}: {
+  form: TestPlanFormData;
+  errors: FormErrors;
+  set: <K extends keyof TestPlanFormData>(
+    key: K,
+    value: TestPlanFormData[K]
+  ) => void;
+}) {
+  return (
+    <div className="space-y-md">
+      <FormSection
+        title="Scope & Objectives"
+        description="What does this test plan aim to verify, and what is in or out of scope?"
+      >
+        <Field
+          label="Objectives"
+          htmlFor="tp-objectives"
+          error={errors.objectives}
+          helper="The goals this test plan aims to achieve."
+        >
+          <Textarea
+            id="tp-objectives"
+            rows={3}
+            value={form.objectives}
+            onChange={(e) => set("objectives", e.target.value)}
+            placeholder="e.g. Verify that the new transfer flow handles all supported account types correctly."
+            invalid={!!errors.objectives}
+          />
+        </Field>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-md">
+          <Field
+            label="In Scope"
+            htmlFor="tp-scope"
+            error={errors.scope}
+            helper="Features, systems, or areas included."
+          >
+            <Textarea
+              id="tp-scope"
+              rows={4}
+              value={form.scope}
+              onChange={(e) => set("scope", e.target.value)}
+              placeholder="e.g. Mobile transfer flow, account linking, biometric login."
+              invalid={!!errors.scope}
+            />
+          </Field>
+
+          <Field
+            label="Out of Scope"
+            htmlFor="tp-out-of-scope"
+            error={errors.outOfScope}
+            helper="Features, systems, or areas explicitly excluded."
+          >
+            <Textarea
+              id="tp-out-of-scope"
+              rows={4}
+              value={form.outOfScope}
+              onChange={(e) => set("outOfScope", e.target.value)}
+              placeholder="e.g. Web banking, ATM flow, fraud detection."
+              invalid={!!errors.outOfScope}
+            />
+          </Field>
+        </div>
+      </FormSection>
+
+      <FormSection
+        title="Entry & Exit Criteria"
+        description="Pre-conditions to start and conditions that define completion."
+      >
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-md">
+          <Field
+            label="Entry Criteria"
+            htmlFor="tp-entry"
+            error={errors.entryCriteria}
+            helper="What must be true before testing can begin (e.g. test data loaded, environment stable)."
+          >
+            <Textarea
+              id="tp-entry"
+              rows={4}
+              value={form.entryCriteria}
+              onChange={(e) => set("entryCriteria", e.target.value)}
+              placeholder="e.g. Build deployed to staging, test accounts provisioned, test data seeded."
+              invalid={!!errors.entryCriteria}
+            />
+          </Field>
+
+          <Field
+            label="Exit Criteria"
+            htmlFor="tp-exit"
+            error={errors.exitCriteria}
+            helper="What must be true before this test plan can be signed off (e.g. 95% pass rate, no critical defects)."
+          >
+            <Textarea
+              id="tp-exit"
+              rows={4}
+              value={form.exitCriteria}
+              onChange={(e) => set("exitCriteria", e.target.value)}
+              placeholder="e.g. 100% of critical scenarios executed, no P1 defects open, all defects triaged."
+              invalid={!!errors.exitCriteria}
+            />
+          </Field>
+        </div>
+      </FormSection>
+    </div>
+  );
+}
+
+/* ───────────── Step 4: Review ───────────── */
+
+function ReviewStep({
+  form,
+  users,
+  projectCode,
+  onJumpToStep,
+}: {
+  form: TestPlanFormData;
+  users: User[];
+  projectCode?: string;
+  onJumpToStep: (idx: number) => void;
+}) {
+  const display = (v: string | null | undefined) =>
+    v && v.trim() ? v : "—";
+  const testLead = users.find((u) => u.id === form.testLeadId);
+  const designDate = form.designDate
+    ? new Date(form.designDate + "T00:00:00").toLocaleDateString()
+    : "—";
+
+  return (
+    <div className="space-y-md">
+      <p className="text-body-sm text-on-surface-variant">
+        Review the details below before creating the test plan. Use the
+        <span className="font-label-md"> Edit </span>
+        links to jump back and adjust any section.
+      </p>
+
+      <ReviewCard
+        stepIndex={0}
+        title="Overview"
+        onJumpToStep={onJumpToStep}
+        rows={[
+          { label: "Project Code", value: projectCode ?? "Auto-generated" },
+          { label: "Project Name", value: display(form.name) },
+          { label: "Module", value: display(form.moduleName) },
+          { label: "Test Link", value: display(form.testLink) },
+        ]}
+      />
+
+      <ReviewCard
+        stepIndex={1}
+        title="Team & Timeline"
+        onJumpToStep={onJumpToStep}
+        rows={[
+          { label: "Designed By", value: display(form.designedBy) },
+          { label: "Design Date", value: designDate },
+          {
+            label: "Test Lead",
+            value: testLead
+              ? `${testLead.name} (${testLead.username})`
+              : form.testLeadId == null
+                ? "—"
+                : `User #${form.testLeadId}`,
+          },
+        ]}
+      />
+
+      <ReviewCard
+        stepIndex={2}
+        title="Scope & Criteria"
+        onJumpToStep={onJumpToStep}
+        rows={[
+          { label: "Objectives", value: display(form.objectives), multiline: true },
+          { label: "In Scope", value: display(form.scope), multiline: true },
+          { label: "Out of Scope", value: display(form.outOfScope), multiline: true },
+          { label: "Entry Criteria", value: display(form.entryCriteria), multiline: true },
+          { label: "Exit Criteria", value: display(form.exitCriteria), multiline: true },
+        ]}
+      />
+    </div>
+  );
+}
+
+function ReviewCard({
+  stepIndex,
+  title,
+  rows,
+  onJumpToStep,
+}: {
+  stepIndex: number;
+  title: string;
+  rows: { label: string; value: string; multiline?: boolean }[];
+  onJumpToStep: (idx: number) => void;
+}) {
+  return (
+    <section className="bg-surface-container-lowest border border-outline-variant rounded-xl p-md md:p-lg">
+      <header className="flex items-center justify-between mb-md">
+        <h3 className="font-title-sm text-title-sm text-on-surface">{title}</h3>
+        <button
+          type="button"
+          onClick={() => onJumpToStep(stepIndex)}
+          className="text-label-md font-label-md text-secondary hover:underline inline-flex items-center gap-1"
+        >
+          <span className="material-symbols-outlined text-[16px]">edit</span>
+          Edit
+        </button>
+      </header>
+      <dl className="grid grid-cols-1 md:grid-cols-3 gap-md">
+        {rows.map((r) => (
+          <div
+            key={r.label}
+            className={r.multiline ? "md:col-span-3" : "md:col-span-1"}
+          >
+            <dt className="text-label-sm font-label-sm text-on-surface-variant uppercase tracking-wider">
+              {r.label}
+            </dt>
+            <dd
+              className={`text-body-sm text-on-surface mt-1 ${
+                r.multiline ? "whitespace-pre-wrap" : ""
+              }`}
+            >
+              {r.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+========================================
+FILE: artifacts\uat-manager\src\components\test-plan-tab.tsx
+========================================
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { Button } from "./ui/button";
+import { Badge } from "./ui/badge";
+import { EmptyState } from "./ui/empty-state";
+import { customFetch, API_ORIGIN } from "../lib/api-client";
+import { useProjectRole } from "../hooks/useProjectRole";
+import { useConfirmDialog } from "../hooks/use-confirm-dialog";
+import {
+  ScenarioDialog,
+  TestCaseDialog,
+  StepDialog,
+  type ScenarioFormData,
+  type TestCaseFormData,
+  type StepFormData,
+} from "./test-plan-dialogs";
+import type { Project, UseCase, TestCase, TestStep } from "../types/api";
+
+/* ────────────────────────────────────────────────────────────────────
+   Public types
+   ──────────────────────────────────────────────────────────────────── */
+
+export type ScenariosWithChildren = UseCase & {
+  testCases?: (TestCase & { steps?: TestStep[] })[];
+};
+
+/* ────────────────────────────────────────────────────────────────────
+   Priority + type styling
+   ──────────────────────────────────────────────────────────────────── */
+
+const PRIORITY_BADGE: Record<string, "error" | "warning" | "default"> = {
+  Critical: "error",
+  High: "warning",
+  Medium: "warning",
+  Low: "default",
+};
+
+const PRIORITY_STYLE: Record<string, string> = {
+  Critical: "border-l-error",
+  High: "border-l-orange-500",
+  Medium: "border-l-amber-500",
+  Low: "border-l-outline-variant",
+};
+
+/* ────────────────────────────────────────────────────────────────────
+   TestPlanTab
+   ──────────────────────────────────────────────────────────────────── */
+
+export function TestPlanTab({ projectId }: { projectId: number }) {
+  const queryClient = useQueryClient();
+  const role = useProjectRole(projectId);
+  const canEdit = role === "TEST_LEAD" || role === "ADMIN" || role === "TEST_AUTHOR";
+
+  const { data: project, isLoading } = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => customFetch<Project>(`/projects/${projectId}`),
+  });
+
+  const invalidateProject = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+  }, [queryClient, projectId]);
+
+  /* ── Dialog state ── */
+  const [scenarioDialog, setScenarioDialog] = useState<{
+    open: boolean;
+    mode: "create" | "edit";
+    scenario: UseCase | null;
+  }>({ open: false, mode: "create", scenario: null });
+
+  const [testCaseDialog, setTestCaseDialog] = useState<{
+    open: boolean;
+    mode: "create" | "edit";
+    useCaseId: number | null;
+    testCase: TestCase | null;
+    suggestedCaseNumber: string;
+  }>({ open: false, mode: "create", useCaseId: null, testCase: null, suggestedCaseNumber: "" });
+
+  const [stepDialog, setStepDialog] = useState<{
+    open: boolean;
+    mode: "create" | "edit";
+    testCaseId: number | null;
+    step: TestStep | null;
+    stepNumber: number;
+  }>({ open: false, mode: "create", testCaseId: null, step: null, stepNumber: 1 });
+
+  const confirm = useConfirmDialog();
+
+  /* ── Scenario mutations ── */
+  const createScenario = useMutation({
+    mutationFn: (d: ScenarioFormData) =>
+      customFetch<UseCase>(`/use-cases?projectId=${projectId}`, {
+        method: "POST",
+        body: JSON.stringify({
+          code: d.code.trim(),
+          name: d.name.trim(),
+          priority: d.priority || null,
+          category: d.category.trim() || null,
+        }),
+      }),
+    onSuccess: () => {
+      invalidateProject();
+      setScenarioDialog((s) => ({ ...s, open: false }));
+      toast.success("Scenario added");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const updateScenario = useMutation({
+    mutationFn: (d: { id: number } & ScenarioFormData) =>
+      customFetch<UseCase>(`/use-cases/${d.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          code: d.code.trim(),
+          name: d.name.trim(),
+          priority: d.priority,
+          category: d.category.trim(),
+        }),
+      }),
+    onSuccess: () => {
+      invalidateProject();
+      setScenarioDialog((s) => ({ ...s, open: false }));
+      toast.success("Scenario saved");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const deleteScenario = useMutation({
+    mutationFn: (id: number) => customFetch<void>(`/use-cases/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      invalidateProject();
+      toast.success("Scenario deleted");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  /* ── Test Case mutations ── */
+  const createTestCase = useMutation({
+    mutationFn: (d: { useCaseId: number } & TestCaseFormData) =>
+      customFetch<TestCase>("/test-cases", {
+        method: "POST",
+        body: JSON.stringify({
+          use_case_id: d.useCaseId,
+          case_number: d.case_number.trim(),
+          title: d.title.trim(),
+          test_type: d.test_type.trim() || null,
+          ...(d.estimated_minutes != null ? { estimated_minutes: d.estimated_minutes } : {}),
+          ...(d.acceptance_criteria.trim() ? { acceptance_criteria: d.acceptance_criteria.trim() } : {}),
+        }),
+      }),
+    onSuccess: () => {
+      invalidateProject();
+      setTestCaseDialog((s) => ({ ...s, open: false }));
+      toast.success("Test case added");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const updateTestCase = useMutation({
+    mutationFn: (d: { id: number } & TestCaseFormData) =>
+      customFetch<TestCase>(`/test-cases/${d.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          case_number: d.case_number.trim(),
+          title: d.title.trim(),
+          test_type: d.test_type.trim() || null,
+          ...(d.estimated_minutes != null ? { estimated_minutes: d.estimated_minutes } : { estimated_minutes: null }),
+          ...(d.acceptance_criteria.trim() ? { acceptance_criteria: d.acceptance_criteria.trim() } : { acceptance_criteria: null }),
+        }),
+      }),
+    onSuccess: () => {
+      invalidateProject();
+      setTestCaseDialog((s) => ({ ...s, open: false }));
+      toast.success("Test case saved");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const deleteTestCase = useMutation({
+    mutationFn: (id: number) => customFetch<void>(`/test-cases/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      invalidateProject();
+      toast.success("Test case deleted");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  /* ── Step mutations ── */
+  const createStep = useMutation({
+    mutationFn: (d: { testCaseId: number; stepNumber: number } & StepFormData) =>
+      customFetch<TestStep>("/test-steps", {
+        method: "POST",
+        body: JSON.stringify({
+          test_case_id: d.testCaseId,
+          step_number: String(d.stepNumber),
+          instruction: d.instruction.trim(),
+          test_data: d.test_data.trim(),
+          expected_result: d.expected_result.trim(),
+        }),
+      }),
+    onSuccess: () => {
+      invalidateProject();
+      setStepDialog((s) => ({ ...s, open: false }));
+      toast.success("Step added");
+    },
+    onError: (e: Error & { status?: number }) => {
+      if (e.status === 409) toast.error("Step number already exists in this test case.");
+      else toast.error(e.message);
+    },
+  });
+
+  const updateStep = useMutation({
+    mutationFn: (d: { id: number } & StepFormData) =>
+      customFetch<TestStep>(`/test-steps/${d.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          instruction: d.instruction.trim(),
+          test_data: d.test_data.trim(),
+          expected_result: d.expected_result.trim(),
+        }),
+      }),
+    onSuccess: () => {
+      invalidateProject();
+      setStepDialog((s) => ({ ...s, open: false }));
+      toast.success("Step saved");
+    },
+    onError: (e: Error & { status?: number }) => {
+      if (e.status === 409) toast.error("Step number already exists in this test case.");
+      else toast.error(e.message);
+    },
+  });
+
+  const deleteStep = useMutation({
+    mutationFn: (id: number) => customFetch<void>(`/test-steps/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      invalidateProject();
+      toast.success("Step deleted");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  /* ── Reorder mutations ── */
+  const reorderScenarios = useMutation({
+    mutationFn: async (items: { id: number; sort_order: number }[]) => {
+      await Promise.all(items.map((uc) =>
+        customFetch<UseCase>(`/use-cases/${uc.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ sort_order: uc.sort_order }),
+        })
+      ));
+    },
+    onSuccess: invalidateProject,
+  });
+
+  const reorderSteps = useMutation({
+    mutationFn: async (items: { id: number; step_number: string }[]) => {
+      await Promise.all(items.map((s) =>
+        customFetch<TestStep>(`/test-steps/${s.id}`, {
+          method: "PUT",
+          body: JSON.stringify({ step_number: s.step_number }),
+        })
+      ));
+    },
+    onSuccess: invalidateProject,
+    onError: (e: Error & { status?: number }) => {
+      if (e.status === 409) toast.error("Step number already exists in this test case.");
+      else toast.error(e.message);
+    },
+  });
+
+  /* ── Drag state (scenarios) ── */
+  const [dragScenarioIdx, setDragScenarioIdx] = useState<number | null>(null);
+  const [dragOverScenarioIdx, setDragOverScenarioIdx] = useState<number | null>(null);
+
+  const onScenarioDragStart = (e: React.DragEvent, idx: number) => {
+    if (!canEdit) return;
+    setDragScenarioIdx(idx);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(idx));
+  };
+  const onScenarioDragOver = (e: React.DragEvent, idx: number) => {
+    if (!canEdit || dragScenarioIdx === null) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDragOverScenarioIdx(idx);
+  };
+  const onScenarioDrop = (
+    e: React.DragEvent,
+    dropIdx: number,
+    scenarios: ScenariosWithChildren[]
+  ) => {
+    e.preventDefault();
+    if (dragScenarioIdx === null || dragScenarioIdx === dropIdx) {
+      setDragScenarioIdx(null);
+      setDragOverScenarioIdx(null);
+      return;
+    }
+    const reordered = [...scenarios];
+    const [moved] = reordered.splice(dragScenarioIdx, 1);
+    reordered.splice(dropIdx, 0, moved);
+    reorderScenarios.mutate(reordered.map((uc, i) => ({ id: uc.id, sort_order: i })));
+    setDragScenarioIdx(null);
+    setDragOverScenarioIdx(null);
+  };
+  const onScenarioDragEnd = () => {
+    setDragScenarioIdx(null);
+    setDragOverScenarioIdx(null);
+  };
+
+  /* ── Loading / empty ── */
+  if (isLoading) {
+    return (
+      <section className="space-y-sm">
+        {[1, 2, 3].map((i) => (
+          <div
+            key={i}
+            className="bg-surface-container-lowest border border-outline-variant rounded-xl p-md animate-pulse"
+          >
+            <div className="w-3/4 h-5 skeleton rounded" />
+            <div className="w-1/2 h-4 skeleton rounded mt-2" />
+          </div>
+        ))}
+      </section>
+    );
+  }
+
+  const useCases = (project as Project & { useCases?: ScenariosWithChildren[] })?.useCases ?? [];
+
+  const totalCases = useCases.reduce((sum, uc) => sum + (uc.testCases?.length ?? 0), 0);
+  const totalSteps = useCases.reduce(
+    (sum, uc) => sum + (uc.testCases?.reduce((s, tc) => s + (tc.steps?.length ?? 0), 0) ?? 0),
+    0
+  );
+
+  return (
+    <section className="space-y-md">
+      <PlanHeader
+        scenarioCount={useCases.length}
+        caseCount={totalCases}
+        stepCount={totalSteps}
+        canEdit={canEdit}
+        onAddScenario={() =>
+          setScenarioDialog({ open: true, mode: "create", scenario: null })
+        }
+      />
+
+      {useCases.length === 0 ? (
+        <EmptyState
+          icon="checklist"
+          title="No scenarios yet"
+          description={
+            canEdit
+              ? "Start by adding the first scenario for this test plan. Each scenario groups related test cases."
+              : "Scenarios will appear here once a test lead or author adds them."
+          }
+          action={
+            canEdit ? (
+              <Button
+                variant="primary"
+                onClick={() =>
+                  setScenarioDialog({ open: true, mode: "create", scenario: null })
+                }
+              >
+                <span className="material-symbols-outlined text-[18px]">add</span>
+                Add your first scenario
+              </Button>
+            ) : undefined
+          }
+        />
+      ) : (
+        <div className="space-y-md">
+          {useCases.map((uc, idx) => (
+            <ScenarioCard
+              key={uc.id}
+              scenario={uc}
+              canEdit={canEdit}
+              isDragOver={dragOverScenarioIdx === idx}
+              isDragging={dragScenarioIdx === idx}
+              onDragStart={(e) => onScenarioDragStart(e, idx)}
+              onDragOver={(e) => onScenarioDragOver(e, idx)}
+              onDrop={(e) => onScenarioDrop(e, idx, useCases)}
+              onDragEnd={onScenarioDragEnd}
+              onEdit={() =>
+                setScenarioDialog({ open: true, mode: "edit", scenario: uc })
+              }
+              onDelete={() =>
+                confirm.ask({
+                  title: "Delete scenario",
+                  message: `Delete "${uc.name}" and all its test cases and steps? This cannot be undone.`,
+                  confirmLabel: "Delete",
+                  destructive: true,
+                  onConfirm: () => deleteScenario.mutate(uc.id),
+                })
+              }
+              onAddCase={() => {
+                const existing = uc.testCases ?? [];
+                const nextNum = existing.length + 1;
+                const suggested = `TC-${String(nextNum).padStart(2, "0")}`;
+                setTestCaseDialog({
+                  open: true,
+                  mode: "create",
+                  useCaseId: uc.id,
+                  testCase: null,
+                  suggestedCaseNumber: suggested,
+                });
+              }}
+              onEditCase={(tc) =>
+                setTestCaseDialog({
+                  open: true,
+                  mode: "edit",
+                  useCaseId: uc.id,
+                  testCase: tc,
+                  suggestedCaseNumber: tc.case_number,
+                })
+              }
+              onDeleteCase={(tc) =>
+                confirm.ask({
+                  title: "Delete test case",
+                  message: `Delete "${tc.title}" and all its steps? This cannot be undone.`,
+                  confirmLabel: "Delete",
+                  destructive: true,
+                  onConfirm: () => deleteTestCase.mutate(tc.id),
+                })
+              }
+              onAddStep={(tc) => {
+                const nextStepNum = (tc.steps?.length ?? 0) + 1;
+                setStepDialog({
+                  open: true,
+                  mode: "create",
+                  testCaseId: tc.id,
+                  step: null,
+                  stepNumber: nextStepNum,
+                });
+              }}
+              onEditStep={(s, n) =>
+                setStepDialog({
+                  open: true,
+                  mode: "edit",
+                  testCaseId: s.test_case_id,
+                  step: s,
+                  stepNumber: n,
+                })
+              }
+              onDeleteStep={(s) =>
+                confirm.ask({
+                  title: "Delete step",
+                  message: "Delete this step? This cannot be undone.",
+                  confirmLabel: "Delete",
+                  destructive: true,
+                  onConfirm: () => deleteStep.mutate(s.id),
+                })
+              }
+              onReorderSteps={(items) => reorderSteps.mutate(items)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Dialogs */}
+      <ScenarioDialog
+        open={scenarioDialog.open}
+        mode={scenarioDialog.mode}
+        initial={scenarioDialog.scenario}
+        saving={createScenario.isPending || updateScenario.isPending}
+        onClose={() => setScenarioDialog((s) => ({ ...s, open: false }))}
+        onSave={(data) => {
+          if (scenarioDialog.mode === "create") {
+            createScenario.mutate(data);
+          } else if (scenarioDialog.scenario) {
+            updateScenario.mutate({ id: scenarioDialog.scenario.id, ...data });
+          }
+        }}
+      />
+
+      <TestCaseDialog
+        open={testCaseDialog.open}
+        mode={testCaseDialog.mode}
+        initial={testCaseDialog.testCase}
+        suggestedCaseNumber={testCaseDialog.suggestedCaseNumber}
+        saving={createTestCase.isPending || updateTestCase.isPending}
+        onClose={() => setTestCaseDialog((s) => ({ ...s, open: false }))}
+        onSave={(data) => {
+          if (testCaseDialog.mode === "create" && testCaseDialog.useCaseId) {
+            createTestCase.mutate({ useCaseId: testCaseDialog.useCaseId, ...data });
+          } else if (testCaseDialog.testCase) {
+            updateTestCase.mutate({ id: testCaseDialog.testCase.id, ...data });
+          }
+        }}
+      />
+
+      <StepDialog
+        open={stepDialog.open}
+        mode={stepDialog.mode}
+        initial={stepDialog.step}
+        stepNumber={stepDialog.stepNumber}
+        saving={createStep.isPending || updateStep.isPending}
+        onClose={() => setStepDialog((s) => ({ ...s, open: false }))}
+        onSave={(data) => {
+          if (stepDialog.mode === "create" && stepDialog.testCaseId) {
+            createStep.mutate({
+              testCaseId: stepDialog.testCaseId,
+              stepNumber: stepDialog.stepNumber,
+              ...data,
+            });
+          } else if (stepDialog.step) {
+            updateStep.mutate({ id: stepDialog.step.id, ...data });
+          }
+        }}
+      />
+
+      {confirm.dialog}
+    </section>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Plan header
+   ──────────────────────────────────────────────────────────────────── */
+
+function PlanHeader({
+  scenarioCount,
+  caseCount,
+  stepCount,
+  canEdit,
+  onAddScenario,
+}: {
+  scenarioCount: number;
+  caseCount: number;
+  stepCount: number;
+  canEdit: boolean;
+  onAddScenario: () => void;
+}) {
+  return (
+    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-md bg-surface-container-lowest border border-outline-variant rounded-xl p-md">
+      <div className="space-y-1">
+        <h2 className="font-title-sm text-title-sm text-on-surface">Test Plan</h2>
+        <div className="flex items-center gap-md flex-wrap text-label-sm text-on-surface-variant">
+          <span>
+            <strong className="text-on-surface font-label-md">{scenarioCount}</strong> scenarios
+          </span>
+          <span className="text-outline-variant">·</span>
+          <span>
+            <strong className="text-on-surface font-label-md">{caseCount}</strong> test cases
+          </span>
+          <span className="text-outline-variant">·</span>
+          <span>
+            <strong className="text-on-surface font-label-md">{stepCount}</strong> steps
+          </span>
+        </div>
+      </div>
+      {canEdit && (
+        <Button variant="primary" onClick={onAddScenario}>
+          <span className="material-symbols-outlined text-[18px]">add</span>
+          Add Scenario
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Scenario Card
+   ──────────────────────────────────────────────────────────────────── */
+
+function ScenarioCard({
+  scenario,
+  canEdit,
+  isDragOver,
+  isDragging,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  onEdit,
+  onDelete,
+  onAddCase,
+  onEditCase,
+  onDeleteCase,
+  onAddStep,
+  onEditStep,
+  onDeleteStep,
+  onReorderSteps,
+}: {
+  scenario: ScenariosWithChildren;
+  canEdit: boolean;
+  isDragOver: boolean;
+  isDragging: boolean;
+  onDragStart: (e: React.DragEvent) => void;
+  onDragOver: (e: React.DragEvent) => void;
+  onDrop: (e: React.DragEvent) => void;
+  onDragEnd: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  onAddCase: () => void;
+  onEditCase: (tc: TestCase) => void;
+  onDeleteCase: (tc: TestCase) => void;
+  onAddStep: (tc: TestCase & { steps?: TestStep[] }) => void;
+  onEditStep: (s: TestStep, n: number) => void;
+  onDeleteStep: (s: TestStep) => void;
+  onReorderSteps: (items: { id: number; step_number: string }[]) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const testCases = scenario.testCases ?? [];
+  const totalSteps = testCases.reduce((sum, tc) => sum + (tc.steps?.length ?? 0), 0);
+
+  return (
+    <article
+      draggable={canEdit}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+      className={`bg-surface-container-lowest border border-outline-variant rounded-xl border-l-4 ${
+        PRIORITY_STYLE[scenario.priority ?? ""] ?? "border-l-outline-variant"
+      } transition-all ${
+        isDragOver ? "ring-2 ring-secondary" : ""
+      } ${isDragging ? "opacity-50" : ""}`}
+    >
+      <header className="flex items-center gap-md p-md">
+        {canEdit && (
+          <span
+            className="material-symbols-outlined text-on-surface-variant/50 cursor-grab active:cursor-grabbing shrink-0"
+            aria-label="Drag to reorder"
+            title="Drag to reorder"
+          >
+            drag_indicator
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-label={expanded ? "Collapse scenario" : "Expand scenario"}
+          className="p-1 -m-1 rounded hover:bg-surface-container transition-colors shrink-0"
+        >
+          <span className="material-symbols-outlined text-on-surface-variant">
+            {expanded ? "expand_more" : "chevron_right"}
+          </span>
+        </button>
+        <div className="flex items-center gap-sm flex-1 min-w-0 flex-wrap">
+          {scenario.priority && (
+            <Badge variant={PRIORITY_BADGE[scenario.priority] ?? "default"}>
+              {scenario.priority}
+            </Badge>
+          )}
+          <code className="font-mono text-label-sm text-on-surface-variant bg-surface-container px-2 py-0.5 rounded">
+            {scenario.code}
+          </code>
+          <h3 className="font-title-sm text-title-sm text-on-surface truncate">
+            {scenario.name}
+          </h3>
+          {scenario.category && (
+            <Badge variant="blue">{scenario.category}</Badge>
+          )}
+          <span className="text-label-sm text-on-surface-variant">
+            {testCases.length} {testCases.length === 1 ? "case" : "cases"}
+            {totalSteps > 0 ? ` · ${totalSteps} steps` : ""}
+          </span>
+        </div>
+        {canEdit && (
+          <div className="flex items-center gap-xs shrink-0">
+            <IconButton icon="add_box" label="Add test case" onClick={onAddCase} />
+            <IconButton icon="edit" label="Edit scenario" onClick={onEdit} />
+            <IconButton icon="delete" label="Delete scenario" onClick={onDelete} destructive />
+          </div>
+        )}
+      </header>
+
+      {expanded && (
+        <div className="border-t border-outline-variant">
+          {testCases.length === 0 ? (
+            <div className="p-md">
+              <button
+                type="button"
+                onClick={onAddCase}
+                disabled={!canEdit}
+                className="w-full py-md border-2 border-dashed border-outline-variant rounded-lg flex items-center justify-center gap-sm text-label-md font-label-md text-on-surface-variant hover:border-secondary hover:text-secondary transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined">add</span>
+                Add the first test case to this scenario
+              </button>
+            </div>
+          ) : (
+            <ul className="divide-y divide-outline-variant">
+              {testCases.map((tc, idx) => (
+                <li key={tc.id}>
+                  <TestCaseItem
+                    testCase={tc}
+                    canEdit={canEdit}
+                    onEdit={() => onEditCase(tc)}
+                    onDelete={() => onDeleteCase(tc)}
+                    onAddStep={() => onAddStep(tc)}
+                    onEditStep={(s, n) => onEditStep(s, n)}
+                    onDeleteStep={(s) => onDeleteStep(s)}
+                    onReorderSteps={(items) => onReorderSteps(items)}
+                    isLast={idx === testCases.length - 1}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+          {testCases.length > 0 && canEdit && (
+            <div className="p-md pt-sm">
+              <button
+                type="button"
+                onClick={onAddCase}
+                className="inline-flex items-center gap-sm text-label-md font-label-md text-secondary hover:underline"
+              >
+                <span className="material-symbols-outlined text-[18px]">add</span>
+                Add test case
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Test Case Item
+   ──────────────────────────────────────────────────────────────────── */
+
+function TestCaseItem({
+  testCase,
+  canEdit,
+  onEdit,
+  onDelete,
+  onAddStep,
+  onEditStep,
+  onDeleteStep,
+  onReorderSteps,
+  isLast,
+}: {
+  testCase: TestCase & { steps?: TestStep[] };
+  canEdit: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+  onAddStep: () => void;
+  onEditStep: (s: TestStep, n: number) => void;
+  onDeleteStep: (s: TestStep) => void;
+  onReorderSteps: (items: { id: number; step_number: string }[]) => void;
+  isLast: boolean;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [dragStepIdx, setDragStepIdx] = useState<number | null>(null);
+  const [dragOverStepIdx, setDragOverStepIdx] = useState<number | null>(null);
+
+  const steps = testCase.steps ?? [];
+  const totalMinutes = testCase.estimated_minutes;
+
+  const onStepDragStart = (e: React.DragEvent, idx: number) => {
+    if (!canEdit) return;
+    setDragStepIdx(idx);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(idx));
+  };
+  const onStepDragOver = (e: React.DragEvent, idx: number) => {
+    if (!canEdit || dragStepIdx === null) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDragOverStepIdx(idx);
+  };
+  const onStepDrop = (e: React.DragEvent, dropIdx: number) => {
+    e.preventDefault();
+    if (dragStepIdx === null || dragStepIdx === dropIdx) {
+      setDragStepIdx(null);
+      setDragOverStepIdx(null);
+      return;
+    }
+    const reordered = [...steps];
+    const [moved] = reordered.splice(dragStepIdx, 1);
+    reordered.splice(dropIdx, 0, moved);
+    onReorderSteps(reordered.map((s, i) => ({ id: s.id, step_number: String(i + 1) })));
+    setDragStepIdx(null);
+    setDragOverStepIdx(null);
+  };
+  const onStepDragEnd = () => {
+    setDragStepIdx(null);
+    setDragOverStepIdx(null);
+  };
+
+  return (
+    <div className={isLast ? "" : ""}>
+      <div className="flex items-center gap-md px-md py-sm hover:bg-surface-container-low transition-colors">
+        {canEdit && (
+          <span
+            className="material-symbols-outlined text-on-surface-variant/40 cursor-grab active:cursor-grabbing shrink-0"
+            aria-label="Drag to reorder"
+            title="Drag to reorder"
+          >
+            drag_indicator
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-label={expanded ? "Collapse test case" : "Expand test case"}
+          className="p-1 -m-1 rounded hover:bg-surface-container transition-colors shrink-0"
+        >
+          <span className="material-symbols-outlined text-on-surface-variant">
+            {expanded ? "expand_more" : "chevron_right"}
+          </span>
+        </button>
+        <div className="flex items-center gap-sm flex-1 min-w-0 flex-wrap">
+          <code className="font-mono text-label-sm text-on-surface-variant bg-surface-container px-2 py-0.5 rounded">
+            {testCase.case_number}
+          </code>
+          {testCase.test_type && (
+            <Badge variant="secondary">{testCase.test_type}</Badge>
+          )}
+          <h4 className="font-label-md text-label-md text-on-surface truncate">
+            {testCase.title}
+          </h4>
+          <span className="text-label-sm text-on-surface-variant">
+            {steps.length} {steps.length === 1 ? "step" : "steps"}
+            {totalMinutes ? ` · ~${totalMinutes} min` : ""}
+          </span>
+        </div>
+        {canEdit && (
+          <div className="flex items-center gap-xs shrink-0">
+            <IconButton icon="playlist_add" label="Add step" onClick={onAddStep} />
+            <IconButton icon="edit" label="Edit test case" onClick={onEdit} />
+            <IconButton icon="delete" label="Delete test case" onClick={onDelete} destructive />
+          </div>
+        )}
+      </div>
+
+      {testCase.acceptance_criteria && (
+        <div className="px-md pb-sm pl-xl">
+          <p className="text-label-sm text-on-surface-variant">
+            <span className="font-label-md text-on-surface">Acceptance:</span>{" "}
+            {testCase.acceptance_criteria}
+          </p>
+        </div>
+      )}
+
+      {expanded && (
+        <div className="pl-xl pr-md pb-sm">
+          {steps.length === 0 ? (
+            <button
+              type="button"
+              onClick={onAddStep}
+              disabled={!canEdit}
+              className="w-full py-sm border border-dashed border-outline-variant rounded-md flex items-center justify-center gap-sm text-label-sm text-on-surface-variant hover:border-secondary hover:text-secondary transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-[16px]">add</span>
+              Add the first step
+            </button>
+          ) : (
+            <ol className="space-y-xs">
+              {steps.map((s, idx) => (
+                <li
+                  key={s.id}
+                  draggable={canEdit}
+                  onDragStart={(e) => onStepDragStart(e, idx)}
+                  onDragOver={(e) => onStepDragOver(e, idx)}
+                  onDrop={(e) => onStepDrop(e, idx)}
+                  onDragEnd={onStepDragEnd}
+                  className={`transition-all ${
+                    dragOverStepIdx === idx ? "ring-2 ring-secondary rounded-lg" : ""
+                  } ${dragStepIdx === idx ? "opacity-50" : ""}`}
+                >
+                  <StepItem
+                    step={s}
+                    number={idx + 1}
+                    canEdit={canEdit}
+                    onEdit={() => onEditStep(s, idx + 1)}
+                    onDelete={() => onDeleteStep(s)}
+                  />
+                </li>
+              ))}
+            </ol>
+          )}
+          {steps.length > 0 && canEdit && (
+            <button
+              type="button"
+              onClick={onAddStep}
+              className="mt-sm inline-flex items-center gap-sm text-label-sm text-secondary hover:underline"
+            >
+              <span className="material-symbols-outlined text-[16px]">add</span>
+              Add step
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Step Item
+   ──────────────────────────────────────────────────────────────────── */
+
+function StepItem({
+  step,
+  number,
+  canEdit,
+  onEdit,
+  onDelete,
+}: {
+  step: TestStep;
+  number: number;
+  canEdit: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const [images, setImages] = useState<string[]>([]);
+  const loadedRef = useRef(false);
+
+  useEffect(() => {
+    if (loadedRef.current || !step.id) return;
+    loadedRef.current = true;
+    customFetch<{ id: number; file_url: string }[]>(`/attachments/test_step/${step.id}`)
+      .then((data) => setImages(data.map((a) => a.file_url)))
+      .catch(() => {});
+  }, [step.id]);
+
+  return (
+    <div className="group bg-surface-container-lowest border border-outline-variant rounded-lg p-sm">
+      <div className="flex items-start gap-md">
+        {canEdit && (
+          <span
+            className="material-symbols-outlined text-on-surface-variant/40 cursor-grab active:cursor-grabbing text-[18px] mt-1"
+            aria-label="Drag to reorder"
+            title="Drag to reorder"
+          >
+            drag_indicator
+          </span>
+        )}
+        <div
+          className="w-7 h-7 rounded-full bg-secondary text-on-secondary flex items-center justify-center font-label-md text-label-sm shrink-0 mt-0.5"
+          aria-label={`Step ${number}`}
+        >
+          {number}
+        </div>
+        <div className="flex-1 min-w-0 space-y-xs">
+          <p className="font-body-sm text-body-sm text-on-surface">
+            {step.instruction}
+          </p>
+          {(step.test_data || step.expected_result) && (
+            <div className="flex gap-sm flex-wrap">
+              {step.test_data && (
+                <Chip color="amber" label="Data" value={step.test_data} />
+              )}
+              {step.expected_result && (
+                <Chip color="blue" label="Expected" value={step.expected_result} />
+              )}
+            </div>
+          )}
+          {images.length > 0 && (
+            <div className="flex gap-xs flex-wrap pt-xs">
+              {images.map((url, i) => (
+                <img
+                  key={i}
+                  src={`${API_ORIGIN}${url}`}
+                  alt="Step reference"
+                  className="w-12 h-12 object-cover rounded border border-outline-variant cursor-pointer hover:opacity-80"
+                  onClick={() => window.open(`${API_ORIGIN}${url}`, "_blank")}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+        {canEdit && (
+          <div className="flex items-center gap-xs opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity shrink-0">
+            <IconButton icon="edit" label="Edit step" onClick={onEdit} />
+            <IconButton icon="delete" label="Delete step" onClick={onDelete} destructive />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Small presentational helpers
+   ──────────────────────────────────────────────────────────────────── */
+
+function IconButton({
+  icon,
+  label,
+  onClick,
+  destructive,
+}: {
+  icon: string;
+  label: string;
+  onClick: () => void;
+  destructive?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className={`p-1.5 rounded-md hover:bg-surface-container transition-colors ${
+        destructive
+          ? "text-on-surface-variant hover:text-error"
+          : "text-on-surface-variant hover:text-secondary"
+      }`}
+    >
+      <span className="material-symbols-outlined text-[18px]">{icon}</span>
+    </button>
+  );
+}
+
+function Chip({
+  color,
+  label,
+  value,
+}: {
+  color: "amber" | "blue" | "green" | "purple";
+  label: string;
+  value: string;
+}) {
+  const colors: Record<typeof color, string> = {
+    amber: "bg-amber-50 border-amber-200 text-amber-900",
+    blue: "bg-blue-50 border-blue-200 text-blue-900",
+    green: "bg-green-50 border-green-200 text-green-900",
+    purple: "bg-purple-50 border-purple-200 text-purple-900",
+  };
+  return (
+    <span
+      className={`inline-flex items-center gap-xs border rounded px-sm py-0.5 text-label-sm max-w-full ${colors[color]}`}
+    >
+      <span className="font-label-md uppercase tracking-wider text-[10px] opacity-70">
+        {label}
+      </span>
+      <span className="truncate">{value}</span>
+    </span>
+  );
+}
+
+========================================
+FILE: artifacts\uat-manager\src\components\test-plan-dialogs.tsx
+========================================
+import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { Button } from "./ui/button";
+import { Dialog } from "./ui/dialog";
+import { Field, inputBaseClass, inputInvalidClass, inputValidClass } from "./ui/field";
+import { Textarea } from "./ui/textarea";
+import { Select } from "./ui/select";
+import { API_ORIGIN, customFetch } from "../lib/api-client";
+import type { TestStep, UseCase, TestCase } from "../types/api";
+
+/* ───────────── Scenario Dialog ───────────── */
+
+export interface ScenarioFormData {
+  code: string;
+  name: string;
+  priority: string;
+  category: string;
+}
+
+const PRIORITY_OPTIONS = [
+  { value: "", label: "No priority" },
+  { value: "Critical", label: "Critical" },
+  { value: "High", label: "High" },
+  { value: "Medium", label: "Medium" },
+  { value: "Low", label: "Low" },
+];
+
+interface ScenarioDialogProps {
+  open: boolean;
+  mode: "create" | "edit";
+  initial?: UseCase | null;
+  saving: boolean;
+  onClose: () => void;
+  onSave: (data: ScenarioFormData) => void;
+}
+
+export function ScenarioDialog({
+  open,
+  mode,
+  initial,
+  saving,
+  onClose,
+  onSave,
+}: ScenarioDialogProps) {
+  const [form, setForm] = useState<ScenarioFormData>({
+    code: "",
+    name: "",
+    priority: "",
+    category: "",
+  });
+  const [errors, setErrors] = useState<Partial<Record<keyof ScenarioFormData, string>>>({});
+
+  useEffect(() => {
+    if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setForm(
+        initial
+          ? {
+              code: initial.code,
+              name: initial.name,
+              priority: initial.priority ?? "",
+              category: initial.category ?? "",
+            }
+          : { code: "", name: "", priority: "", category: "" }
+      );
+      setErrors({});
+    }
+  }, [open, initial]);
+
+  const set = <K extends keyof ScenarioFormData>(key: K, value: ScenarioFormData[K]) => {
+    setForm((f) => ({ ...f, [key]: value }));
+    setErrors((e) => {
+      if (!e[key]) return e;
+      const next = { ...e };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const handleSubmit = () => {
+    const errs: typeof errors = {};
+    if (!form.code.trim()) errs.code = "Code is required";
+    if (!form.name.trim()) errs.name = "Name is required";
+    setErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+    onSave(form);
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={mode === "create" ? "Add Scenario" : "Edit Scenario"}
+      subtitle={
+        mode === "create"
+          ? "A scenario groups related test cases for a specific area of functionality."
+          : "Update the scenario's name, code, priority, or category."
+      }
+      size="md"
+      footer={
+        <div className="flex items-center justify-end gap-sm">
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleSubmit} loading={saving}>
+            {saving
+              ? mode === "create" ? "Creating..." : "Saving..."
+              : mode === "create" ? "Add Scenario" : "Save Changes"}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-md">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-md">
+          <Field
+            label="Code"
+            required
+            htmlFor="sd-code"
+            error={errors.code}
+            helper="Short identifier (e.g. UC-01, REQ-12)"
+          >
+            <input
+              id="sd-code"
+              type="text"
+              value={form.code}
+              onChange={(e) => set("code", e.target.value)}
+              placeholder="UC-01"
+              className={`${inputBaseClass} font-mono ${
+                errors.code ? inputInvalidClass : inputValidClass
+              }`}
+            />
+          </Field>
+
+          <div className="md:col-span-2">
+            <Field
+              label="Scenario Name"
+              required
+              htmlFor="sd-name"
+              error={errors.name}
+              helper="A clear, action-oriented name for this scenario."
+            >
+              <input
+                id="sd-name"
+                type="text"
+                value={form.name}
+                onChange={(e) => set("name", e.target.value)}
+                placeholder="e.g. User can transfer funds between own accounts"
+                className={`${inputBaseClass} ${
+                  errors.name ? inputInvalidClass : inputValidClass
+                }`}
+              />
+            </Field>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-md">
+          <Field
+            label="Priority"
+            htmlFor="sd-priority"
+            error={errors.priority}
+            helper="Optional. Drives visual emphasis in the plan."
+          >
+            <Select
+              id="sd-priority"
+              value={form.priority}
+              onChange={(e) => set("priority", e.target.value)}
+            >
+              {PRIORITY_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+
+          <Field
+            label="Category"
+            htmlFor="sd-category"
+            error={errors.category}
+            helper="Optional. e.g. Functional, Regression, Smoke."
+          >
+            <input
+              id="sd-category"
+              type="text"
+              value={form.category}
+              onChange={(e) => set("category", e.target.value)}
+              placeholder="e.g. Functional"
+              className={`${inputBaseClass} ${
+                errors.category ? inputInvalidClass : inputValidClass
+              }`}
+            />
+          </Field>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+/* ───────────── Test Case Dialog ───────────── */
+
+export interface TestCaseFormData {
+  case_number: string;
+  title: string;
+  test_type: string;
+  estimated_minutes: number | null;
+  acceptance_criteria: string;
+}
+
+interface TestCaseDialogProps {
+  open: boolean;
+  mode: "create" | "edit";
+  initial?: TestCase | null;
+  suggestedCaseNumber?: string;
+  saving: boolean;
+  onClose: () => void;
+  onSave: (data: TestCaseFormData) => void;
+}
+
+export function TestCaseDialog({
+  open,
+  mode,
+  initial,
+  suggestedCaseNumber,
+  saving,
+  onClose,
+  onSave,
+}: TestCaseDialogProps) {
+  const [form, setForm] = useState<TestCaseFormData>({
+    case_number: "",
+    title: "",
+    test_type: "",
+    estimated_minutes: null,
+    acceptance_criteria: "",
+  });
+  const [errors, setErrors] = useState<Partial<Record<keyof TestCaseFormData, string>>>({});
+
+  useEffect(() => {
+    if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setForm(
+        initial
+          ? {
+              case_number: initial.case_number,
+              title: initial.title,
+              test_type: initial.test_type ?? "",
+              estimated_minutes: initial.estimated_minutes,
+              acceptance_criteria: initial.acceptance_criteria ?? "",
+            }
+          : {
+              case_number: suggestedCaseNumber ?? "",
+              title: "",
+              test_type: "",
+              estimated_minutes: null,
+              acceptance_criteria: "",
+            }
+      );
+      setErrors({});
+    }
+  }, [open, initial, suggestedCaseNumber]);
+
+  const set = <K extends keyof TestCaseFormData>(key: K, value: TestCaseFormData[K]) => {
+    setForm((f) => ({ ...f, [key]: value }));
+    setErrors((e) => {
+      if (!e[key]) return e;
+      const next = { ...e };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const handleSubmit = () => {
+    const errs: typeof errors = {};
+    if (!form.case_number.trim()) errs.case_number = "Case number is required";
+    if (!form.title.trim()) errs.title = "Title is required";
+    if (
+      form.estimated_minutes != null &&
+      (form.estimated_minutes < 0 || !Number.isFinite(form.estimated_minutes))
+    ) {
+      errs.estimated_minutes = "Must be a positive number";
+    }
+    setErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+    onSave(form);
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={mode === "create" ? "Add Test Case" : "Edit Test Case"}
+      subtitle={
+        mode === "create"
+          ? "A test case verifies a specific behaviour with one or more executable steps."
+          : "Update the test case's title, type, or acceptance criteria."
+      }
+      size="lg"
+      footer={
+        <div className="flex items-center justify-end gap-sm">
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleSubmit} loading={saving}>
+            {saving
+              ? mode === "create" ? "Creating..." : "Saving..."
+              : mode === "create" ? "Add Test Case" : "Save Changes"}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-md">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-md">
+          <Field
+            label="Case #"
+            required
+            htmlFor="td-case-number"
+            error={errors.case_number}
+            helper="Short identifier (e.g. TC-01, 1.1, REQ-12-A)"
+          >
+            <input
+              id="td-case-number"
+              type="text"
+              value={form.case_number}
+              onChange={(e) => set("case_number", e.target.value)}
+              placeholder="TC-01"
+              className={`${inputBaseClass} font-mono ${
+                errors.case_number ? inputInvalidClass : inputValidClass
+              }`}
+            />
+          </Field>
+
+          <div className="md:col-span-2">
+            <Field
+              label="Title"
+              required
+              htmlFor="td-title"
+              error={errors.title}
+              helper="A clear, action-oriented title for this test case."
+            >
+              <input
+                id="td-title"
+                type="text"
+                value={form.title}
+                onChange={(e) => set("title", e.target.value)}
+                placeholder="e.g. Verify successful transfer with sufficient balance"
+                className={`${inputBaseClass} ${
+                  errors.title ? inputInvalidClass : inputValidClass
+                }`}
+              />
+            </Field>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-md">
+          <Field
+            label="Type"
+            htmlFor="td-type"
+            error={errors.test_type}
+            helper="e.g. Functional, Regression, Smoke, Negative, E2E"
+          >
+            <input
+              id="td-type"
+              type="text"
+              value={form.test_type}
+              onChange={(e) => set("test_type", e.target.value)}
+              placeholder="e.g. Functional"
+              className={`${inputBaseClass} ${
+                errors.test_type ? inputInvalidClass : inputValidClass
+              }`}
+            />
+          </Field>
+
+          <Field
+            label="Estimated Time (minutes)"
+            htmlFor="td-estimate"
+            error={errors.estimated_minutes}
+            helper="Optional. Used for test run planning."
+          >
+            <input
+              id="td-estimate"
+              type="number"
+              min={0}
+              step={1}
+              value={form.estimated_minutes ?? ""}
+              onChange={(e) =>
+                set(
+                  "estimated_minutes",
+                  e.target.value === "" ? null : Number(e.target.value)
+                )
+              }
+              placeholder="e.g. 15"
+              className={`${inputBaseClass} ${
+                errors.estimated_minutes ? inputInvalidClass : inputValidClass
+              }`}
+            />
+          </Field>
+        </div>
+
+        <Field
+          label="Acceptance Criteria"
+          htmlFor="td-acceptance"
+          error={errors.acceptance_criteria}
+          helper="Optional. What must be true for this test case to pass."
+        >
+          <Textarea
+            id="td-acceptance"
+            rows={3}
+            value={form.acceptance_criteria}
+            onChange={(e) => set("acceptance_criteria", e.target.value)}
+            placeholder="e.g. The transfer appears in the transaction history within 5 seconds."
+            invalid={!!errors.acceptance_criteria}
+          />
+        </Field>
+      </div>
+    </Dialog>
+  );
+}
+
+/* ───────────── Step Dialog ───────────── */
+
+export interface StepFormData {
+  instruction: string;
+  test_data: string;
+  expected_result: string;
+}
+
+interface StepDialogProps {
+  open: boolean;
+  mode: "create" | "edit";
+  initial?: TestStep | null;
+  stepNumber?: number;
+  saving: boolean;
+  onClose: () => void;
+  onSave: (data: StepFormData) => void;
+}
+
+export function StepDialog({
+  open,
+  mode,
+  initial,
+  stepNumber,
+  saving,
+  onClose,
+  onSave,
+}: StepDialogProps) {
+  const [form, setForm] = useState<StepFormData>({
+    instruction: "",
+    test_data: "",
+    expected_result: "",
+  });
+  const [errors, setErrors] = useState<Partial<Record<keyof StepFormData, string>>>({});
+
+  useEffect(() => {
+    if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setForm(
+        initial
+          ? {
+              instruction: initial.instruction,
+              test_data: initial.test_data ?? "",
+              expected_result: initial.expected_result ?? "",
+            }
+          : { instruction: "", test_data: "", expected_result: "" }
+      );
+      setErrors({});
+    }
+  }, [open, initial]);
+
+  const set = <K extends keyof StepFormData>(key: K, value: StepFormData[K]) => {
+    setForm((f) => ({ ...f, [key]: value }));
+    setErrors((e) => {
+      if (!e[key]) return e;
+      const next = { ...e };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const handleSubmit = () => {
+    const errs: typeof errors = {};
+    if (!form.instruction.trim()) errs.instruction = "Instruction is required";
+    setErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+    onSave(form);
+  };
+
+  const titlePrefix = mode === "create"
+    ? stepNumber != null ? `Add Step ${stepNumber}` : "Add Step"
+    : `Edit Step${stepNumber != null ? ` ${stepNumber}` : ""}`;
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={titlePrefix}
+      subtitle={
+        mode === "create"
+          ? "A step is a single, executable action with optional test data and an expected result."
+          : "Update the step's instruction, data, or expected result."
+      }
+      size="md"
+      footer={
+        <div className="flex items-center justify-end gap-sm">
+          <Button variant="ghost" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleSubmit} loading={saving}>
+            {saving
+              ? mode === "create" ? "Creating..." : "Saving..."
+              : mode === "create" ? "Add Step" : "Save Changes"}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-md">
+        <Field
+          label="Instruction"
+          required
+          htmlFor="st-instruction"
+          error={errors.instruction}
+          helper="A clear, single action for the tester to perform."
+        >
+          <Textarea
+            id="st-instruction"
+            rows={3}
+            value={form.instruction}
+            onChange={(e) => set("instruction", e.target.value)}
+            placeholder="e.g. Log in with the test account credentials"
+            invalid={!!errors.instruction}
+          />
+        </Field>
+
+        <Field
+          label="Test Data"
+          htmlFor="st-test-data"
+          error={errors.test_data}
+          helper="Optional. Input values, accounts, or fixtures the tester should use."
+        >
+          <Textarea
+            id="st-test-data"
+            rows={2}
+            value={form.test_data}
+            onChange={(e) => set("test_data", e.target.value)}
+            placeholder="e.g. Account: test.user@example.com / Password: Test123!"
+            invalid={!!errors.test_data}
+          />
+        </Field>
+
+        <Field
+          label="Expected Result"
+          htmlFor="st-expected"
+          error={errors.expected_result}
+          helper="Optional. What the tester should see if the system behaves correctly."
+        >
+          <Textarea
+            id="st-expected"
+            rows={2}
+            value={form.expected_result}
+            onChange={(e) => set("expected_result", e.target.value)}
+            placeholder="e.g. Dashboard loads with the user's account summary visible."
+            invalid={!!errors.expected_result}
+          />
+        </Field>
+
+        {mode === "edit" && initial?.id && (
+          <AttachmentManager stepId={initial.id} />
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+/* ───────────── Attachment Manager (used in step edit) ───────────── */
+
+interface AttachmentItem {
+  id: number;
+  file_url: string;
+  file_name?: string;
+  file_type?: string | null;
+}
+
+function AttachmentManager({ stepId }: { stepId: number }) {
+  const [items, setItems] = useState<AttachmentItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const data = await customFetch<AttachmentItem[]>(
+        `/attachments/test_step/${stepId}`
+      );
+      setItems(data);
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stepId]);
+
+  const handleUpload = async (file: File) => {
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const uploadRes = await customFetch<{ fileUrl: string }>("/upload", {
+        method: "POST",
+        body: formData,
+      });
+      await customFetch("/attachments", {
+        method: "POST",
+        body: JSON.stringify({
+          entity_type: "test_step",
+          entity_id: stepId,
+          file_url: uploadRes.fileUrl,
+          file_name: file.name,
+          file_type: file.type,
+        }),
+      });
+      await load();
+      toast.success("Image attached");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    try {
+      await customFetch<void>(`/attachments/${id}`, { method: "DELETE" });
+      setItems((prev) => prev.filter((a) => a.id !== id));
+      toast.success("Image removed");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Delete failed");
+    }
+  };
+
+  return (
+    <div className="pt-md border-t border-outline-variant space-y-sm">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-label-md font-label-md text-on-surface">Reference Images</p>
+          <p className="text-label-sm text-on-surface-variant mt-0.5">
+            Optional screenshots or diagrams for the tester.
+          </p>
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          loading={uploading}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <span className="material-symbols-outlined text-[18px]">add_photo_alternate</span>
+          Upload
+        </Button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) handleUpload(file);
+            e.target.value = "";
+          }}
+        />
+      </div>
+
+      {loading ? (
+        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-sm">
+          {[1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="aspect-square rounded-lg bg-surface-container-high animate-pulse"
+            />
+          ))}
+        </div>
+      ) : items.length === 0 ? (
+        <div className="text-center py-md text-label-sm text-on-surface-variant border border-dashed border-outline-variant rounded-lg">
+          No images attached yet.
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-sm">
+          {items.map((a) => (
+            <div
+              key={a.id}
+              className="relative group aspect-square rounded-lg overflow-hidden border border-outline-variant bg-surface-container-low"
+            >
+              <img
+                src={`${API_ORIGIN}${a.file_url}`}
+                alt={a.file_name ?? "Reference"}
+                className="w-full h-full object-cover cursor-pointer"
+                onClick={() => window.open(`${API_ORIGIN}${a.file_url}`, "_blank")}
+              />
+              <button
+                type="button"
+                onClick={() => handleDelete(a.id)}
+                aria-label="Remove image"
+                className="absolute top-1 right-1 p-1 rounded-full bg-inverse-surface text-inverse-on-surface opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <span className="material-symbols-outlined text-[16px]">close</span>
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+========================================
+FILE: artifacts\uat-manager\src\components\TeamDiscussionModal.tsx
+========================================
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { customFetch } from "../lib/api-client";
+import { getStoredUser } from "../lib/auth";
+import type { TeamDiscussion } from "../types/api";
+
+interface Props {
+  testRunId: number;
+  onClose: () => void;
+}
+
+export function TeamDiscussionModal({ testRunId, onClose }: Props) {
+  const queryClient = useQueryClient();
+  const user = getStoredUser();
+  const [meetingType, setMeetingType] = useState<"defect_review" | "post_mortem">("defect_review");
+  const [discussion, setDiscussion] = useState<TeamDiscussion | null>(null);
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [newUserId, setNewUserId] = useState<number | null>(null);
+
+  const { data: discussions } = useQuery({
+    queryKey: ["discussions", testRunId],
+    queryFn: () => customFetch<TeamDiscussion[]>(`/test-runs/${testRunId}/discussions`),
+  });
+
+  const activeDiscussion = discussions?.find((d) => d.is_active) ?? null;
+
+  const createMutation = useMutation({
+    mutationFn: (mt: "defect_review" | "post_mortem") =>
+      customFetch<TeamDiscussion>(`/test-runs/${testRunId}/discussions`, {
+        method: "POST",
+        body: JSON.stringify({ meeting_type: mt }),
+      }),
+    onSuccess: (data) => {
+      setDiscussion(data);
+      queryClient.invalidateQueries({ queryKey: ["discussions", testRunId] });
+      toast.success("Discussion created");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const addParticipantMutation = useMutation({
+    mutationFn: (userId: number) =>
+      customFetch(`/discussions/${(discussion ?? activeDiscussion)!.id}/participants`, {
+        method: "POST",
+        body: JSON.stringify({ user_id: userId, can_add_notes: true }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["discussions", testRunId] });
+      setShowAddUser(false);
+      toast.success("Participant added");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const removeParticipantMutation = useMutation({
+    mutationFn: (userId: number) =>
+      customFetch<void>(`/discussions/${(discussion ?? activeDiscussion)!.id}/participants/${userId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["discussions", testRunId] });
+      toast.success("Participant removed");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const endMutation = useMutation({
+    mutationFn: () =>
+      customFetch<TeamDiscussion>(`/discussions/${(discussion ?? activeDiscussion)!.id}/end`, {
+        method: "PATCH",
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["discussions", testRunId] });
+      setDiscussion(null);
+      toast.success("Discussion ended");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const current = discussion ?? activeDiscussion;
+  const isLead = user?.role === "ADMIN";
+
+  const { data: users } = useQuery({
+    queryKey: ["users"],
+    queryFn: () => customFetch<{ id: number; name: string }[]>("/users"),
+    enabled: showAddUser,
+  });
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-lg mx-4 p-lg space-y-lg max-h-[80vh] overflow-y-auto">
+        <div className="flex items-center justify-between">
+          <h3 className="font-title-sm text-title-sm">Team Discussion</h3>
+          <button onClick={onClose} className="material-symbols-outlined text-on-surface-variant">close</button>
+        </div>
+
+        {!current ? (
+          <div className="space-y-md">
+            <div>
+              <label className="font-label-sm text-on-surface-variant block mb-sm">Meeting Type</label>
+              <select
+                value={meetingType}
+                onChange={(e) => setMeetingType(e.target.value as "defect_review" | "post_mortem")}
+                className="w-full border border-outline-variant rounded-lg px-md py-sm text-label-md bg-surface"
+              >
+                <option value="defect_review">Defect Review</option>
+                <option value="post_mortem">Post Mortem</option>
+              </select>
+            </div>
+            <button
+              onClick={() => createMutation.mutate(meetingType)}
+              disabled={createMutation.isPending}
+              className="w-full bg-secondary text-on-secondary rounded-lg py-sm font-label-md hover:brightness-110 transition-all disabled:opacity-40"
+            >
+              {createMutation.isPending ? "Creating..." : "Start Discussion"}
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-md">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-md flex items-start gap-md">
+              <span className="material-symbols-outlined text-amber-600">bolt</span>
+              <div>
+                <p className="font-label-md font-bold text-amber-900">
+                  Active {current.meeting_type === "defect_review" ? "Defect Review" : "Post Mortem"}
+                </p>
+                <p className="text-label-sm text-amber-800">
+                  Discussion in progress since {new Date(current.created_at).toLocaleTimeString()}
+                </p>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-sm">
+                <h4 className="font-label-md font-bold">Participants ({current.participants?.length ?? 0})</h4>
+                {isLead && (
+                  <button onClick={() => setShowAddUser(!showAddUser)} className="text-label-sm text-secondary hover:underline">
+                    + Add
+                  </button>
+                )}
+              </div>
+              {showAddUser && (
+                <div className="flex gap-sm mb-sm">
+                  <select
+                    value={newUserId ?? ""}
+                    onChange={(e) => setNewUserId(e.target.value ? Number(e.target.value) : null)}
+                    className="flex-1 border border-outline-variant rounded-lg px-md py-sm text-label-sm bg-surface"
+                  >
+                    <option value="">Select user...</option>
+                    {users?.filter((u) => !current.participants?.some((p) => p.user_id === u.id)).map((u) => (
+                      <option key={u.id} value={u.id}>{u.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => newUserId && addParticipantMutation.mutate(newUserId)}
+                    disabled={!newUserId}
+                    className="bg-secondary text-on-secondary px-md py-sm rounded-lg text-label-sm disabled:opacity-40"
+                  >
+                    Add
+                  </button>
+                </div>
+              )}
+              <div className="space-y-sm max-h-40 overflow-y-auto">
+                {current.participants?.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between bg-surface-container-low rounded-lg px-md py-sm">
+                    <div className="flex items-center gap-sm">
+                      <div className="w-6 h-6 rounded-full bg-secondary-fixed flex items-center justify-center text-[8px] font-bold">
+                        {p.user?.name?.split(" ").map((n) => n[0]).join("").slice(0, 2) ?? "?"}
+                      </div>
+                      <span className="font-label-sm">{p.user?.name ?? `User #${p.user_id}`}</span>
+                    </div>
+                    {isLead && (
+                      <button
+                        onClick={() => removeParticipantMutation.mutate(p.user_id)}
+                        className="material-symbols-outlined text-error text-sm"
+                      >
+                        remove_circle
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {isLead && (
+              <button
+                onClick={() => endMutation.mutate()}
+                disabled={endMutation.isPending}
+                className="w-full border border-error text-error rounded-lg py-sm font-label-md hover:bg-error-container transition-all disabled:opacity-40"
+              >
+                {endMutation.isPending ? "Ending..." : "End Discussion"}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+========================================
+FILE: artifacts\uat-manager\src\components\CameraCapture.tsx
+========================================
+import { useRef, useState } from "react";
+import { customFetch } from "../lib/api-client";
+import { toast } from "sonner";
+
+interface UploadResponse {
+  fileUrl: string;
+  fileName: string;
+  fileType: string | null;
+  filename?: string;
+  originalName?: string;
+  mimetype?: string;
+  size?: number;
+}
+
+interface CameraCaptureProps {
+  onUploaded: (url: string) => void;
+  accept?: string;
+  label?: string;
+}
+
+export function CameraCapture({ onUploaded, accept = "image/*", label = "Tap to photograph result" }: CameraCaptureProps) {
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [thumbnail, setThumbnail] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  async function uploadFile(file: File) {
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await customFetch<UploadResponse>("/upload", { method: "POST", body: form });
+      const url = res.fileUrl ?? res.filename ?? "";
+      setThumbnail(URL.createObjectURL(file));
+      onUploaded(url);
+      toast.success("Photo attached");
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Upload failed";
+      toast.error(message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function handleCamera(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (f) uploadFile(f);
+    e.target.value = "";
+  }
+
+  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (f) uploadFile(f);
+    e.target.value = "";
+  }
+
+  if (thumbnail) {
+    return (
+      <div className="bg-surface-container-lowest border border-outline-variant rounded-lg p-sm flex items-center gap-sm">
+        <img src={thumbnail} alt="Captured" className="w-16 h-16 object-cover rounded" />
+        <div className="flex-1 text-xs text-on-surface-variant">Photo ready</div>
+        <button
+          onClick={() => {
+            setThumbnail(null);
+            cameraInputRef.current?.click();
+          }}
+          className="text-xs font-bold text-secondary hover:underline"
+        >
+          Retake
+        </button>
+        <button
+          onClick={() => setThumbnail(null)}
+          className="material-symbols-outlined text-error"
+        >
+          close
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={() => cameraInputRef.current?.click()}
+        disabled={uploading}
+        className="w-full flex items-center gap-sm p-md bg-surface-container-lowest border border-dashed border-outline-variant rounded-lg hover:bg-surface-container transition-colors disabled:opacity-50"
+      >
+        {uploading ? (
+          <div className="w-5 h-5 border-2 border-secondary border-t-transparent rounded-full animate-spin" />
+        ) : (
+          <span className="material-symbols-outlined text-secondary">photo_camera</span>
+        )}
+        <span className="font-label-md text-label-md text-on-surface">{uploading ? "Uploading…" : label}</span>
+      </button>
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept={accept}
+        capture="environment"
+        onChange={handleCamera}
+        className="hidden"
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={accept}
+        onChange={handleFile}
+        className="hidden"
+      />
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        className="text-xs text-on-surface-variant hover:text-secondary underline"
+      >
+        Attach file instead
+      </button>
+    </div>
+  );
+}
+

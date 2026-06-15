@@ -91,6 +91,29 @@ async function getProjectId(defectId: number): Promise<number | null> {
   return tr?.project_id ?? null;
 }
 
+/**
+ * Reads the audit trail to find the from_status of the most recent transition
+ * that resulted in `targetStatus` for the given defect.
+ * Used to implement "rollback to prior state" on unblock and biz-risk rejection.
+ * Falls back to `fallback` if no audit entry is found.
+ */
+async function getPriorState(
+  defectId: number,
+  targetStatus: string,
+  fallback: string
+): Promise<string> {
+  const entry = await db.query.statusAuditLog.findFirst({
+    where: and(
+      eq(schema.statusAuditLog.entity_id, defectId),
+      eq(schema.statusAuditLog.entity_type, "defect"),
+      eq(schema.statusAuditLog.to_status, targetStatus)
+    ),
+    orderBy: [desc(schema.statusAuditLog.changed_at)],
+    columns: { from_status: true },
+  });
+  return entry?.from_status ?? fallback;
+}
+
 // ---------------------------------------------------------------------------
 // PHASE 1 — TEST_LEAD Triage
 // ---------------------------------------------------------------------------
@@ -133,7 +156,7 @@ router.patch("/defects/:defectId/classify", async (req: AuthenticatedRequest, re
 
 // PATCH /defects/:defectId/assign — TEST_LEAD only
 // TRIAGED ──────────────────────────────────────────────────────> ASSIGNED
-// Binds assigned_to_user_id and optionally support_ticket_number
+// Defect MUST be in TRIAGED state. Assignment from NEW is no longer permitted.
 router.patch("/defects/:defectId/assign", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
@@ -151,8 +174,8 @@ router.patch("/defects/:defectId/assign", async (req: AuthenticatedRequest, res,
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
 
-    if (defect.status !== "NEW" && defect.status !== "TRIAGED") {
-      res.status(409).json({ message: `Cannot assign defect in status ${defect.status}. Only NEW or TRIAGED defects can be assigned.` });
+    if (defect.status !== "TRIAGED") {
+      res.status(409).json({ message: "Defect must be triaged before it can be assigned. Please classify severity and priority first." });
       return;
     }
 
@@ -244,12 +267,13 @@ router.patch("/defects/:defectId/flag-retest-from-new", async (req: Authenticate
 });
 
 // PATCH /defects/:defectId/flag-accepted-by-business — TEST_LEAD only
-// NEW ────────────────────────────────────────────────────────> PASSED_BY_AGREEMENT
-// Routes directly to the business owner exception track
+// TRIAGED | ASSIGNED | IN_PROGRESS | BLOCKED | RESOLVED_DEV | READY_FOR_VERIFICATION
+//   ──────────────────────────────────────────────────────> PENDING_BIZ_ACCEPTANCE
+// NEW defects must be triaged first. Requires justification (min 10 chars).
 router.patch("/defects/:defectId/flag-accepted-by-business", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
-    const bodySchema = z.object({ note: z.string().min(1, "Business justification note is required") });
+    const bodySchema = z.object({ note: z.string().min(10, "Justification must be at least 10 characters") });
     const data = bodySchema.parse(req.body);
 
     const projectId = await getProjectId(defectId);
@@ -259,16 +283,24 @@ router.patch("/defects/:defectId/flag-accepted-by-business", async (req: Authent
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    if (defect.status !== "NEW") { res.status(400).json({ message: "Only NEW defects can be flagged as accepted by business" }); return; }
+    const nonFlaggable = ["NEW", "CLOSED", "PASSED_BY_AGREEMENT", "PENDING_BIZ_ACCEPTANCE"];
+    if (nonFlaggable.includes(defect.status)) {
+      res.status(400).json({
+        message: defect.status === "NEW"
+          ? "Defect must be triaged before it can be flagged for business decision."
+          : "Defect cannot be flagged for business decision in its current state."
+      });
+      return;
+    }
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
-      .set({ status: "PASSED_BY_AGREEMENT", accepted_by_business_note: data.note, updated_at: new Date() })
+      .set({ status: "PENDING_BIZ_ACCEPTANCE", accepted_by_business_note: data.note, updated_at: new Date() })
       .where(eq(schema.defects.id, defectId))
       .returning();
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PASSED_BY_AGREEMENT", reason: data.note });
-    await logSystemNote(defectId, oldStatus, "PASSED_BY_AGREEMENT", req.user!.userId, data.note);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PENDING_BIZ_ACCEPTANCE", reason: data.note });
+    await logSystemNote(defectId, oldStatus, "PENDING_BIZ_ACCEPTANCE", req.user!.userId, data.note);
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -334,8 +366,9 @@ router.patch("/defects/:defectId/block", async (req: AuthenticatedRequest, res, 
 });
 
 // PATCH /defects/:defectId/unblock — DEVELOPER or TEST_LEAD
-// BLOCKED ─────────────────────────────────────────────────────> IN_PROGRESS
-// Level 1 rollback (quick undo, no approval)
+// BLOCKED ─────────────────────────────────────────────────────> <prior state>
+// Rolls back to the state the defect was in before it was blocked (from audit trail).
+// Falls back to IN_PROGRESS if audit entry not found.
 router.patch("/defects/:defectId/unblock", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
@@ -372,14 +405,15 @@ router.patch("/defects/:defectId/unblock", async (req: AuthenticatedRequest, res
       return;
     }
 
+    const rollbackStatus = await getPriorState(defectId, "BLOCKED", "IN_PROGRESS");
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
-      .set({ status: "IN_PROGRESS", updated_at: new Date() })
+      .set({ status: rollbackStatus, updated_at: new Date() })
       .where(eq(schema.defects.id, defectId))
       .returning();
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "IN_PROGRESS", reason: data.reason });
-    await logSystemNote(defectId, oldStatus, "IN_PROGRESS", req.user!.userId, data.reason);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: rollbackStatus, reason: data.reason });
+    await logSystemNote(defectId, oldStatus, rollbackStatus, req.user!.userId, data.reason);
     res.json({
       id: updated.id,
       status: updated.status,
@@ -905,8 +939,8 @@ router.patch("/defects/:defectId/retry-after-regression", async (req: Authentica
 });
 
 // PATCH /defects/:defectId/accept-by-agreement — BUSINESS_OWNER only
-// Any non-terminal state ───────────────────────────────────────> PASSED_BY_AGREEMENT
-// Requires mandatory accepted_by_business_note
+// PENDING_BIZ_ACCEPTANCE ────────────────────────> PASSED_BY_AGREEMENT
+// Requires mandatory justification (min 10 chars)
 router.patch("/defects/:defectId/accept-by-agreement", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
@@ -923,6 +957,11 @@ router.patch("/defects/:defectId/accept-by-agreement", async (req: Authenticated
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
 
+    if (defect.status !== "PENDING_BIZ_ACCEPTANCE") {
+      res.status(400).json({ message: "Only defects pending business acceptance can be accepted by agreement" });
+      return;
+    }
+
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
       .set({ status: "PASSED_BY_AGREEMENT", accepted_by_business_note: data.justification, updated_at: new Date() })
@@ -931,6 +970,57 @@ router.patch("/defects/:defectId/accept-by-agreement", async (req: Authenticated
 
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PASSED_BY_AGREEMENT", reason: data.justification, justification: data.justification });
     await logSystemNote(defectId, oldStatus, "PASSED_BY_AGREEMENT", req.user!.userId, data.justification);
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/reject-biz-acceptance — BUSINESS_OWNER only
+// PENDING_BIZ_ACCEPTANCE ────────────────────────> <prior state>
+// Rolls back to the state the defect was in before it was flagged (from audit trail).
+// Falls back to TRIAGED if audit entry not found.
+// Clears accepted_by_business_note. Requires rejection reason (min 10 chars).
+router.patch("/defects/:defectId/reject-biz-acceptance", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({
+      reason: z.string().min(10, "Rejection reason must be at least 10 characters"),
+    });
+    const data = bodySchema.parse(req.body);
+
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["BUSINESS_OWNER"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    if (defect.status !== "PENDING_BIZ_ACCEPTANCE") {
+      res.status(400).json({ message: "Only defects pending business acceptance can be rejected." });
+      return;
+    }
+
+    const rollbackStatus = await getPriorState(defectId, "PENDING_BIZ_ACCEPTANCE", "TRIAGED");
+
+    const oldStatus = defect.status;
+    const [updated] = await db.update(schema.defects)
+      .set({
+        status: rollbackStatus,
+        accepted_by_business_note: null,
+        updated_at: new Date(),
+      })
+      .where(eq(schema.defects.id, defectId))
+      .returning();
+
+    await logAudit({
+      entityType: "defect",
+      entityId: defectId,
+      changedByUserId: req.user!.userId,
+      fromStatus: oldStatus,
+      toStatus: rollbackStatus,
+      reason: data.reason,
+    });
+    await logSystemNote(defectId, oldStatus, rollbackStatus, req.user!.userId, data.reason);
     res.json(updated);
   } catch (err) { next(err); }
 });

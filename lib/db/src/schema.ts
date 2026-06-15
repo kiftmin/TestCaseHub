@@ -260,7 +260,8 @@ export const stepResultsRelations = relations(stepResults, ({ one }) => ({
 // 13. defects
 export const defectStatusEnum = pgEnum("defect_status", [
   "NEW", "TRIAGED", "ASSIGNED", "IN_PROGRESS", "BLOCKED",
-  "RESOLVED_DEV", "READY_FOR_VERIFICATION", "REGRESSED", "CLOSED", "PASSED_BY_AGREEMENT",
+  "RESOLVED_DEV", "READY_FOR_VERIFICATION", "REGRESSED", "CLOSED",
+  "PENDING_BIZ_ACCEPTANCE", "PASSED_BY_AGREEMENT",
 ]);
 
 export const defects = pgTable("defects", {

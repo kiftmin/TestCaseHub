@@ -15,6 +15,7 @@ const statusBadge: Record<string, string> = {
   BLOCKED: "bg-red-100 text-red-800 border-red-200",
   RESOLVED_DEV: "bg-indigo-100 text-indigo-800 border-indigo-200",
   READY_FOR_VERIFICATION: "bg-blue-100 text-blue-800 border-blue-200",
+  PENDING_BIZ_ACCEPTANCE: "bg-amber-100 text-amber-800 border-amber-200",
   REGRESSED: "bg-red-100 text-red-800 border-red-200",
   CLOSED: "bg-green-100 text-green-800 border-green-200",
   PASSED_BY_AGREEMENT: "bg-purple-100 text-purple-800 border-purple-200",
@@ -28,6 +29,7 @@ const statusDisplay: Record<string, string> = {
   BLOCKED: "Blocked",
   RESOLVED_DEV: "Resolved by Dev",
   READY_FOR_VERIFICATION: "Ready for Verification",
+  PENDING_BIZ_ACCEPTANCE: "Pending Business Decision",
   REGRESSED: "Regressed",
   CLOSED: "Closed",
   PASSED_BY_AGREEMENT: "Passed by Agreement",
@@ -60,6 +62,7 @@ const statusIcon: Record<string, string> = {
   BLOCKED: "block",
   RESOLVED_DEV: "bug_report",
   READY_FOR_VERIFICATION: "fact_check",
+  PENDING_BIZ_ACCEPTANCE: "pending_actions",
   REGRESSED: "warning",
   CLOSED: "check_circle",
   PASSED_BY_AGREEMENT: "approval",
@@ -160,7 +163,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     enabled: !!projectId,
   });
 
-  const statusOrder = ["all","NEW","TRIAGED","ASSIGNED","IN_PROGRESS","BLOCKED","RESOLVED_DEV","READY_FOR_VERIFICATION","REGRESSED","CLOSED","PASSED_BY_AGREEMENT"];
+  const statusOrder = ["all","NEW","TRIAGED","ASSIGNED","IN_PROGRESS","BLOCKED","RESOLVED_DEV","READY_FOR_VERIFICATION","PENDING_BIZ_ACCEPTANCE","REGRESSED","CLOSED","PASSED_BY_AGREEMENT"];
 
   const statusDist = useMemo(() => {
     const map: Record<string, number> = {};
@@ -378,10 +381,14 @@ function DefectRow({
   const [rejectOpen, setRejectOpen] = useState(false);
   const [retestOpen, setRetestOpen] = useState(false);
   const [acceptBizRiskOpen, setAcceptBizRiskOpen] = useState(false);
+  const [rejectBizOpen, setRejectBizOpen] = useState(false);
+  const [bizAcceptOpen, setBizAcceptOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [flagRetestNewOpen, setFlagRetestNewOpen] = useState(false);
   const [flagBlockedNewOpen, setFlagBlockedNewOpen] = useState(false);
   const [flagBusinessOpen, setFlagBusinessOpen] = useState(false);
+  const [blockOpen, setBlockOpen] = useState(false);
+  const [unblockOpen, setUnblockOpen] = useState(false);
   const [untriagedAction, setUntriagedAction] = useState<string | null>(null);
   const [pendingAfterClassify, setPendingAfterClassify] = useState<string | null>(null);
   const [activeDetailTab, setActiveDetailTab] = useState<"overview" | "steps" | "activity">("overview");
@@ -420,6 +427,7 @@ function DefectRow({
   const isResolved = defect.status === "RESOLVED_DEV";
   const isReady = defect.status === "READY_FOR_VERIFICATION";
   const isClosed = defect.status === "CLOSED" || defect.status === "PASSED_BY_AGREEMENT";
+  const isPendingBiz = defect.status === "PENDING_BIZ_ACCEPTANCE";
 
   const invalidateProject = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["project-defects"] });
@@ -458,13 +466,17 @@ function DefectRow({
 
   const blockMut = useMutation({
     mutationFn: (reason: string) => customFetch(`/defects/${defect.id}/block`, { method: "PATCH", body: JSON.stringify({ reason }) }),
-    onSuccess: () => { invalidateProject(); toast.success("Defect blocked"); },
+    onSuccess: () => { invalidateProject(); toast.success("Defect blocked"); setBlockOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const unblockMut = useMutation({
-    mutationFn: () => customFetch(`/defects/${defect.id}/unblock`, { method: "PATCH" }),
-    onSuccess: () => { invalidateProject(); toast.success("Block lifted"); },
+    mutationFn: (reason: string) =>
+      customFetch(`/defects/${defect.id}/unblock`, {
+        method: "PATCH",
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: () => { invalidateProject(); toast.success("Block lifted"); setUnblockOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -504,7 +516,7 @@ function DefectRow({
 
   const flagAcceptedByBusinessMut = useMutation({
     mutationFn: (note: string) => customFetch(`/defects/${defect.id}/flag-accepted-by-business`, { method: "PATCH", body: JSON.stringify({ note }) }),
-    onSuccess: () => { invalidateProject(); toast.success("Defect accepted by business agreement"); setFlagBusinessOpen(false); },
+    onSuccess: () => { invalidateProject(); toast.success("Defect flagged for business decision"); setFlagBusinessOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -514,9 +526,23 @@ function DefectRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const rejectBizAcceptanceMut = useMutation({
+    mutationFn: (reason: string) =>
+      customFetch(`/defects/${defect.id}/reject-biz-acceptance`, {
+        method: "PATCH",
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: () => {
+      invalidateProject();
+      toast.success("Business risk acceptance rejected — defect returned to prior state");
+      setRejectBizOpen(false);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const bizAcceptMut = useMutation({
     mutationFn: (note: string) => customFetch(`/defects/${defect.id}/accept`, { method: "PATCH", body: JSON.stringify({ note }) }),
-    onSuccess: () => { invalidateProject(); toast.success("Defect accepted"); },
+    onSuccess: () => { invalidateProject(); toast.success("Defect accepted"); setBizAcceptOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -551,9 +577,10 @@ function DefectRow({
     { key: "IN_PROGRESS", label: "In Progress" },
     { key: "RESOLVED_DEV", label: "Resolved" },
     { key: "READY_FOR_VERIFICATION", label: "Verification" },
+    { key: "PENDING_BIZ_ACCEPTANCE", label: "Pending Biz" },
     { key: "CLOSED", label: "Closed" },
   ];
-  const mainFlow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, BLOCKED:3, RESOLVED_DEV:4, READY_FOR_VERIFICATION:5, CLOSED:6, PASSED_BY_AGREEMENT:6, REGRESSED:3 };
+  const mainFlow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, BLOCKED:3, RESOLVED_DEV:4, READY_FOR_VERIFICATION:5, PENDING_BIZ_ACCEPTANCE:6, CLOSED:7, PASSED_BY_AGREEMENT:7, REGRESSED:3 };
   const currentStatusIdx = mainFlow[defect.status] ?? 0;
 
   // Derive actually completed steps from system notes to avoid marking skipped states as completed
@@ -636,17 +663,35 @@ function DefectRow({
                 <button onClick={() => setClassifyOpen(true)} className="bg-secondary-container/40 text-on-secondary-container px-2 py-1 rounded-md text-xs font-bold hover:bg-secondary-container transition-colors" title="Set severity and priority">
                   Classify
                 </button>
-                {/* Assign to Engineering (NEW → ASSIGNED) */}
-                <button onClick={() => handleUntriagedAction("assign")} className="bg-amber-100 text-amber-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-amber-200 transition-colors" title="Assign to Developer">
+                {/* Assign to Engineering — requires triage first */}
+                <button
+                  onClick={() => isClassified ? handleUntriagedAction("assign") : undefined}
+                  disabled={!isClassified}
+                  className={`px-2 py-1 rounded-md text-xs font-bold transition-colors ${
+                    isClassified
+                      ? "bg-amber-100 text-amber-800 hover:bg-amber-200 cursor-pointer"
+                      : "bg-amber-50 text-amber-400 cursor-not-allowed opacity-60"
+                  }`}
+                  title={isClassified ? "Assign to Developer" : "Classify defect before assigning"}
+                >
                   Assign
                 </button>
                 {/* Flag for Retesting (NEW → READY_FOR_VERIFICATION) */}
                 <button onClick={() => handleUntriagedAction("retest")} className="bg-blue-100 text-blue-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-blue-200 transition-colors" title="Send for verification">
                   Retest
                 </button>
-                {/* Flag Accepted by Business (NEW → PASSED_BY_AGREEMENT) */}
-                <button onClick={() => handleUntriagedAction("acceptBiz")} className="bg-purple-100 text-purple-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-purple-200 transition-colors" title="Accept by business agreement">
-                  Accept Biz
+                {/* Flag for Business Decision — requires triage first */}
+                <button
+                  onClick={() => isClassified ? handleUntriagedAction("acceptBiz") : undefined}
+                  disabled={!isClassified}
+                  className={`px-2 py-1 rounded-md text-xs font-bold transition-colors ${
+                    isClassified
+                      ? "bg-purple-100 text-purple-800 hover:bg-purple-200 cursor-pointer"
+                      : "bg-purple-50 text-purple-400 cursor-not-allowed opacity-60"
+                  }`}
+                  title={isClassified ? "Flag for Business Decision" : "Classify defect before flagging for business decision"}
+                >
+                  Flag Biz
                 </button>
                 {/* Flag as Blocked (NEW → BLOCKED) */}
                 <button onClick={() => handleUntriagedAction("block")} className="bg-red-100 text-red-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-red-200 transition-colors" title="Flag as blocked">
@@ -655,9 +700,14 @@ function DefectRow({
               </>
             )}
             {/* Classify — always available for TEST_LEAD on non-terminal defects (reclassify severity/priority) */}
-            {canManage && !isNew && !isClosed && (
+            {canManage && !isNew && !isClosed && !isPendingBiz && (
               <button onClick={() => setClassifyOpen(true)} className="p-1.5 hover:bg-secondary-container hover:text-on-secondary-container rounded text-on-surface-variant transition-colors" title="Reclassify severity and priority">
                 <span className="material-symbols-outlined text-sm">category</span>
+              </button>
+            )}
+            {canManage && !isClosed && !isPendingBiz && !isNew && (
+              <button onClick={() => setFlagBusinessOpen(true)} className="p-1.5 hover:bg-purple-100 hover:text-purple-700 rounded text-on-surface-variant transition-colors" title="Flag for Business Decision">
+                <span className="material-symbols-outlined text-sm">pending_actions</span>
               </button>
             )}
             {/* TEST_LEAD: Assign (TRIAGED → ASSIGNED) */}
@@ -680,14 +730,14 @@ function DefectRow({
             )}
             {/* DEVELOPER: Block (ASSIGNED | IN_PROGRESS → BLOCKED) */}
             {isDeveloper && (isAssigned || isInProgress) && (
-              <button onClick={() => { const r = prompt("Block reason:"); if (r) blockMut.mutate(r); }} className="p-1.5 hover:bg-red-100 hover:text-red-700 rounded text-on-surface-variant transition-colors" title="Block">
+              <button onClick={() => setBlockOpen(true)} className="p-1.5 hover:bg-red-100 hover:text-red-700 rounded text-on-surface-variant transition-colors" title="Block">
                 <span className="material-symbols-outlined text-sm">block</span>
               </button>
             )}
-            {/* DEVELOPER | TEST_LEAD: Unblock (BLOCKED → IN_PROGRESS) */}
+            {/* DEVELOPER | TEST_LEAD: Unblock (BLOCKED → <prior state>) */}
             {(isDeveloper || canManage) && isBlocked && (
-              <button onClick={() => unblockMut.mutate()} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Unblock">
-                <span className="material-symbols-outlined text-sm">check_circle</span>
+              <button onClick={() => setUnblockOpen(true)} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Unblock">
+                <span className="material-symbols-outlined text-sm">lock_open</span>
               </button>
             )}
             {/* DEVELOPER | TEST_LEAD: Resume Work (RESOLVED_DEV → IN_PROGRESS) */}
@@ -702,28 +752,34 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">history_edu</span>
               </button>
             )}
-            {/* TESTER: Record Retest Result (READY_FOR_VERIFICATION → CLOSED | REGRESSED) */}
-            {isTester && isReady && (
-              <button onClick={() => setRetestOpen(true)} className="bg-secondary/10 text-secondary hover:bg-secondary hover:text-on-secondary px-3 py-1 rounded-md text-xs font-bold transition-all">
-                Record Retest
+            {/* TESTER | TEST_LEAD: Record Retest Result (READY_FOR_VERIFICATION → CLOSED | REGRESSED) */}
+            {(isTester || canManage) && isReady && (
+              <button onClick={() => setRetestOpen(true)} className="p-1.5 hover:bg-blue-100 hover:text-blue-700 rounded text-on-surface-variant transition-colors" title="Record Retest Result">
+                <span className="material-symbols-outlined text-sm">fact_check</span>
               </button>
             )}
-            {/* BUSINESS_OWNER: Accept (READY_FOR_VERIFICATION → CLOSED) */}
+            {/* BUSINESS_OWNER: Accept verification (READY_FOR_VERIFICATION → CLOSED) */}
             {isBusinessOwner && isReady && (
+              <button onClick={() => setBizAcceptOpen(true)} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Accept">
+                <span className="material-symbols-outlined text-sm">check_circle</span>
+              </button>
+            )}
+            {/* BUSINESS_OWNER | TEST_LEAD: Reject verification (READY_FOR_VERIFICATION → ASSIGNED) */}
+            {(isBusinessOwner || canManage) && isReady && (
+              <button onClick={() => setRejectOpen(true)} className="p-1.5 hover:bg-error-container hover:text-on-error-container rounded text-on-surface-variant transition-colors" title="Reject">
+                <span className="material-symbols-outlined text-sm">cancel</span>
+              </button>
+            )}
+            {/* BUSINESS_OWNER: Accept by Agreement (PENDING_BIZ_ACCEPTANCE → PASSED_BY_AGREEMENT) */}
+            {isBusinessOwner && isPendingBiz && (
               <>
-                <button onClick={() => { const n = prompt("Acceptance note:"); if (n) bizAcceptMut.mutate(n); }} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Accept">
-                  <span className="material-symbols-outlined text-sm">check_circle</span>
+                <button onClick={() => setAcceptBizRiskOpen(true)} className="p-1.5 hover:bg-purple-100 hover:text-purple-700 rounded text-on-surface-variant transition-colors" title="Accept as Business Risk">
+                  <span className="material-symbols-outlined text-sm">approval</span>
                 </button>
-                <button onClick={() => setRejectOpen(true)} className="p-1.5 hover:bg-error-container hover:text-on-error-container rounded text-on-surface-variant transition-colors" title="Reject">
-                  <span className="material-symbols-outlined text-sm">cancel</span>
+                <button onClick={() => setRejectBizOpen(true)} className="p-1.5 hover:bg-red-100 hover:text-red-700 rounded text-on-surface-variant transition-colors" title="Reject Business Risk Acceptance">
+                  <span className="material-symbols-outlined text-sm">thumb_down</span>
                 </button>
               </>
-            )}
-            {/* BUSINESS_OWNER: Accept by Agreement (any non-terminal → PASSED_BY_AGREEMENT) */}
-            {isBusinessOwner && !isClosed && !isNew && (
-              <button onClick={() => setAcceptBizRiskOpen(true)} className="p-1.5 hover:bg-purple-100 hover:text-purple-700 rounded text-on-surface-variant transition-colors" title="Accept by Agreement">
-                <span className="material-symbols-outlined text-sm">approval</span>
-              </button>
             )}
             <button onClick={() => setNoteOpen(true)} className="p-1.5 hover:bg-surface-container-high rounded text-on-surface-variant transition-colors" title="Add Comment">
               <span className="material-symbols-outlined text-sm">comment</span>
@@ -974,6 +1030,28 @@ function DefectRow({
         </Dialog>
       )}
 
+      {/* Reject Business Risk Acceptance Dialog */}
+      {rejectBizOpen && (
+        <Dialog onClose={() => setRejectBizOpen(false)} title="Reject Business Risk Acceptance">
+          <RejectBizAcceptanceForm
+            onSave={(reason) => rejectBizAcceptanceMut.mutate(reason)}
+            onCancel={() => setRejectBizOpen(false)}
+            loading={rejectBizAcceptanceMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Biz Accept (READY_FOR_VERIFICATION → CLOSED) Dialog */}
+      {bizAcceptOpen && (
+        <Dialog onClose={() => setBizAcceptOpen(false)} title="Accept Defect">
+          <BizAcceptForm
+            onSave={(note) => bizAcceptMut.mutate(note)}
+            onCancel={() => setBizAcceptOpen(false)}
+            loading={bizAcceptMut.isPending}
+          />
+        </Dialog>
+      )}
+
       {/* Add Comment Dialog */}
       {noteOpen && (
         <Dialog onClose={() => setNoteOpen(false)} title="Add Comment">
@@ -1004,12 +1082,42 @@ function DefectRow({
         </Dialog>
       )}
 
-      {/* Flag Accepted by Business Dialog */}
+      {/* Flag for Business Decision Dialog */}
       {flagBusinessOpen && (
-        <Dialog onClose={() => setFlagBusinessOpen(false)} title="Flag Accepted by Business">
+        <Dialog onClose={() => setFlagBusinessOpen(false)} title="Flag for Business Decision">
           <FlagBusinessForm
             onSave={(note) => flagAcceptedByBusinessMut.mutate(note)}
             loading={flagAcceptedByBusinessMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Block Dialog */}
+      {blockOpen && (
+        <Dialog onClose={() => setBlockOpen(false)} title="Flag as Blocked">
+          <SimpleReasonForm
+            label="Block Reason"
+            placeholder="Describe what is blocking progress on this defect..."
+            confirmLabel="Flag as Blocked"
+            confirmClassName="bg-red-600"
+            onSave={(reason) => blockMut.mutate(reason)}
+            onCancel={() => setBlockOpen(false)}
+            loading={blockMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Unblock Dialog */}
+      {unblockOpen && (
+        <Dialog onClose={() => setUnblockOpen(false)} title="Unblock Defect">
+          <SimpleReasonForm
+            label="Unblock Reason"
+            placeholder="Describe what was resolved or changed to unblock this defect..."
+            confirmLabel="Unblock"
+            confirmClassName="bg-green-600"
+            onSave={(reason) => unblockMut.mutate(reason)}
+            onCancel={() => setUnblockOpen(false)}
+            loading={unblockMut.isPending}
           />
         </Dialog>
       )}
@@ -1257,17 +1365,24 @@ function FlagBlockedForm({ onSave, loading }: { onSave: (reason: string) => void
 
 function FlagBusinessForm({ onSave, loading }: { onSave: (note: string) => void; loading: boolean }) {
   const [note, setNote] = useState("");
+  const charsLeft = 10 - note.length;
+  const isValid = note.trim().length >= 10;
   return (
-    <form onSubmit={(e) => { e.preventDefault(); if (note.trim()) onSave(note.trim()); }} className="space-y-md">
+    <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave(note.trim()); }} className="space-y-md">
       <p className="font-body-sm text-on-surface-variant">
-        This will route the defect to the <strong>Passed by Agreement</strong> state. Provide a business justification.
+        This will route the defect to <strong>Pending Business Decision</strong> status.
+        The Business Owner will be required to formally accept or reject. Provide a
+        justification for why this defect should be considered for business risk acceptance.
       </p>
       <div className="space-y-sm">
         <label className="font-label-sm text-label-sm">Business Justification *</label>
-        <textarea value={note} onChange={(e) => setNote(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Explain why this defect is accepted by business agreement..." required />
+        <textarea value={note} onChange={(e) => setNote(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Explain why this defect should be considered for business risk acceptance..." required />
+        <p className={`text-label-xs ${charsLeft <= 0 ? "text-success" : "text-on-surface-variant/60"}`}>
+          {charsLeft <= 0 ? "Minimum length met" : `${charsLeft} characters remaining (minimum 10)`}
+        </p>
       </div>
-      <button type="submit" disabled={loading || !note.trim()} className="w-full py-sm bg-purple-600 text-white rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
-        {loading ? "Submitting..." : "Accept by Business"}
+      <button type="submit" disabled={loading || !isValid} className="w-full py-sm bg-purple-600 text-white rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
+        {loading ? "Submitting..." : "Flag for Business Decision"}
       </button>
     </form>
   );
@@ -1298,6 +1413,113 @@ function AcceptBizRiskForm({ onSave, onCancel, loading }: { onSave: (justificati
         </button>
         <button type="submit" disabled={loading || !isValid} className="px-4 py-sm bg-purple-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
           {loading ? "Submitting..." : "Confirm & Accept"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function BizAcceptForm({ onSave, onCancel, loading }: { onSave: (note: string) => void; onCancel: () => void; loading: boolean }) {
+  const [note, setNote] = useState("");
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (note.trim()) onSave(note.trim()); }} className="space-y-md">
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Acceptance Note</label>
+        <textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
+          placeholder="Enter an acceptance note..."
+        />
+      </div>
+      <div className="flex justify-end gap-md pt-sm">
+        <button type="button" onClick={onCancel} className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors">
+          Cancel
+        </button>
+        <button type="submit" disabled={loading || !note.trim()} className="px-4 py-sm bg-green-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
+          {loading ? "Submitting..." : "Accept"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function RejectBizAcceptanceForm({
+  onSave, onCancel, loading,
+}: { onSave: (reason: string) => void; onCancel: () => void; loading: boolean }) {
+  const [reason, setReason] = useState("");
+  const isValid = reason.trim().length >= 10;
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave(reason.trim()); }} className="space-y-md">
+      <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-lg p-md">
+        <span className="material-symbols-outlined text-red-600 text-xl flex-shrink-0">warning</span>
+        <p className="font-body-sm text-red-900">
+          This defect will be returned to its <strong>prior state</strong>. The Test Lead
+          will need to re-evaluate and re-flag if a business decision is still required.
+          A rejection reason is required for audit purposes.
+        </p>
+      </div>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Rejection Reason *</label>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
+          placeholder="Explain why this defect cannot be accepted as a business risk..."
+          required
+        />
+        <p className={`text-label-xs ${reason.trim().length >= 10 ? "text-success" : "text-on-surface-variant/60"}`}>
+          {reason.trim().length >= 10 ? "Minimum length met" : `${10 - reason.trim().length} characters remaining (minimum 10)`}
+        </p>
+      </div>
+      <div className="flex justify-end gap-md pt-sm">
+        <button type="button" onClick={onCancel}
+          className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors">
+          Cancel
+        </button>
+        <button type="submit" disabled={loading || !isValid}
+          className="px-4 py-sm bg-red-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
+          {loading ? "Submitting..." : "Reject & Return to Prior State"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** Generic reason-collection form used for block and unblock modals */
+function SimpleReasonForm({
+  label, placeholder, confirmLabel, confirmClassName, onSave, onCancel, loading,
+}: {
+  label: string;
+  placeholder: string;
+  confirmLabel: string;
+  confirmClassName: string;
+  onSave: (reason: string) => void;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  const [reason, setReason] = useState("");
+  const isValid = reason.trim().length >= 1;
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave(reason.trim()); }} className="space-y-md">
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">{label} *</label>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
+          placeholder={placeholder}
+          required
+        />
+      </div>
+      <div className="flex justify-end gap-md pt-sm">
+        <button type="button" onClick={onCancel}
+          className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors">
+          Cancel
+        </button>
+        <button type="submit" disabled={loading || !isValid}
+          className={`px-4 py-sm text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all ${confirmClassName}`}>
+          {loading ? "Submitting..." : confirmLabel}
         </button>
       </div>
     </form>

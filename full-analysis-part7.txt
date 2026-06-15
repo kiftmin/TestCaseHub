@@ -1,0 +1,1058 @@
+========================================
+FILE: fix-progress-tracking.patch
+========================================
+From de20b890297e8ed7f8b601c61f8bc8e663b3df8d Mon Sep 17 00:00:00 2001
+From: Fix Bot <fix@testcasehub.dev>
+Date: Sat, 6 Jun 2026 11:56:14 +0000
+Subject: [PATCH] fix: correct test case progress tracking and execution submit
+ flow
+
+Three bugs fixed:
+
+1. Progress showed 'Not Started' even with completed cases
+   - TestCaseSelector and TesterScenarioPage computeScenarioProgress now
+     treat execution.overall_result != null as definitively 'Completed'
+   - Previously relied solely on step-result recomputation which could
+     disagree with the submitted state
+
+2. Case showed 'In Progress' after all steps were Pass/Fail
+   - QuickWizard readyToSubmit now checks BOTH in-memory entries AND
+     persisted stepResults from the server, so a reloaded page with
+     all steps already saved correctly enables the Submit button
+   - validateFailedSteps also checks persisted actual_result, not just
+     the in-memory entry
+
+3. Submit button never marked execution as Completed on the backend
+   - Both GuidedWizard (Submit Case button) and QuickWizard (handleSubmit)
+     now PATCH /executions/:id with status='completed' and overall_result
+     ('passed' or 'failed') after saving step results
+   - Without this, syncUseCaseStatus never saw a terminal state and the
+     scenario/run progress stayed 'in_progress' indefinitely
+
+Backend: prevent duplicate defect creation on re-submit
+   - PATCH executions/:id now checks for an existing defect on the
+     execution before inserting, returning the existing one if found
+---
+ artifacts/api-server/src/routes/executions.ts | 41 ++++++----
+ .../uat-manager/src/pages/TesterCasePage.tsx  | 82 ++++++++++++++-----
+ .../src/pages/TesterScenarioPage.tsx          |  2 +
+ 3 files changed, 89 insertions(+), 36 deletions(-)
+
+diff --git a/artifacts/api-server/src/routes/executions.ts b/artifacts/api-server/src/routes/executions.ts
+index 1c459e4..5349091 100644
+--- a/artifacts/api-server/src/routes/executions.ts
++++ b/artifacts/api-server/src/routes/executions.ts
+@@ -290,7 +290,7 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res,
+       .where(eq(schema.executions.id, executionId))
+       .returning();
+ 
+-    // Auto-create defect on failure — unconditional (spec §7.8)
++    // Auto-create defect on failure — only if one doesn't already exist for this execution
+     let defect = null;
+     if (parsed.overall_result === "failed") {
+       const projectId = execution.testRun?.project_id;
+@@ -298,22 +298,29 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res,
+         res.status(400).json({ message: "Cannot create defect: test run has no project" });
+         return;
+       }
+-      const maxBug = await db
+-        .select({ max: sql`COALESCE(MAX(bug_number), 0)` })
+-        .from(schema.defects)
+-        .where(eq(schema.defects.project_id, projectId));
+-      const nextBugNumber = (maxBug[0]?.max as number ?? 0) + 1;
+-      [defect] = await db
+-        .insert(schema.defects)
+-        .values({
+-          project_id: projectId,
+-          bug_number: nextBugNumber,
+-          test_run_id: execution.test_run_id!,
+-          test_case_id: execution.test_case_id,
+-          execution_id: executionId,
+-          tester_notes: parsed.notes || "Auto-created from failed execution",
+-        })
+-        .returning();
++      const existingDefect = await db.query.defects.findFirst({
++        where: eq(schema.defects.execution_id, executionId),
++      });
++      if (!existingDefect) {
++        const maxBug = await db
++          .select({ max: sql`COALESCE(MAX(bug_number), 0)` })
++          .from(schema.defects)
++          .where(eq(schema.defects.project_id, projectId));
++        const nextBugNumber = (maxBug[0]?.max as number ?? 0) + 1;
++        [defect] = await db
++          .insert(schema.defects)
++          .values({
++            project_id: projectId,
++            bug_number: nextBugNumber,
++            test_run_id: execution.test_run_id!,
++            test_case_id: execution.test_case_id,
++            execution_id: executionId,
++            tester_notes: parsed.notes || "Auto-created from failed execution",
++          })
++          .returning();
++      } else {
++        defect = existingDefect;
++      }
+     }
+ 
+     await logAudit({ entityType: "execution", entityId: executionId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: parsed.status });
+diff --git a/artifacts/uat-manager/src/pages/TesterCasePage.tsx b/artifacts/uat-manager/src/pages/TesterCasePage.tsx
+index 7d135ec..ee9da15 100644
+--- a/artifacts/uat-manager/src/pages/TesterCasePage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterCasePage.tsx
+@@ -386,17 +386,22 @@ function TestCaseSelector({
+ 
+   const testCases = useMemo(() => useCase?.testCases ?? [], [useCase]);
+ 
+-  // Build a reliable testCaseId → progress map from step results
++  // Build a reliable testCaseId → progress map.
++  // If the execution has been submitted (overall_result set), use that directly.
++  // Otherwise compute from step results so in-progress work is reflected.
+   const caseProgressById = useMemo(() => {
+     const map = new Map<number, CaseProgress>();
+     const execs = testRun?.executions ?? [];
+     for (const exec of execs) {
+       const tc = testCases.find(t => t.id === exec.test_case_id);
+       if (!tc) continue;
+-      const progress = computeCaseProgress(
+-        tc.steps ?? [],
+-        exec.stepResults ?? [],
+-      );
++      let progress: CaseProgress;
++      if (exec.overall_result != null) {
++        // Execution was submitted — it's definitively Completed
++        progress = "Completed";
++      } else {
++        progress = computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);
++      }
+       map.set(exec.test_case_id, progress);
+     }
+     return map;
+@@ -978,18 +983,35 @@ function StepWizard({
+           {/* Next / Submit Case */}
+           {isLast ? (
+             <button
+-              onClick={() => {
+-                if (!allStepsRecorded) return;
++              onClick={async () => {
++                if (!allStepsRecorded || !execution) return;
+                 if (validateFailedSteps.length > 0) {
+                   toast.error(validateFailedSteps[0]);
+                   return;
+                 }
+-                toast.success(previouslySubmitted ? "Results updated" : "Test case saved");
+-                queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+-                queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+-                queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+-                queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
+-                navigate(`/tester/run/${testRunId}/scenario/${scenarioId}`);
++                // Determine overall result from step results
++                const anyFailed = steps.some((s) => {
++                  const e = entries.get(s.id);
++                  const persisted = execution.stepResults?.find((r) => r.step_id === s.id);
++                  return (e?.passed ?? persisted?.passed ?? null) === false;
++                });
++                try {
++                  await customFetch(`/executions/${execution.id}`, {
++                    method: "PATCH",
++                    body: JSON.stringify({
++                      status: "completed",
++                      overall_result: anyFailed ? "failed" : "passed",
++                    }),
++                  });
++                  toast.success(previouslySubmitted ? "Results updated" : "Test case saved");
++                  queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
++                  queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
++                  queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
++                  queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
++                  navigate(`/tester/run/${testRunId}/scenario/${scenarioId}`);
++                } catch (err) {
++                  toast.error(err instanceof Error ? err.message : "Failed to save case");
++                }
+               }}
+               disabled={!allStepsRecorded}
+               className="inline-flex items-center gap-xs px-xl py-sm bg-primary text-on-primary rounded-lg font-label-md text-label-md hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+@@ -1200,23 +1222,32 @@ function QuickWizard({
+     return { passed, failed, pending, total: steps.length };
+   }, [entries, persistedResults, localResults, steps]);
+ 
+-  const readyToSubmit = summary.pending === 0 && summary.total > 0;
++  // readyToSubmit: all steps must have a pass/fail result (in-memory or persisted)
++  const readyToSubmit = useMemo(() => {
++    if (steps.length === 0) return false;
++    return steps.every((s) => {
++      const e = entries.get(s.id);
++      const persisted = persistedResults.get(s.id);
++      return (e?.passed ?? persisted ?? null) !== null;
++    });
++  }, [steps, entries, persistedResults]);
+ 
+-  // Validate failed steps have actual_result filled
++  // Validate failed steps have actual_result filled (check both entries and persisted)
+   const validateFailedSteps = useMemo(() => {
+     const failedSteps: string[] = [];
+     steps.forEach((s) => {
+       const e = entries.get(s.id);
+-      const passed = e?.passed ?? null;
++      const persistedResult = execution?.stepResults?.find((r) => r.step_id === s.id);
++      const passed = e?.passed ?? persistedResult?.passed ?? null;
+       if (passed === false) {
+-        const actual = e?.actual_result ?? "";
++        const actual = e?.actual_result ?? persistedResult?.actual_result ?? "";
+         if (!actual.trim()) {
+           failedSteps.push(`Step ${s.step_number}: "What actually happened" is required when marking a step as Fail`);
+         }
+       }
+     });
+     return failedSteps;
+-  }, [steps, entries]);
++  }, [steps, entries, execution?.stepResults]);
+ 
+   // Check if execution already has an overall_result (was previously submitted)
+   const previouslySubmitted = execution?.overall_result != null;
+@@ -1248,7 +1279,20 @@ function QuickWizard({
+         });
+         removeDraft(s.id);
+       }
+-      toast.success(previouslySubmitted ? "Results updated" : "All steps recorded — case complete");
++      // Determine overall result and mark execution as completed
++      const anyFailed = steps.some((s) => {
++        const e = entries.get(s.id);
++        const persistedResult = execution.stepResults?.find((r) => r.step_id === s.id);
++        return (e?.passed ?? persistedResult?.passed ?? null) === false;
++      });
++      await customFetch(`/executions/${execution.id}`, {
++        method: "PATCH",
++        body: JSON.stringify({
++          status: "completed",
++          overall_result: anyFailed ? "failed" : "passed",
++        }),
++      });
++      toast.success(previouslySubmitted ? "Results updated" : "Test case complete");
+       queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+       queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+       queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
+diff --git a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+index c1290fe..18fb1b8 100644
+--- a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+@@ -56,6 +56,8 @@ function computeScenarioProgress(
+   const progresses = testCases.map(tc => {
+     const exec = executions.find(e => e && e.test_case_id === tc.id);
+     if (!exec) return "Not Started" as CaseProgress;
++    // If execution was submitted (overall_result set) it is definitively Completed
++    if (exec.overall_result != null) return "Completed" as CaseProgress;
+     const steps = tc.steps ?? [];
+     const stepResults = exec.stepResults ?? [];
+     return computeCaseProgress(steps, stepResults);
+-- 
+2.43.0
+
+
+========================================
+FILE: fix-submit-flow.patch
+========================================
+From f4b325500ec370802f4d60035f48920bf9745d76 Mon Sep 17 00:00:00 2001
+From: Fix Bot <fix@testcasehub.dev>
+Date: Sat, 6 Jun 2026 12:41:00 +0000
+Subject: [PATCH] fix: correct submit flow and progress staleness
+
+- QuickWizard handleSubmit: snapshot full step results BEFORE clearing
+  entries, so anyFailed calculation is not reading an emptied map
+- QuickWizard handleSubmit: await test-run cache invalidation before
+  navigating so TestCaseSelector sees fresh data on arrival
+- GuidedWizard: same await on test-run invalidation before navigate
+- TestCaseSelector test-run + use-case queries: staleTime=0 so they
+  always refetch on mount, not serve stale cache
+- TesterScenarioPage test-run query: staleTime=0 for same reason
+---
+ .../uat-manager/src/pages/TesterCasePage.tsx  | 58 +++++++++++--------
+ .../src/pages/TesterScenarioPage.tsx          |  1 +
+ 2 files changed, 36 insertions(+), 23 deletions(-)
+
+diff --git a/artifacts/uat-manager/src/pages/TesterCasePage.tsx b/artifacts/uat-manager/src/pages/TesterCasePage.tsx
+index ee9da15..5edb40f 100644
+--- a/artifacts/uat-manager/src/pages/TesterCasePage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterCasePage.tsx
+@@ -374,6 +374,7 @@ function TestCaseSelector({
+   const { data: testRun } = useQuery({
+     queryKey: ["test-run", testRunId],
+     queryFn: () => customFetch<TestRun>(`/test-runs/${testRunId}`),
++    staleTime: 0, // always refetch on mount so progress reflects latest submissions
+   });
+ 
+   const { data: useCase, isLoading } = useQuery({
+@@ -382,6 +383,7 @@ function TestCaseSelector({
+       customFetch<{ id: number; name: string; code: string; testCases: (TestCase & { steps?: TestStep[]; stepResults?: StepResult[] })[] }>(
+         `/use-cases/${scenarioId}`
+       ),
++    staleTime: 0,
+   });
+ 
+   const testCases = useMemo(() => useCase?.testCases ?? [], [useCase]);
+@@ -989,7 +991,7 @@ function StepWizard({
+                   toast.error(validateFailedSteps[0]);
+                   return;
+                 }
+-                // Determine overall result from step results
++                // Snapshot results before any state mutation
+                 const anyFailed = steps.some((s) => {
+                   const e = entries.get(s.id);
+                   const persisted = execution.stepResults?.find((r) => r.step_id === s.id);
+@@ -1004,8 +1006,8 @@ function StepWizard({
+                     }),
+                   });
+                   toast.success(previouslySubmitted ? "Results updated" : "Test case saved");
++                  await queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+                   queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+-                  queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+                   queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+                   queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
+                   navigate(`/tester/run/${testRunId}/scenario/${scenarioId}`);
+@@ -1254,37 +1256,43 @@ function QuickWizard({
+ 
+   const handleSubmit = async () => {
+     if (!execution || !readyToSubmit || isSubmitting) return;
+-    // Validate failed steps
+     if (validateFailedSteps.length > 0) {
+       toast.error(validateFailedSteps[0]);
+       return;
+     }
+     setIsSubmitting(true);
++
++    // Snapshot the full result set NOW before any state mutations.
++    // For each step: prefer in-memory entry, fall back to persisted result.
++    const stepSnapshot = steps.map((s) => {
++      const e = entries.get(s.id);
++      const persistedResult = execution.stepResults?.find((r) => r.step_id === s.id);
++      return {
++        stepId: s.id,
++        passed: e?.passed ?? persistedResult?.passed ?? null,
++        actual_result: e?.actual_result ?? persistedResult?.actual_result ?? "",
++        comments: e?.comments ?? persistedResult?.comments ?? "",
++        needsSave: e?.passed != null, // only save if there's an in-memory entry
++      };
++    });
++
++    const anyFailed = stepSnapshot.some((r) => r.passed === false);
++
+     try {
+-      for (const s of steps) {
+-        const e = entries.get(s.id);
+-        if (e?.passed == null) continue;
+-        await customFetch(`/executions/${execution.id}/steps/${s.id}/result`, {
++      // 1. Save any unsaved in-memory step results
++      for (const snap of stepSnapshot) {
++        if (!snap.needsSave) continue;
++        await customFetch(`/executions/${execution.id}/steps/${snap.stepId}/result`, {
+           method: "POST",
+           body: JSON.stringify({
+-            passed: e.passed,
+-            actual_result: e.actual_result ?? "",
+-            comments: e.comments ?? "",
++            passed: snap.passed,
++            actual_result: snap.actual_result,
++            comments: snap.comments,
+           }),
+         });
+-        setLocalResults((prev) => {
+-          const next = new Map(prev);
+-          next.set(s.id, e.passed!);
+-          return next;
+-        });
+-        removeDraft(s.id);
+       }
+-      // Determine overall result and mark execution as completed
+-      const anyFailed = steps.some((s) => {
+-        const e = entries.get(s.id);
+-        const persistedResult = execution.stepResults?.find((r) => r.step_id === s.id);
+-        return (e?.passed ?? persistedResult?.passed ?? null) === false;
+-      });
++
++      // 2. Mark execution as completed with correct overall_result
+       await customFetch(`/executions/${execution.id}`, {
+         method: "PATCH",
+         body: JSON.stringify({
+@@ -1292,8 +1300,12 @@ function QuickWizard({
+           overall_result: anyFailed ? "failed" : "passed",
+         }),
+       });
++
++      // 3. Clear drafts after successful save
++      steps.forEach((s) => removeDraft(s.id));
++
+       toast.success(previouslySubmitted ? "Results updated" : "Test case complete");
+-      queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
++      await queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+       queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+       queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
+       queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+diff --git a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+index 18fb1b8..4747af9 100644
+--- a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+@@ -128,6 +128,7 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
+     queryKey: ["test-run", testRunId],
+     queryFn: () => customFetch<TestRun>(`/test-runs/${testRunId}`),
+     enabled: !!testRunId,
++    staleTime: 0, // always refetch so scenario progress is accurate after case submissions
+   });
+ 
+   const useCases = useMemo(() => testRun?.useCases ?? [], [testRun]);
+-- 
+2.43.0
+
+
+========================================
+FILE: fix-scenario-progress.patch
+========================================
+From ca12e10c4e1e0425edf7bf0ca9299ad87d2c7921 Mon Sep 17 00:00:00 2001
+From: Fix Bot <fix@testcasehub.dev>
+Date: Sat, 6 Jun 2026 13:25:01 +0000
+Subject: [PATCH] fix: scenario progress uses backend status as authoritative
+ source
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- scenarioProgresses now uses testRunUseCase.status (set by syncUseCaseStatus
+  on the backend) as the primary source of truth for Completed state
+- backend status 'passed'/'failed'/'passed_by_agreement' → maps to Completed
+- backend status 'in_progress' → cross-checks client-side execution data
+- refetchOnMount: 'always' ensures TesterScenarioPage never shows stale progress
+---
+ .../src/pages/TesterScenarioPage.tsx          | 21 ++++++++++++++++---
+ 1 file changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+index 4747af9..355741b 100644
+--- a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+@@ -128,7 +128,8 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
+     queryKey: ["test-run", testRunId],
+     queryFn: () => customFetch<TestRun>(`/test-runs/${testRunId}`),
+     enabled: !!testRunId,
+-    staleTime: 0, // always refetch so scenario progress is accurate after case submissions
++    staleTime: 0,
++    refetchOnMount: "always", // always fetch fresh — don't serve stale progress
+   });
+ 
+   const useCases = useMemo(() => testRun?.useCases ?? [], [testRun]);
+@@ -142,7 +143,7 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
+       console.log("[TesterScenarioPage] testRun loaded", {
+         useCaseCount: useCases.length,
+         executionCount: allExecutions.length,
+-        executions: allExecutions.map(e => ({ id: e.id, test_case_id: e.test_case_id, stepResultsCount: e.stepResults?.length })),
++        executions: allExecutions.map(e => ({ id: e.id, test_case_id: e.test_case_id, overall_result: e.overall_result, status: e.status, stepResultsCount: e.stepResults?.length })),
+         useCases: useCases.map(uc => ({
+           use_case_id: uc.use_case_id,
+           testCaseCount: uc.useCase?.testCases?.length,
+@@ -160,10 +161,24 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
+   const scenarioProgresses = useMemo(() => {
+     const map = new Map<number, CaseProgress>();
+     useCases.forEach(uc => {
++      // First: use the backend-computed status on testRunUseCase — it's authoritative
++      // because syncUseCaseStatus runs server-side after every execution update.
++      const backendStatus = uc.status;
++      if (backendStatus === "passed" || backendStatus === "passed_by_agreement" || backendStatus === "failed") {
++        map.set(uc.use_case_id, "Completed");
++        return;
++      }
++      if (backendStatus === "in_progress") {
++        // May still be fully completed client-side — check executions
++        const tcs = uc.useCase?.testCases ?? [];
++        const computed = computeScenarioProgress(tcs, allExecutions);
++        map.set(uc.use_case_id, computed === "Completed" ? "Completed" : "In Progress");
++        return;
++      }
++      // pending — check if any work has started
+       const tcs = uc.useCase?.testCases ?? [];
+       map.set(uc.use_case_id, computeScenarioProgress(tcs, allExecutions));
+     });
+-    // Debug: log computed progress
+     console.log("[TesterScenarioPage] computed scenarioProgresses", Object.fromEntries(map));
+     return map;
+   }, [useCases, allExecutions]);
+-- 
+2.43.0
+
+
+========================================
+FILE: fix-step-numbers.patch
+========================================
+From a0a474bef8cf0f577cbafea9b82ddee608eb5dff Mon Sep 17 00:00:00 2001
+From: Fix Bot <fix@testcasehub.dev>
+Date: Sat, 6 Jun 2026 14:14:21 +0000
+Subject: [PATCH] fix: step numbers display using array index not step_number
+ field
+
+step_number is a DB text field that can be non-sequential if steps were
+deleted/reordered. All 'Step X of Y' displays and circle badges now use
+the array index (stepIndex+1 or stepIdx+1) so numbering is always
+1,2,3,...N regardless of the stored step_number value.
+---
+ artifacts/uat-manager/src/pages/TesterCasePage.tsx | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/artifacts/uat-manager/src/pages/TesterCasePage.tsx b/artifacts/uat-manager/src/pages/TesterCasePage.tsx
+index 5edb40f..7b87a38 100644
+--- a/artifacts/uat-manager/src/pages/TesterCasePage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterCasePage.tsx
+@@ -835,11 +835,11 @@ function StepWizard({
+           <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-lg space-y-md">
+             <header className="flex items-center gap-md pb-md border-b border-outline-variant">
+               <div className="shrink-0 w-12 h-12 rounded-full bg-primary text-on-primary flex items-center justify-center font-headline-md text-headline-md">
+-                {currentStep.step_number}
++                {stepIndex + 1}
+               </div>
+               <div className="min-w-0">
+                 <p className="text-label-sm uppercase tracking-wider font-bold text-on-surface-variant">
+-                  Step {currentStep.step_number} of {steps.length}
++                  Step {stepIndex + 1} of {steps.length}
+                 </p>
+                 <h2 className="font-title-sm text-title-sm text-on-surface">
+                   Execute the following action
+@@ -1114,7 +1114,7 @@ function StepSidebar({
+                   ) : isFailed ? (
+                     <span className="material-symbols-outlined text-[14px]">close</span>
+                   ) : (
+-                    s.step_number
++                    i + 1
+                   )}
+                 </span>
+                 <span className="min-w-0 flex-1">
+@@ -1430,7 +1430,7 @@ function QuickWizard({
+ 
+       {/* All steps in one scrollable list */}
+       <ol className="space-y-md">
+-        {steps.map((s) => {
++        {steps.map((s, stepIdx) => {
+           const e = entries.get(s.id) ?? { ...EMPTY_ENTRY };
+           const persisted = persistedResults.get(s.id);
+           const optimistic = localResults.get(s.id);
+@@ -1457,12 +1457,12 @@ function QuickWizard({
+                   ) : effective === false ? (
+                     <span className="material-symbols-outlined text-[18px]">close</span>
+                   ) : (
+-                    s.step_number
++                    stepIdx + 1
+                   )}
+                 </div>
+                 <div className="min-w-0 flex-1">
+                   <p className="text-label-sm uppercase tracking-wider font-bold text-on-surface-variant">
+-                    Step {s.step_number} of {steps.length}
++                    Step {stepIdx + 1} of {steps.length}
+                   </p>
+                   <p className="text-body-lg text-on-surface leading-relaxed font-body-base mt-1">
+                     {s.instruction}
+-- 
+2.43.0
+
+
+========================================
+FILE: fix-kpi-progress.patch
+========================================
+From eb57aed0ae8b1e528835b3cd659b084411c69fd9 Mon Sep 17 00:00:00 2001
+From: Fix Bot <fix@testcasehub.dev>
+Date: Sat, 6 Jun 2026 17:26:59 +0000
+Subject: [PATCH] fix: progress KPIs now correctly handle partial completion
+ edge cases
+
+Backend syncUseCaseStatus:
+- allPassed now requires ALL test cases to have terminal executions,
+  not just the ones that exist. Previously 1/3 cases passing would
+  mark the whole scenario as 'passed'. Now missing executions keep
+  the status as 'in_progress' until every test case is done.
+
+Frontend TesterScenarioPage:
+- scenarioProgresses now always derives from execution data directly,
+  never blindly trusts uc.status. This prevents stale backend status
+  from showing 'Completed' when test cases are still Not Started.
+
+Frontend TesterDashboardPage RunCard:
+- Stats (To Do / In Progress / Done) now count SCENARIOS not test cases.
+- Progress bar and label updated: 'X / Y scenarios' instead of 'X / Y cases'.
+- Scenario progress is computed correctly per scenario before counting,
+  using the same overall_result-aware logic as TesterScenarioPage.
+---
+ artifacts/api-server/src/routes/test-runs.ts  | 21 ++++++----
+ .../src/pages/TesterDashboardPage.tsx         | 38 +++++++++++--------
+ .../src/pages/TesterScenarioPage.tsx          | 24 ++++--------
+ 3 files changed, 42 insertions(+), 41 deletions(-)
+
+diff --git a/artifacts/api-server/src/routes/test-runs.ts b/artifacts/api-server/src/routes/test-runs.ts
+index ae6cae9..d99c4b6 100644
+--- a/artifacts/api-server/src/routes/test-runs.ts
++++ b/artifacts/api-server/src/routes/test-runs.ts
+@@ -47,25 +47,30 @@ export async function syncUseCaseStatus(testRunId: number, useCaseId: number): P
+     with: { stepResults: true },
+   });
+ 
++  // A scenario is only terminal when EVERY test case has a terminal execution.
++  // executions only contains rows that exist — missing rows mean Not Started.
++  const allTestCasesHaveTerminalExec =
++    testCaseIds.length > 0 &&
++    testCaseIds.every((tcId) => {
++      const exec = executions.find((e) => e.test_case_id === tcId);
++      return exec && (exec.overall_result === "passed" || exec.overall_result === "failed" || exec.overall_result === "passed_by_agreement");
++    });
++
+   let newStatus = "pending";
+   if (executions.length > 0) {
+     const failed = executions.some((e) => e.overall_result === "failed");
+-    const allPassed = executions.every(
+-      (e) => e.overall_result === "passed" || e.overall_result === "passed_by_agreement"
+-    );
+     const hasPassedByAgreement = executions.some((e) => e.overall_result === "passed_by_agreement");
+     const hasStepResults = executions.some((e) =>
+       (e.stepResults ?? []).length > 0 && (e.stepResults ?? []).some(r => r.passed != null)
+     );
+     const execInProgress = executions.some((e) => e.status === "in_progress");
+ 
+-    if (failed) {
++    if (failed && allTestCasesHaveTerminalExec) {
++      // Only mark failed when all cases are done (no remaining Not Started)
+       newStatus = "failed";
+-    } else if (allPassed) {
++    } else if (allTestCasesHaveTerminalExec && !failed) {
+       newStatus = hasPassedByAgreement ? "passed_by_agreement" : "passed";
+-    } else if (hasStepResults) {
+-      newStatus = "in_progress";
+-    } else if (execInProgress) {
++    } else if (failed || hasStepResults || execInProgress) {
+       newStatus = "in_progress";
+     }
+   }
+diff --git a/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx b/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx
+index b9fd8fd..19d8e82 100644
+--- a/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx
+@@ -135,7 +135,7 @@ function RunCard({ group, onOpen }: { group: RunGroup; onOpen: (runId: number) =
+           <div className="flex items-center justify-between text-label-sm">
+             <span className="text-on-surface-variant font-bold uppercase tracking-wider">Progress</span>
+             <span className="font-bold text-on-surface">
+-              {completed} / {totalCases} cases
++              {completed} / {totalCases} scenarios
+             </span>
+           </div>
+           <div className="w-full bg-surface-container-high rounded-full h-2 overflow-hidden">
+@@ -240,34 +240,40 @@ export function TesterDashboardPage() {
+       map.get(runId)!.useCases.push(r);
+     });
+ 
+-    // Compute progress for each run
++    // Compute progress for each run — count scenarios (not test cases)
+     for (const [, group] of map) {
+-      let completed = 0, inProg = 0, notStarted = 0, totalCases = 0;
++      let completed = 0, inProg = 0, notStarted = 0;
+       const runExecs = (group.run as any).executions ?? [];
++
+       for (const uc of group.useCases) {
+         const tcs = uc.useCase?.testCases ?? [];
+-        for (const tc of tcs) {
+-          totalCases++;
++        // Compute this scenario's progress from its test cases
++        const caseProgresses = tcs.map((tc: any) => {
+           const exec = runExecs.find((e: any) => e.test_case_id === tc.id);
+-          if (!exec) {
+-            notStarted++;
+-            continue;
+-          }
+-          const progress = computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);
+-          if (progress === "Completed") completed++;
+-          else if (progress === "In Progress") inProg++;
+-          else notStarted++;
+-        }
++          if (!exec) return "Not Started" as CaseProgress;
++          if (exec.overall_result != null) return "Completed" as CaseProgress;
++          return computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);
++        });
++        const scenarioProgress: CaseProgress =
++          caseProgresses.length === 0 ? "Not Started" :
++          caseProgresses.every((p: CaseProgress) => p === "Completed") ? "Completed" :
++          caseProgresses.some((p: CaseProgress) => p === "In Progress" || p === "Completed") ? "In Progress" :
++          "Not Started";
++
++        if (scenarioProgress === "Completed") completed++;
++        else if (scenarioProgress === "In Progress") inProg++;
++        else notStarted++;
+       }
+ 
++      const totalScenarios = group.useCases.length;
+       let runProgress: CaseProgress = "Not Started";
+-      if (totalCases > 0 && completed === totalCases) runProgress = "Completed";
++      if (totalScenarios > 0 && completed === totalScenarios) runProgress = "Completed";
+       else if (completed > 0 || inProg > 0) runProgress = "In Progress";
+ 
+       group.completed = completed;
+       group.inProgress = inProg;
+       group.notStarted = notStarted;
+-      group.totalCases = totalCases;
++      group.totalCases = totalScenarios; // reusing field — now means totalScenarios
+       group.progress = runProgress;
+     }
+ 
+diff --git a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+index 355741b..23e5f23 100644
+--- a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+@@ -157,29 +157,19 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
+     }
+   }, [testRun, useCases, allExecutions]);
+ 
+-  // Compute scenario-level progress from step results
++  // Compute scenario-level progress — always derive from executions so we
++  // are never fooled by a stale backend status (e.g. "passed" when only
++  // 1 of 3 test cases has been executed).
+   const scenarioProgresses = useMemo(() => {
+     const map = new Map<number, CaseProgress>();
+     useCases.forEach(uc => {
+-      // First: use the backend-computed status on testRunUseCase — it's authoritative
+-      // because syncUseCaseStatus runs server-side after every execution update.
+-      const backendStatus = uc.status;
+-      if (backendStatus === "passed" || backendStatus === "passed_by_agreement" || backendStatus === "failed") {
+-        map.set(uc.use_case_id, "Completed");
+-        return;
+-      }
+-      if (backendStatus === "in_progress") {
+-        // May still be fully completed client-side — check executions
+-        const tcs = uc.useCase?.testCases ?? [];
+-        const computed = computeScenarioProgress(tcs, allExecutions);
+-        map.set(uc.use_case_id, computed === "Completed" ? "Completed" : "In Progress");
+-        return;
+-      }
+-      // pending — check if any work has started
+       const tcs = uc.useCase?.testCases ?? [];
++      // computeScenarioProgress already handles:
++      //   - exec.overall_result != null  → Completed for that case
++      //   - no exec for a tc             → Not Started for that case
++      //   - then rolls up: all Completed → Completed, any In Progress/Completed → In Progress
+       map.set(uc.use_case_id, computeScenarioProgress(tcs, allExecutions));
+     });
+-    console.log("[TesterScenarioPage] computed scenarioProgresses", Object.fromEntries(map));
+     return map;
+   }, [useCases, allExecutions]);
+ 
+-- 
+2.43.0
+
+
+========================================
+FILE: fix-dashboard-kpis.patch
+========================================
+From 3062caca9f5ba5367bca4de4f4b5515172e88059 Mon Sep 17 00:00:00 2001
+From: Fix Bot <fix@testcasehub.dev>
+Date: Sat, 6 Jun 2026 17:55:56 +0000
+Subject: [PATCH] =?UTF-8?q?fix:=20My=20Runs=20dashboard=20=E2=80=94=20corr?=
+ =?UTF-8?q?ect=20scenario=20count,=20run=20card=20totals,=20and=20pass=20r?=
+ =?UTF-8?q?ate?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Backend /dashboard/tester/:userId/test-runs:
+- Now returns ALL scenarios for any run the tester participates in,
+  not just their own assigned scenarios. Each row is tagged with
+  is_mine=true/false so the frontend can distinguish.
+- Without this, a tester assigned to 1 of 2 scenarios would only see
+  1 scenario, making the run card show '1/1' instead of '1/2'.
+
+Frontend TesterDashboardPage:
+- My Scenarios KPI: now counts only is_mine rows (assigned to this tester)
+- Run card To Do/In Progress/Done stats: now reflect all scenarios in the
+  run so the breakdown matches the total shown in 'X/Y scenarios'
+- Pass Rate: changed from '% of runs completed' to '% of terminal
+  executions that passed' — a meaningful metric when many test cases fail.
+  Old formula (completedRuns/totalRuns) gave 0% or 100% per run which
+  was not useful. New formula counts passed vs total executed test cases.
+- Pass Rate hint updated to 'Steps passed vs total executed'
+---
+ artifacts/api-server/src/routes/executions.ts | 30 +++++++++++++++----
+ .../src/pages/TesterDashboardPage.tsx         | 17 ++++++-----
+ 2 files changed, 35 insertions(+), 12 deletions(-)
+
+diff --git a/artifacts/api-server/src/routes/executions.ts b/artifacts/api-server/src/routes/executions.ts
+index 5349091..ec6f88f 100644
+--- a/artifacts/api-server/src/routes/executions.ts
++++ b/artifacts/api-server/src/routes/executions.ts
+@@ -131,16 +131,30 @@ router.get("/dashboard/tester/:userId/test-runs", async (req, res, next) => {
+   try {
+     const userId = Number(req.params.userId);
+ 
+-    const assignedUseCases = await db.query.testRunUseCases.findMany({
++    // Find all test runs where this user is assigned to at least one scenario
++    const myAssignments = await db.query.testRunUseCases.findMany({
+       where: eq(schema.testRunUseCases.assigned_tester_id, userId),
++      with: { testRun: true },
++    });
++
++    if (myAssignments.length === 0) {
++      res.json([]);
++      return;
++    }
++
++    // Get unique run IDs this tester participates in
++    const myRunIds = [...new Set(myAssignments.map((a) => a.test_run_id))];
++
++    // Fetch ALL scenarios for those runs (not just the tester's own scenarios)
++    // so the run card can show accurate overall progress
++    const allUseCases = await db.query.testRunUseCases.findMany({
++      where: sql`${schema.testRunUseCases.test_run_id} IN (${sql.join(myRunIds.map(id => sql`${id}`), sql`,`)})`,
+       with: {
+         testRun: {
+           with: {
+             project: true,
+             executions: {
+-              with: {
+-                stepResults: true,
+-              },
++              with: { stepResults: true },
+             },
+           },
+         },
+@@ -148,7 +162,13 @@ router.get("/dashboard/tester/:userId/test-runs", async (req, res, next) => {
+       },
+     });
+ 
+-    res.json(assignedUseCases);
++    // Tag each row so the frontend knows which scenarios belong to this tester
++    const result = allUseCases.map((uc) => ({
++      ...uc,
++      is_mine: uc.assigned_tester_id === userId,
++    }));
++
++    res.json(result);
+   } catch (err) {
+     next(err);
+   }
+diff --git a/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx b/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx
+index 19d8e82..083f81f 100644
+--- a/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx
+@@ -31,6 +31,7 @@ type TestRunSummary = {
+ 
+ type TesterRunItem = TestRunUseCase & {
+   testRun?: TestRunSummary;
++  is_mine?: boolean;
+ };
+ 
+ type RunGroup = {
+@@ -284,12 +285,14 @@ export function TesterDashboardPage() {
+     const allUseCases = grouped.flatMap((g) => g.useCases);
+     const totalRuns = grouped.length;
+     const activeRuns = grouped.filter((g) => g.run.status !== "completed").length;
+-    const totalScenarios = allUseCases.length;
+-    const completedToday = allUseCases.filter((uc) => {
+-      return isToday(uc.updated_at);
+-    }).length;
+-    const completedRuns = grouped.filter((g) => g.progress === "Completed").length;
+-    const passRate = completedRuns > 0 ? Math.round((completedRuns / totalRuns) * 100) : null;
++    // Only count scenarios assigned to this tester
++    const totalScenarios = allUseCases.filter((uc) => uc.is_mine !== false).length;
++    const completedToday = allUseCases.filter((uc) => uc.is_mine !== false && isToday(uc.updated_at)).length;
++    // Pass rate = % of completed executions that passed (across all runs)
++    const allExecs = grouped.flatMap((g) => (g.run as any).executions ?? []);
++    const terminalExecs = allExecs.filter((e: any) => e.overall_result != null);
++    const passedExecs = terminalExecs.filter((e: any) => e.overall_result === "passed" || e.overall_result === "passed_by_agreement");
++    const passRate = terminalExecs.length > 0 ? Math.round((passedExecs.length / terminalExecs.length) * 100) : null;
+     return { totalRuns, activeRuns, totalScenarios, completedToday, passRate };
+   }, [grouped]);
+ 
+@@ -352,7 +355,7 @@ export function TesterDashboardPage() {
+           icon="percent"
+           label="Pass Rate"
+           value={kpis.passRate != null ? `${kpis.passRate}%` : "—"}
+-          hint={kpis.passRate != null ? "Across all completed scenarios" : "No data yet"}
++          hint={kpis.passRate != null ? "Steps passed vs total executed" : "No executions yet"}
+           tone={kpis.passRate != null && kpis.passRate < 70 ? "warning" : "default"}
+         />
+       </section>
+-- 
+2.43.0
+
+
+========================================
+FILE: fix-scope-access-kpis.patch
+========================================
+From 66c6692b84558e18f7f11671deee921de06d55d3 Mon Sep 17 00:00:00 2001
+From: Fix Bot <fix@testcasehub.dev>
+Date: Mon, 8 Jun 2026 09:54:18 +0000
+Subject: [PATCH] fix: scope My Runs to assigned scenarios only, fix KPIs and
+ pass rate
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Access control:
+- Backend API returns ONLY scenarios where assigned_tester_id = userId.
+  Testers can no longer see or work on scenarios not assigned to them.
+- TesterScenarioPage filters useCases to assigned_tester_id = current user,
+  so even if the test-run query returns all scenarios, only the tester's
+  own are shown and navigable.
+- allExecutions on TesterScenarioPage is also scoped to test cases within
+  the tester's own scenarios, so progress KPIs never bleed across.
+
+Dashboard KPIs:
+- My Scenarios: counts all rows from API (which are already filtered to
+  assigned scenarios) — no additional filtering needed.
+- Pass Rate: counts step results (sr.passed) scoped to this tester's
+  test case IDs only. Gives a genuine step-level pass/fail ratio.
+- Pass Rate hint: 'Your steps passed vs total recorded' — unambiguous.
+- Removed is_mine field from TesterRunItem type (no longer needed).
+---
+ artifacts/api-server/src/routes/executions.ts | 29 ++++---------------
+ .../src/pages/TesterDashboardPage.tsx         | 28 ++++++++++++------
+ .../src/pages/TesterScenarioPage.tsx          | 19 ++++++++++--
+ 3 files changed, 41 insertions(+), 35 deletions(-)
+
+diff --git a/artifacts/api-server/src/routes/executions.ts b/artifacts/api-server/src/routes/executions.ts
+index ec6f88f..2d84f84 100644
+--- a/artifacts/api-server/src/routes/executions.ts
++++ b/artifacts/api-server/src/routes/executions.ts
+@@ -131,28 +131,15 @@ router.get("/dashboard/tester/:userId/test-runs", async (req, res, next) => {
+   try {
+     const userId = Number(req.params.userId);
+ 
+-    // Find all test runs where this user is assigned to at least one scenario
+-    const myAssignments = await db.query.testRunUseCases.findMany({
++    // Return ONLY scenarios explicitly assigned to this tester.
++    // This enforces that testers can only see and act on their own work.
++    const myUseCases = await db.query.testRunUseCases.findMany({
+       where: eq(schema.testRunUseCases.assigned_tester_id, userId),
+-      with: { testRun: true },
+-    });
+-
+-    if (myAssignments.length === 0) {
+-      res.json([]);
+-      return;
+-    }
+-
+-    // Get unique run IDs this tester participates in
+-    const myRunIds = [...new Set(myAssignments.map((a) => a.test_run_id))];
+-
+-    // Fetch ALL scenarios for those runs (not just the tester's own scenarios)
+-    // so the run card can show accurate overall progress
+-    const allUseCases = await db.query.testRunUseCases.findMany({
+-      where: sql`${schema.testRunUseCases.test_run_id} IN (${sql.join(myRunIds.map(id => sql`${id}`), sql`,`)})`,
+       with: {
+         testRun: {
+           with: {
+             project: true,
++            // Only fetch executions for this tester's test cases
+             executions: {
+               with: { stepResults: true },
+             },
+@@ -162,13 +149,7 @@ router.get("/dashboard/tester/:userId/test-runs", async (req, res, next) => {
+       },
+     });
+ 
+-    // Tag each row so the frontend knows which scenarios belong to this tester
+-    const result = allUseCases.map((uc) => ({
+-      ...uc,
+-      is_mine: uc.assigned_tester_id === userId,
+-    }));
+-
+-    res.json(result);
++    res.json(myUseCases);
+   } catch (err) {
+     next(err);
+   }
+diff --git a/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx b/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx
+index 083f81f..b0dc565 100644
+--- a/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterDashboardPage.tsx
+@@ -31,7 +31,6 @@ type TestRunSummary = {
+ 
+ type TesterRunItem = TestRunUseCase & {
+   testRun?: TestRunSummary;
+-  is_mine?: boolean;
+ };
+ 
+ type RunGroup = {
+@@ -282,17 +281,28 @@ export function TesterDashboardPage() {
+   }, [runs]);
+ 
+   const kpis = useMemo(() => {
++    // API already returns ONLY this tester's assigned scenarios — no further filtering needed
+     const allUseCases = grouped.flatMap((g) => g.useCases);
+     const totalRuns = grouped.length;
+     const activeRuns = grouped.filter((g) => g.run.status !== "completed").length;
+-    // Only count scenarios assigned to this tester
+-    const totalScenarios = allUseCases.filter((uc) => uc.is_mine !== false).length;
+-    const completedToday = allUseCases.filter((uc) => uc.is_mine !== false && isToday(uc.updated_at)).length;
+-    // Pass rate = % of completed executions that passed (across all runs)
++    const totalScenarios = allUseCases.length;
++    const completedToday = allUseCases.filter((uc) => isToday(uc.updated_at)).length;
++
++    // Pass rate = % of steps that passed across all this tester's test cases.
++    // Each scenario's test cases have executions on testRun.executions — we collect
++    // all step results from those executions scoped to this tester's test case IDs.
++    const myTcIds = new Set(
++      allUseCases.flatMap((uc) => (uc.useCase?.testCases ?? []).map((tc: any) => tc.id))
++    );
+     const allExecs = grouped.flatMap((g) => (g.run as any).executions ?? []);
+-    const terminalExecs = allExecs.filter((e: any) => e.overall_result != null);
+-    const passedExecs = terminalExecs.filter((e: any) => e.overall_result === "passed" || e.overall_result === "passed_by_agreement");
+-    const passRate = terminalExecs.length > 0 ? Math.round((passedExecs.length / terminalExecs.length) * 100) : null;
++    const myExecs = allExecs.filter((e: any) => myTcIds.has(e.test_case_id));
++    const allStepResults = myExecs.flatMap((e: any) => e.stepResults ?? []);
++    const recordedSteps = allStepResults.filter((sr: any) => sr.passed != null);
++    const passedSteps = recordedSteps.filter((sr: any) => sr.passed === true);
++    const passRate = recordedSteps.length > 0
++      ? Math.round((passedSteps.length / recordedSteps.length) * 100)
++      : null;
++
+     return { totalRuns, activeRuns, totalScenarios, completedToday, passRate };
+   }, [grouped]);
+ 
+@@ -355,7 +365,7 @@ export function TesterDashboardPage() {
+           icon="percent"
+           label="Pass Rate"
+           value={kpis.passRate != null ? `${kpis.passRate}%` : "—"}
+-          hint={kpis.passRate != null ? "Steps passed vs total executed" : "No executions yet"}
++          hint={kpis.passRate != null ? "Your steps passed vs total recorded" : "No step results yet"}
+           tone={kpis.passRate != null && kpis.passRate < 70 ? "warning" : "default"}
+         />
+       </section>
+diff --git a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+index 23e5f23..2e94674 100644
+--- a/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
++++ b/artifacts/uat-manager/src/pages/TesterScenarioPage.tsx
+@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
+ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+ import { toast } from "sonner";
+ import { customFetch } from "../lib/api-client";
++import { getStoredUser } from "../lib/auth";
+ import {
+   BackBar,
+   EmptyState,
+@@ -132,8 +133,22 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
+     refetchOnMount: "always", // always fetch fresh — don't serve stale progress
+   });
+ 
+-  const useCases = useMemo(() => testRun?.useCases ?? [], [testRun]);
+-  const allExecutions = useMemo(() => testRun?.executions ?? [], [testRun]);
++  const user = getStoredUser();
++
++  // Only show scenarios assigned to this tester — enforces access control
++  const useCases = useMemo(() => {
++    const all = testRun?.useCases ?? [];
++    if (!user?.userId) return all;
++    return all.filter(uc => uc.assigned_tester_id === user.userId);
++  }, [testRun, user?.userId]);
++
++  // Only count executions for test cases within this tester's scenarios
++  const allExecutions = useMemo(() => {
++    const myTcIds = new Set(
++      useCases.flatMap(uc => (uc.useCase?.testCases ?? []).map((tc: TestCase) => tc.id))
++    );
++    return (testRun?.executions ?? []).filter(e => myTcIds.has(e.test_case_id));
++  }, [testRun?.executions, useCases]);
+   const isBlocked = !!testRun && !testRun.entry_confirmed;
+   const isCompleted = testRun?.status === "completed";
+ 
+-- 
+2.43.0
+
+

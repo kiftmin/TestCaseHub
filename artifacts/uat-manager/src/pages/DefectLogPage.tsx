@@ -491,7 +491,7 @@ function DefectRow({
 
   const resumeWorkMut = useMutation({
     mutationFn: (reason: string) => customFetch(`/defects/${defect.id}/resume-work`, { method: "PATCH", body: JSON.stringify({ reason }) }),
-    onSuccess: () => { invalidateProject(); toast.success("Work resumed"); },
+    onSuccess: () => { invalidateProject(); toast.success("Work resumed"); setResumeWorkOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -1067,7 +1067,7 @@ function DefectRow({
             placeholder="Explain why this defect needs more work..."
             confirmLabel="Resume Work"
             confirmClassName="bg-orange-600"
-            onSave={(reason) => { resumeWorkMut.mutate(reason); setResumeWorkOpen(false); }}
+            onSave={(reason) => resumeWorkMut.mutate(reason)}
             onCancel={() => setResumeWorkOpen(false)}
             loading={resumeWorkMut.isPending}
           />
@@ -1574,12 +1574,16 @@ function RejectBizAcceptanceForm({
 /** Generic reason-collection form used for block and unblock modals */
 function ResolveForm({ onSave, onCancel, loading }: { onSave: (rootCause: string) => void; onCancel: () => void; loading: boolean }) {
   const [rootCause, setRootCause] = useState("Coding Error");
+  const [customCause, setCustomCause] = useState("");
   const rootCauseOptions = [
     "Requirements Gap", "Design Defect", "Coding Error", "Environment Issue",
     "Test Data Issue", "Configuration Error", "Third-Party Integration", "Other",
   ];
+  const isOther = rootCause === "Other";
+  const isValid = !isOther || customCause.trim().length >= 3;
+  const finalValue = isOther ? `Other: ${customCause.trim()}` : rootCause;
   return (
-    <form onSubmit={(e) => { e.preventDefault(); onSave(rootCause); }} className="space-y-md">
+    <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave(finalValue); }} className="space-y-md">
       <div className="flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-lg p-md">
         <span className="material-symbols-outlined text-blue-600 text-xl flex-shrink-0">info</span>
         <p className="font-body-sm text-blue-900">
@@ -1598,13 +1602,28 @@ function ResolveForm({ onSave, onCancel, loading }: { onSave: (rootCause: string
             <option key={opt} value={opt}>{opt}</option>
           ))}
         </select>
+        {isOther && (
+          <div className="mt-sm">
+            <label className="font-label-sm text-label-sm">Describe the root cause *</label>
+            <textarea
+              value={customCause}
+              onChange={(e) => setCustomCause(e.target.value)}
+              className="w-full h-20 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none mt-sm"
+              placeholder="Describe the root cause in detail..."
+              required
+            />
+            <p className={`text-label-xs mt-xs ${customCause.trim().length >= 3 ? "text-success" : "text-on-surface-variant/60"}`}>
+              {customCause.trim().length >= 3 ? "Minimum length met" : `${3 - customCause.trim().length} characters remaining (minimum 3)`}
+            </p>
+          </div>
+        )}
       </div>
       <div className="flex justify-end gap-md pt-sm">
         <button type="button" onClick={onCancel}
           className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors">
           Cancel
         </button>
-        <button type="submit" disabled={loading}
+        <button type="submit" disabled={loading || !isValid}
           className="px-4 py-sm bg-blue-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
           {loading ? "Submitting..." : "Resolve as Developer"}
         </button>

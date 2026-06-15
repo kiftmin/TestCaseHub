@@ -430,9 +430,14 @@ router.patch("/defects/:defectId/resolve", async (req: AuthenticatedRequest, res
   try {
     const defectId = Number(req.params.defectId);
     const bodySchema = z.object({
-      root_cause_category: z.enum(["Requirements Gap", "Design Defect", "Coding Error", "Environment Issue", "Test Data Issue", "Configuration Error", "Third-Party Integration", "Other"]),
+      root_cause_category: z.string().min(3, "Root cause category must be at least 3 characters"),
     });
     const data = bodySchema.parse(req.body);
+    const validCategories = ["Requirements Gap", "Design Defect", "Coding Error", "Environment Issue", "Test Data Issue", "Configuration Error", "Third-Party Integration", "Other"];
+    if (!validCategories.includes(data.root_cause_category) && !data.root_cause_category.startsWith("Other: ")) {
+      res.status(400).json({ message: `Invalid root cause category. Use one of: ${validCategories.join(", ")} or specify "Other: <description>"` });
+      return;
+    }
 
     const projectId = await getProjectId(defectId);
     if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }

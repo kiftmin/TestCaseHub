@@ -582,12 +582,13 @@ function DefectRow({
     { key: "TRIAGED", label: "Triaged" },
     { key: "ASSIGNED", label: "Assigned" },
     { key: "IN_PROGRESS", label: "In Progress" },
+    { key: "BLOCKED", label: "Blocked" },
     { key: "RESOLVED_DEV", label: "Resolved" },
     { key: "READY_FOR_VERIFICATION", label: "Verification" },
     { key: "PENDING_BIZ_ACCEPTANCE", label: "Pending Biz" },
     { key: "CLOSED", label: "Closed" },
   ];
-  const mainFlow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, BLOCKED:3, RESOLVED_DEV:4, READY_FOR_VERIFICATION:5, PENDING_BIZ_ACCEPTANCE:6, CLOSED:7, PASSED_BY_AGREEMENT:7, REGRESSED:3 };
+  const mainFlow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, BLOCKED:4, RESOLVED_DEV:5, READY_FOR_VERIFICATION:6, PENDING_BIZ_ACCEPTANCE:7, CLOSED:8, PASSED_BY_AGREEMENT:8, REGRESSED:3 };
   const currentStatusIdx = mainFlow[defect.status] ?? 0;
 
   // Derive actually completed steps from system notes to avoid marking skipped states as completed

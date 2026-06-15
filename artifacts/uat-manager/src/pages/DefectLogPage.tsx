@@ -389,6 +389,7 @@ function DefectRow({
   const [flagBusinessOpen, setFlagBusinessOpen] = useState(false);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
   const [resolveOpen, setResolveOpen] = useState(false);
+  const [resumeWorkOpen, setResumeWorkOpen] = useState(false);
   const [blockOpen, setBlockOpen] = useState(false);
   const [unblockOpen, setUnblockOpen] = useState(false);
   const [untriagedAction, setUntriagedAction] = useState<string | null>(null);
@@ -756,7 +757,7 @@ function DefectRow({
             )}
             {/* DEVELOPER | TEST_LEAD: Resume Work (RESOLVED_DEV → IN_PROGRESS) */}
             {(isDeveloper || canManage) && isResolved && (
-              <button onClick={() => { const r = prompt("Reason for resuming work:"); if (r) resumeWorkMut.mutate(r); }} className="p-1.5 hover:bg-orange-100 hover:text-orange-700 rounded text-on-surface-variant transition-colors" title="Resume Work">
+              <button onClick={() => setResumeWorkOpen(true)} className="p-1.5 hover:bg-orange-100 hover:text-orange-700 rounded text-on-surface-variant transition-colors" title="Resume Work">
                 <span className="material-symbols-outlined text-sm">undo</span>
               </button>
             )}
@@ -1054,6 +1055,21 @@ function DefectRow({
             onSave={(rootCause) => resolveDevMut.mutate(rootCause)}
             onCancel={() => setResolveOpen(false)}
             loading={resolveDevMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Resume Work Dialog */}
+      {resumeWorkOpen && (
+        <Dialog onClose={() => setResumeWorkOpen(false)} title="Resume Work">
+          <SimpleReasonForm
+            label="Reason for Resuming Work"
+            placeholder="Explain why this defect needs more work..."
+            confirmLabel="Resume Work"
+            confirmClassName="bg-orange-600"
+            onSave={(reason) => { resumeWorkMut.mutate(reason); setResumeWorkOpen(false); }}
+            onCancel={() => setResumeWorkOpen(false)}
+            loading={resumeWorkMut.isPending}
           />
         </Dialog>
       )}

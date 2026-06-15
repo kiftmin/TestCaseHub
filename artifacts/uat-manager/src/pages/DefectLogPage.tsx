@@ -388,6 +388,7 @@ function DefectRow({
   const [flagBlockedNewOpen, setFlagBlockedNewOpen] = useState(false);
   const [flagBusinessOpen, setFlagBusinessOpen] = useState(false);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
+  const [resolveOpen, setResolveOpen] = useState(false);
   const [blockOpen, setBlockOpen] = useState(false);
   const [unblockOpen, setUnblockOpen] = useState(false);
   const [untriagedAction, setUntriagedAction] = useState<string | null>(null);
@@ -482,8 +483,8 @@ function DefectRow({
   });
 
   const resolveDevMut = useMutation({
-    mutationFn: () => customFetch(`/defects/${defect.id}/resolve`, { method: "PATCH", body: JSON.stringify({ root_cause_category: "Code" }) }),
-    onSuccess: () => { invalidateProject(); toast.success("Defect resolved by developer"); },
+    mutationFn: (rootCause: string) => customFetch(`/defects/${defect.id}/resolve`, { method: "PATCH", body: JSON.stringify({ root_cause_category: rootCause }) }),
+    onSuccess: () => { invalidateProject(); toast.success("Defect resolved by developer"); setResolveOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -737,7 +738,7 @@ function DefectRow({
             )}
             {/* DEVELOPER: Resolve (ASSIGNED | IN_PROGRESS → RESOLVED_DEV) */}
             {isDeveloper && (isAssigned || isInProgress) && (
-              <button onClick={() => resolveDevMut.mutate()} className="p-1.5 hover:bg-blue-100 hover:text-blue-700 rounded text-on-surface-variant transition-colors" title="Resolve as Developer">
+              <button onClick={() => setResolveOpen(true)} className="p-1.5 hover:bg-blue-100 hover:text-blue-700 rounded text-on-surface-variant transition-colors" title="Resolve as Developer">
                 <span className="material-symbols-outlined text-sm">bug_report</span>
               </button>
             )}
@@ -1042,6 +1043,17 @@ function DefectRow({
             onSave={(reason) => rescheduleMut.mutate(reason)}
             onCancel={() => setRescheduleOpen(false)}
             loading={rescheduleMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Resolve Defect Dialog */}
+      {resolveOpen && (
+        <Dialog onClose={() => setResolveOpen(false)} title="Resolve Defect">
+          <ResolveForm
+            onSave={(rootCause) => resolveDevMut.mutate(rootCause)}
+            onCancel={() => setResolveOpen(false)}
+            loading={resolveDevMut.isPending}
           />
         </Dialog>
       )}
@@ -1537,6 +1549,48 @@ function RejectBizAcceptanceForm({
         <button type="submit" disabled={loading || !isValid}
           className="px-4 py-sm bg-red-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
           {loading ? "Submitting..." : "Reject & Return to Prior State"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** Generic reason-collection form used for block and unblock modals */
+function ResolveForm({ onSave, onCancel, loading }: { onSave: (rootCause: string) => void; onCancel: () => void; loading: boolean }) {
+  const [rootCause, setRootCause] = useState("Coding Error");
+  const rootCauseOptions = [
+    "Requirements Gap", "Design Defect", "Coding Error", "Environment Issue",
+    "Test Data Issue", "Configuration Error", "Third-Party Integration", "Other",
+  ];
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); onSave(rootCause); }} className="space-y-md">
+      <div className="flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-lg p-md">
+        <span className="material-symbols-outlined text-blue-600 text-xl flex-shrink-0">info</span>
+        <p className="font-body-sm text-blue-900">
+          This will mark the defect as <strong>Resolved by Developer</strong> and send it for verification.
+          Select the root cause category for audit tracking.
+        </p>
+      </div>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Root Cause Category *</label>
+        <select
+          value={rootCause}
+          onChange={(e) => setRootCause(e.target.value)}
+          className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm"
+        >
+          {rootCauseOptions.map((opt) => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </select>
+      </div>
+      <div className="flex justify-end gap-md pt-sm">
+        <button type="button" onClick={onCancel}
+          className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors">
+          Cancel
+        </button>
+        <button type="submit" disabled={loading}
+          className="px-4 py-sm bg-blue-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
+          {loading ? "Submitting..." : "Resolve as Developer"}
         </button>
       </div>
     </form>

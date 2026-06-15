@@ -387,6 +387,7 @@ function DefectRow({
   const [flagRetestNewOpen, setFlagRetestNewOpen] = useState(false);
   const [flagBlockedNewOpen, setFlagBlockedNewOpen] = useState(false);
   const [flagBusinessOpen, setFlagBusinessOpen] = useState(false);
+  const [rescheduleOpen, setRescheduleOpen] = useState(false);
   const [blockOpen, setBlockOpen] = useState(false);
   const [unblockOpen, setUnblockOpen] = useState(false);
   const [untriagedAction, setUntriagedAction] = useState<string | null>(null);
@@ -552,6 +553,12 @@ function DefectRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const rescheduleMut = useMutation({
+    mutationFn: (reason: string) => customFetch(`/defects/${defect.id}/reschedule-retest`, { method: "PATCH", body: JSON.stringify({ reason }) }),
+    onSuccess: () => { invalidateProject(); toast.success("Retest rescheduled — defect returned to developer"); setRescheduleOpen(false); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const addNoteMut = useMutation({
     mutationFn: (note: string) => customFetch(`/defects/${defect.id}/notes`, { method: "POST", body: JSON.stringify({ note }) }),
     onSuccess: () => { invalidateProject(); toast.success("Comment added"); setNoteOpen(false); },
@@ -650,6 +657,11 @@ function DefectRow({
           <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${statusBadge[defect.status] ?? ""}`}>
             {statusDisplay[defect.status] ?? defect.status}
           </span>
+          {defect.regression_index > 0 && (
+            <span className="ml-1 inline-flex items-center px-1 py-0.5 rounded text-[9px] font-bold bg-orange-100 text-orange-700 border border-orange-200" title="Previously failed verification">
+              REJ×{defect.regression_index}
+            </span>
+          )}
         </td>
         <td className="p-md font-body-sm text-body-sm text-on-surface-variant whitespace-nowrap">
           {new Date(defect.created_at).toLocaleDateString()}
@@ -768,6 +780,12 @@ function DefectRow({
             {(isBusinessOwner || canManage) && isReady && (
               <button onClick={() => setRejectOpen(true)} className="p-1.5 hover:bg-error-container hover:text-on-error-container rounded text-on-surface-variant transition-colors" title="Reject">
                 <span className="material-symbols-outlined text-sm">cancel</span>
+              </button>
+            )}
+            {/* TEST_LEAD: Reschedule retest (READY_FOR_VERIFICATION → RESOLVED_DEV) */}
+            {canManage && isReady && (
+              <button onClick={() => setRescheduleOpen(true)} className="p-1.5 hover:bg-orange-100 hover:text-orange-700 rounded text-on-surface-variant transition-colors" title="Reschedule Retest — return to developer">
+                <span className="material-symbols-outlined text-sm">schedule</span>
               </button>
             )}
             {/* BUSINESS_OWNER: Accept by Agreement (PENDING_BIZ_ACCEPTANCE → PASSED_BY_AGREEMENT) */}
@@ -898,6 +916,17 @@ function DefectRow({
                         ))}
                       </div>
                     )}
+                    {defect.regression_index > 0 && (
+                      <div className="p-md bg-orange-50 border border-orange-200 rounded-lg">
+                        <h4 className="text-xs font-bold text-orange-700 uppercase mb-sm flex items-center gap-1">
+                          <span className="material-symbols-outlined text-sm">warning</span>
+                          Previously Failed Verification
+                        </h4>
+                        <p className="font-body-sm text-body-sm text-orange-700">
+                          This defect has been rejected <strong>{defect.regression_index}</strong> time{defect.regression_index === 1 ? "" : "s"} and returned to the developer for rework.
+                        </p>
+                      </div>
+                    )}
                     <div className="flex items-center gap-lg mt-sm text-xs text-on-surface-variant">
                       <span>Created: {new Date(defect.created_at).toLocaleString()}</span>
                       <span>Updated: {new Date(defect.updated_at).toLocaleString()}</span>
@@ -994,13 +1023,25 @@ function DefectRow({
       {/* Reject Dialog */}
       {rejectOpen && (
         <Dialog onClose={() => setRejectOpen(false)} title="Reject Defect">
-          <div className="space-y-md">
-            <p className="font-body-sm text-on-surface-variant">Enter the reason for rejection:</p>
-            <RejectForm
-              onSave={(reason) => bizRejectMut.mutate(reason)}
-              loading={bizRejectMut.isPending}
-            />
-          </div>
+          <RejectForm
+            onSave={(reason) => bizRejectMut.mutate(reason)}
+            loading={bizRejectMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Reschedule Retest Dialog */}
+      {rescheduleOpen && (
+        <Dialog onClose={() => setRescheduleOpen(false)} title="Reschedule Retest">
+          <SimpleReasonForm
+            label="Reason"
+            placeholder="Explain why the retest needs to be rescheduled..."
+            confirmLabel="Reschedule"
+            confirmClassName="bg-orange-600"
+            onSave={(reason) => rescheduleMut.mutate(reason)}
+            onCancel={() => setRescheduleOpen(false)}
+            loading={rescheduleMut.isPending}
+          />
         </Dialog>
       )}
 
@@ -1212,11 +1253,26 @@ function ClassifyForm({ onSave, loading }: { onSave: (d: { severity: string; pri
 
 function RejectForm({ onSave, loading }: { onSave: (reason: string) => void; loading: boolean }) {
   const [reason, setReason] = useState("");
+  const charsLeft = 10 - reason.trim().length;
+  const isValid = reason.trim().length >= 10;
   return (
-    <form onSubmit={(e) => { e.preventDefault(); if (reason.trim()) onSave(reason.trim()); }} className="space-y-md">
-      <textarea value={reason} onChange={(e) => setReason(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Reason for rejection..." required />
-      <button type="submit" disabled={loading || !reason.trim()} className="w-full py-sm bg-error text-on-error rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
-        {loading ? "Saving..." : "Reject"}
+    <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave(reason.trim()); }} className="space-y-md">
+      <div className="flex items-start gap-3 bg-error-container/20 border border-error-container/40 rounded-lg p-md mb-sm">
+        <span className="material-symbols-outlined text-error text-xl flex-shrink-0">warning</span>
+        <p className="font-body-sm text-error">
+          This will return the defect to the <strong>ASSIGNED</strong> state and increment its regression counter.
+          The developer will need to rework it. A detailed reason is required for audit purposes.
+        </p>
+      </div>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Rejection Reason *</label>
+        <textarea value={reason} onChange={(e) => setReason(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Explain why this retest failed and what needs to be reworked..." required />
+        <p className={`text-label-xs ${charsLeft <= 0 ? "text-success" : "text-on-surface-variant/60"}`}>
+          {charsLeft <= 0 ? "Minimum length met" : `${charsLeft} characters remaining (minimum 10)`}
+        </p>
+      </div>
+      <button type="submit" disabled={loading || !isValid} className="w-full py-sm bg-error text-on-error rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
+        {loading ? "Saving..." : "Reject & Return to Assigned"}
       </button>
     </form>
   );

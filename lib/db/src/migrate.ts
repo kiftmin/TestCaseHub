@@ -31,6 +31,7 @@ async function main() {
     "0006_backfill_use_case_status.sql",
     "0007_test_steps_unique_step_number.sql",
     "0010_reset_defects_to_new.sql",
+    "0012_reset_defects_for_testing.sql",
   ];
   for (const file of rawSqlFiles) {
     const rawSqlPath = join(__dirname, "..", "drizzle", file);

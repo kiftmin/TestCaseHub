@@ -4,7 +4,7 @@ import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
-import { logAudit } from "../utils/project.js";
+import { logAudit, logSystemNote } from "../utils/project.js";
 import { syncUseCaseStatus } from "./test-runs.js";
 
 const router = express.Router();
@@ -784,6 +784,7 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
             .returning();
 
           createdDefects.push(defect);
+          await logSystemNote(defect.id, null, "NEW", req.user!.userId);
         }
       }
     }

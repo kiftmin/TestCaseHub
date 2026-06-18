@@ -13,6 +13,7 @@
     "generate": "drizzle-kit generate",
     "migrate": "tsx src/migrate.ts",
     "seed": "tsx src/seed.ts",
+    "backfill:creation-logs": "tsx src/backfill-creation-logs.ts",
     "studio": "drizzle-kit studio"
   },
   "dependencies": {

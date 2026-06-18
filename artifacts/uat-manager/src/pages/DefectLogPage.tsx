@@ -5,6 +5,8 @@ import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
 import { Stepper, type Step } from "../components/ui/stepper";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { DEFECT_VIEWS } from "../lib/defect-views";
 import type { Defect, DefectNote, TestRun, ProjectAssignment } from "../types/api";
 
 const statusBadge: Record<string, string> = {
@@ -19,6 +21,9 @@ const statusBadge: Record<string, string> = {
   REGRESSED: "bg-red-100 text-red-800 border-red-200",
   CLOSED: "bg-green-100 text-green-800 border-green-200",
   PASSED_BY_AGREEMENT: "bg-purple-100 text-purple-800 border-purple-200",
+  PENDING_DEPLOYMENT_APPROVAL: "bg-teal-100 text-teal-800 border-teal-200",
+  PENDING_RISK_ACCEPTANCE: "bg-pink-100 text-pink-800 border-pink-200",
+  IN_VERIFICATION: "bg-sky-100 text-sky-800 border-sky-200",
 };
 
 const statusDisplay: Record<string, string> = {
@@ -33,6 +38,9 @@ const statusDisplay: Record<string, string> = {
   REGRESSED: "Regressed",
   CLOSED: "Closed",
   PASSED_BY_AGREEMENT: "Passed by Agreement",
+  PENDING_DEPLOYMENT_APPROVAL: "Pending Deployment Approval",
+  PENDING_RISK_ACCEPTANCE: "Pending Risk Acceptance",
+  IN_VERIFICATION: "In Verification",
 };
 
 const severityColors: Record<string, string> = {
@@ -54,6 +62,10 @@ const severityDot: Record<string, string> = {
   Cosmetic: "bg-gray-300",
 };
 
+const DEV_INTERNAL_STATUSES = new Set(["ASSIGNED", "IN_PROGRESS", "BLOCKED", "RESOLVED_DEV", "REGRESSED"]);
+
+const MASKED_BADGE = "bg-indigo-100 text-indigo-800 border-indigo-200";
+
 const statusIcon: Record<string, string> = {
   NEW: "fiber_new",
   TRIAGED: "content_paste_search",
@@ -66,6 +78,9 @@ const statusIcon: Record<string, string> = {
   REGRESSED: "warning",
   CLOSED: "check_circle",
   PASSED_BY_AGREEMENT: "approval",
+  PENDING_DEPLOYMENT_APPROVAL: "rocket_launch",
+  PENDING_RISK_ACCEPTANCE: "gavel",
+  IN_VERIFICATION: "sync",
 };
 
 // ── Status Distribution Card ──
@@ -133,6 +148,131 @@ function extractFailedStep(defect: Defect): { stepNumber?: string; instruction?:
   return {};
 }
 
+function TabContent({
+  statusDist,
+  statusFilter,
+  setStatusFilter,
+  total,
+  sorted,
+  canManage,
+  isBusinessOwner,
+  isTester,
+  isDeveloper,
+  expandedId,
+  setExpandedId,
+  sortField,
+  sortDir,
+  handleSort,
+  activeTab,
+}: {
+  statusDist: { key: string; label: string; icon?: string; count: number; noFilter?: boolean }[];
+  statusFilter: string;
+  setStatusFilter: (v: string) => void;
+  total: number;
+  sorted: Defect[];
+  canManage: boolean;
+  isBusinessOwner: boolean;
+  isTester: boolean;
+  isDeveloper: boolean;
+  expandedId: number | null;
+  setExpandedId: (v: number | null) => void;
+  sortField: string;
+  sortDir: "asc" | "desc";
+  handleSort: (field: string) => void;
+  activeTab: string;
+}) {
+  return (
+    <>
+      {/* Status Distribution */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
+        {statusDist.map((s) => (
+          <div key={s.key} className="min-w-0">
+            <StatusDistCard
+              label={s.label}
+              count={s.count}
+              total={total}
+              icon={s.icon}
+              isActive={!s.noFilter && statusFilter === s.key}
+              onClick={s.noFilter ? () => {} : () => setStatusFilter(statusFilter === s.key ? "all" : s.key)}
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Defect Table */}
+      <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead className="bg-surface-container-low border-b border-outline-variant">
+              <tr>
+                <SortTh field="id" label="ID" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="test_case" label="Test Case / Step" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="severity" label="Sev" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="priority" label="Pri" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortTh field="created_at" label="Created" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <th className="p-md text-xs font-bold text-outline uppercase text-right whitespace-nowrap">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-outline-variant">
+              {sorted.map((defect) => (
+                <DefectRow
+                  key={defect.id}
+                  defect={defect}
+                  expanded={expandedId === defect.id}
+                  onToggle={() => setExpandedId(expandedId === defect.id ? null : defect.id)}
+                  canManage={canManage}
+                  isBusinessOwner={isBusinessOwner}
+                  isTester={isTester}
+                  isDeveloper={isDeveloper}
+                  onMutated={() => {}}
+                  activeTab={activeTab}
+                />
+              ))}
+                {sorted.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="p-lg text-center text-on-surface-variant font-body-sm">
+                    No defects found
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="p-md bg-surface-container-low border-t border-outline-variant flex items-center justify-between">
+          <p className="text-xs text-on-surface-variant">
+            Showing <span className="font-bold">{sorted.length}</span> of <span className="font-bold">{total}</span> defects
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function DeveloperRejectionBanner({ defect }: { defect: Defect }) {
+  let rejectionNote: string | null = null;
+  if (defect.rejection_log) {
+    try {
+      const log = JSON.parse(defect.rejection_log);
+      const last = Array.isArray(log) ? log[log.length - 1] : log;
+      rejectionNote = last?.reason ?? last?.note ?? last?.justification ?? null;
+    } catch { /* ignore parse errors */ }
+  }
+  return (
+    <div className="mb-lg p-md bg-red-50 border border-red-200 rounded-lg">
+      <div className="flex items-start gap-3">
+        <span className="material-symbols-outlined text-red-600 text-xl flex-shrink-0">error</span>
+        <div>
+          <h4 className="text-xs font-bold text-red-700 uppercase mb-xs">QA Rejection Notice</h4>
+          <p className="font-body-sm text-red-700">
+            {rejectionNote ?? `This defect failed verification and was returned (rejected ${defect.regression_index} time${defect.regression_index === 1 ? "" : "s"}).`}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function DefectLogPage({ params }: { params: { id: string } }) {
   const projectId = Number(params.id);
   const user = getStoredUser();
@@ -152,6 +292,15 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
   const isTester = role === "TESTER" || user?.role === "ADMIN";
   const isDeveloper = role === "DEVELOPER" || user?.role === "ADMIN";
 
+  const defaultTab = role === "DEVELOPER" ? "developer" : (role === "ADMIN" || role === "TEST_LEAD") ? "full" : "business";
+  const [activeTab, setActiveTab] = useState(defaultTab);
+
+  useEffect(() => {
+    setStatusFilter("all");
+    setSeverityFilter("all");
+    setSearch("");
+  }, [activeTab]);
+
   const { data: testRuns } = useQuery({
     queryKey: ["project-runs", projectId],
     queryFn: () => customFetch<TestRun[]>(`/projects/${projectId}/test-runs`),
@@ -163,20 +312,64 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     enabled: !!projectId,
   });
 
-  const statusOrder = ["all","NEW","TRIAGED","ASSIGNED","IN_PROGRESS","BLOCKED","RESOLVED_DEV","READY_FOR_VERIFICATION","PENDING_BIZ_ACCEPTANCE","REGRESSED","CLOSED","PASSED_BY_AGREEMENT"];
+  const tabStatuses = useMemo(() => {
+    if (activeTab === "full") return new Set(Object.keys(statusBadge));
+    if (activeTab === "business") return new Set([...DEFECT_VIEWS.BUSINESS.active, ...DEFECT_VIEWS.BUSINESS.withDev, ...DEFECT_VIEWS.BUSINESS.historical]);
+    if (activeTab === "developer") return new Set([...DEFECT_VIEWS.DEVELOPER.actionable, ...DEFECT_VIEWS.DEVELOPER.blocked, ...DEFECT_VIEWS.DEVELOPER.recentlyResolved]);
+    return new Set(Object.keys(statusBadge));
+  }, [activeTab]);
+
+  const statusOrder = useMemo(() => {
+    return ["all", ...Object.keys(statusBadge).filter((s) => tabStatuses.has(s))];
+  }, [tabStatuses]);
+
+  const tabFiltered = useMemo(() => {
+    if (activeTab === "full") return allDefects ?? [];
+    if (activeTab === "business") {
+      const valid = new Set([...DEFECT_VIEWS.BUSINESS.active, ...DEFECT_VIEWS.BUSINESS.withDev, ...DEFECT_VIEWS.BUSINESS.historical]);
+      return (allDefects ?? []).filter((d) => valid.has(d.status));
+    }
+    if (activeTab === "developer") {
+      const valid = new Set([...DEFECT_VIEWS.DEVELOPER.actionable, ...DEFECT_VIEWS.DEVELOPER.blocked, ...DEFECT_VIEWS.DEVELOPER.recentlyResolved]);
+      return (allDefects ?? []).filter((d) => valid.has(d.status));
+    }
+    return allDefects ?? [];
+  }, [allDefects, activeTab]);
 
   const statusDist = useMemo(() => {
     const map: Record<string, number> = {};
-    for (const d of allDefects ?? []) map[d.status] = (map[d.status] ?? 0) + 1;
-    return statusOrder.map(s => ({ key: s, label: s === "all" ? "All" : statusDisplay[s] ?? s, icon: s === "all" ? "bar_chart" : statusIcon[s], count: s === "all" ? (allDefects?.length ?? 0) : (map[s] ?? 0) }));
-  }, [allDefects]);
+    for (const d of tabFiltered) map[d.status] = (map[d.status] ?? 0) + 1;
 
-  const total = allDefects?.length ?? 0;
+    if (activeTab === "business") {
+      const devSum = (["ASSIGNED", "IN_PROGRESS", "BLOCKED", "RESOLVED_DEV", "REGRESSED"] as const)
+        .reduce((sum, s) => sum + (map[s] ?? 0), 0);
+      return [
+        { key: "all", label: "All", icon: "bar_chart", count: tabFiltered.length },
+        { key: "NEW", label: "New", icon: statusIcon["NEW"], count: map["NEW"] ?? 0 },
+        { key: "TRIAGED", label: "Triaged", icon: statusIcon["TRIAGED"], count: map["TRIAGED"] ?? 0 },
+        { key: "WITH_DEV", label: "With Development", icon: "construction", count: devSum },
+        { key: "READY_FOR_VERIFICATION", label: "Ready for Verification", icon: statusIcon["READY_FOR_VERIFICATION"], count: map["READY_FOR_VERIFICATION"] ?? 0 },
+        { key: "CLOSED", label: "Closed", icon: statusIcon["CLOSED"], count: map["CLOSED"] ?? 0 },
+        { key: "PASSED_BY_AGREEMENT", label: "Passed by Agreement", icon: statusIcon["PASSED_BY_AGREEMENT"], count: map["PASSED_BY_AGREEMENT"] ?? 0 },
+      ];
+    }
+
+    return statusOrder.map(s => ({
+      key: s,
+      label: s === "all" ? "All" : statusDisplay[s] ?? s,
+      icon: s === "all" ? "bar_chart" : statusIcon[s],
+      count: s === "all" ? tabFiltered.length : (map[s] ?? 0),
+    }));
+  }, [tabFiltered, activeTab, statusOrder]);
+
+  const total = tabFiltered.length;
 
   const filtered = useMemo(() => {
-    return (allDefects ?? []).filter((d) => {
+    return tabFiltered.filter((d) => {
       if (runFilter !== "all" && d.test_run_id !== Number(runFilter)) return false;
-      if (statusFilter !== "all" && d.status !== statusFilter) return false;
+      if (statusFilter === "WITH_DEV") {
+        if (!DEV_INTERNAL_STATUSES.has(d.status)) return false;
+      } else if (statusFilter !== "all" && d.status !== statusFilter) return false;
       if (severityFilter !== "all" && d.severity !== severityFilter) return false;
       if (search) {
         const q = search.toLowerCase();
@@ -188,7 +381,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
       }
       return true;
     });
-  }, [allDefects, runFilter, statusFilter, severityFilter, search]);
+  }, [tabFiltered, runFilter, statusFilter, severityFilter, search]);
 
   const handleSort = (field: string) => {
     if (sortField === field) {
@@ -236,122 +429,134 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
         </div>
       </div>
 
-      {/* Filter Bar */}
-      <section className="bg-surface border border-outline-variant rounded-xl p-md shadow-sm">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-md">
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-outline uppercase tracking-wider">Test Run</label>
-            <select
-              value={runFilter}
-              onChange={(e) => setRunFilter(e.target.value)}
-              className="w-full bg-surface-container-low border-outline-variant rounded-lg p-2 text-sm focus:ring-secondary focus:border-secondary"
-            >
-              <option value="all">All Runs</option>
-              {testRuns?.map((r) => (
-                <option key={r.id} value={r.id}>{r.name}</option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-outline uppercase tracking-wider">Status</label>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="w-full bg-surface-container-low border-outline-variant rounded-lg p-2 text-sm focus:ring-secondary focus:border-secondary"
-            >
-              <option value="all">All Statuses</option>
-              {Object.keys(statusBadge).map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-outline uppercase tracking-wider">Severity</label>
-            <select
-              value={severityFilter}
-              onChange={(e) => setSeverityFilter(e.target.value)}
-              className="w-full bg-surface-container-low border-outline-variant rounded-lg p-2 text-sm focus:ring-secondary focus:border-secondary"
-            >
-              <option value="all">All Severities</option>
-              <option value="Critical">Critical</option>
-              <option value="Major">Major</option>
-              <option value="Minor">Minor</option>
-              <option value="Cosmetic">Cosmetic</option>
-            </select>
-          </div>
-          <div className="flex items-end">
-            <button
-              onClick={() => { setRunFilter("all"); setStatusFilter("all"); setSeverityFilter("all"); setSearch(""); }}
-              className="w-full bg-surface-container-high text-on-surface font-label-md text-label-md py-2 rounded-lg hover:bg-outline-variant transition-colors flex items-center justify-center gap-2"
-            >
-              <span className="material-symbols-outlined text-sm">filter_list</span>
-              Clear All Filters
-            </button>
-          </div>
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-lg">
+        <div className="flex items-center justify-between">
+          <TabsList>
+            <TabsTrigger value="business">Business / QA</TabsTrigger>
+            {(role === "DEVELOPER" || role === "TEST_LEAD" || role === "ADMIN") && (
+              <TabsTrigger value="developer">Developer Workspace</TabsTrigger>
+            )}
+            {(role === "ADMIN" || role === "TEST_LEAD" || role === "UAT_COORDINATOR") && (
+              <TabsTrigger value="full">Full Board</TabsTrigger>
+            )}
+          </TabsList>
         </div>
-      </section>
 
-      {/* Status Distribution */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
-        {statusDist.map((s) => (
-          <div key={s.key} className="min-w-0">
-            <StatusDistCard
-              label={s.label}
-              count={s.count}
-              total={total}
-              icon={s.icon}
-              isActive={statusFilter === s.key}
-              onClick={() => setStatusFilter(statusFilter === s.key ? "all" : s.key)}
-            />
+        {/* Filter Bar */}
+        <section className="bg-surface border border-outline-variant rounded-xl p-md shadow-sm">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-md">
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-outline uppercase tracking-wider">Test Run</label>
+              <select
+                value={runFilter}
+                onChange={(e) => setRunFilter(e.target.value)}
+                className="w-full bg-surface-container-low border-outline-variant rounded-lg p-2 text-sm focus:ring-secondary focus:border-secondary"
+              >
+                <option value="all">All Runs</option>
+                {testRuns?.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-outline uppercase tracking-wider">Status</label>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="w-full bg-surface-container-low border-outline-variant rounded-lg p-2 text-sm focus:ring-secondary focus:border-secondary"
+              >
+                <option value="all">All Statuses</option>
+                {[...tabStatuses].map((s) => (
+                  <option key={s} value={s}>{statusDisplay[s] ?? s}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-outline uppercase tracking-wider">Severity</label>
+              <select
+                value={severityFilter}
+                onChange={(e) => setSeverityFilter(e.target.value)}
+                className="w-full bg-surface-container-low border-outline-variant rounded-lg p-2 text-sm focus:ring-secondary focus:border-secondary"
+              >
+                <option value="all">All Severities</option>
+                <option value="Critical">Critical</option>
+                <option value="Major">Major</option>
+                <option value="Minor">Minor</option>
+                <option value="Cosmetic">Cosmetic</option>
+              </select>
+            </div>
+            <div className="flex items-end">
+              <button
+                onClick={() => { setRunFilter("all"); setStatusFilter("all"); setSeverityFilter("all"); setSearch(""); }}
+                className="w-full bg-surface-container-high text-on-surface font-label-md text-label-md py-2 rounded-lg hover:bg-outline-variant transition-colors flex items-center justify-center gap-2"
+              >
+                <span className="material-symbols-outlined text-sm">filter_list</span>
+                Clear All Filters
+              </button>
+            </div>
           </div>
-        ))}
-      </div>
+        </section>
 
-      {/* Defect Table */}
-      <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead className="bg-surface-container-low border-b border-outline-variant">
-              <tr>
-                <SortTh field="id" label="ID" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="test_case" label="Test Case / Step" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="severity" label="Sev" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="priority" label="Pri" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="created_at" label="Created" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <th className="p-md text-xs font-bold text-outline uppercase text-right whitespace-nowrap">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-outline-variant">
-              {sorted.map((defect) => (
-                <DefectRow
-                  key={defect.id}
-                  defect={defect}
-                  expanded={expandedId === defect.id}
-                  onToggle={() => setExpandedId(expandedId === defect.id ? null : defect.id)}
-                  canManage={canManage}
-                  isBusinessOwner={isBusinessOwner}
-                  isTester={isTester}
-                  isDeveloper={isDeveloper}
-                  onMutated={() => { /* parent owns cache invalidation */ }}
-                />
-              ))}
-                {sorted.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="p-lg text-center text-on-surface-variant font-body-sm">
-                    No defects found
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-        <div className="p-md bg-surface-container-low border-t border-outline-variant flex items-center justify-between">
-          <p className="text-xs text-on-surface-variant">
-            Showing <span className="font-bold">{sorted.length}</span> of <span className="font-bold">{allDefects?.length ?? 0}</span> defects
-          </p>
-        </div>
-      </div>
+        <TabsContent value="business">
+          <TabContent
+            statusDist={statusDist}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            total={total}
+            sorted={sorted}
+            canManage={canManage}
+            isBusinessOwner={isBusinessOwner}
+            isTester={isTester}
+            isDeveloper={isDeveloper}
+            expandedId={expandedId}
+            setExpandedId={setExpandedId}
+            sortField={sortField}
+            sortDir={sortDir}
+            handleSort={handleSort}
+            activeTab={activeTab}
+          />
+        </TabsContent>
+
+        <TabsContent value="developer">
+          <TabContent
+            statusDist={statusDist}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            total={total}
+            sorted={sorted}
+            canManage={canManage}
+            isBusinessOwner={isBusinessOwner}
+            isTester={isTester}
+            isDeveloper={isDeveloper}
+            expandedId={expandedId}
+            setExpandedId={setExpandedId}
+            sortField={sortField}
+            sortDir={sortDir}
+            handleSort={handleSort}
+            activeTab={activeTab}
+          />
+        </TabsContent>
+
+        <TabsContent value="full">
+          <TabContent
+            statusDist={statusDist}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            total={total}
+            sorted={sorted}
+            canManage={canManage}
+            isBusinessOwner={isBusinessOwner}
+            isTester={isTester}
+            isDeveloper={isDeveloper}
+            expandedId={expandedId}
+            setExpandedId={setExpandedId}
+            sortField={sortField}
+            sortDir={sortDir}
+            handleSort={handleSort}
+            activeTab={activeTab}
+          />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -365,6 +570,7 @@ function DefectRow({
   isTester,
   isDeveloper,
   onMutated,
+  activeTab,
 }: {
   defect: Defect;
   expanded: boolean;
@@ -374,6 +580,7 @@ function DefectRow({
   isTester: boolean;
   isDeveloper: boolean;
   onMutated: () => void;
+  activeTab: string;
 }) {
   const queryClient = useQueryClient();
   const [classifyOpen, setClassifyOpen] = useState(false);
@@ -395,6 +602,10 @@ function DefectRow({
   const [untriagedAction, setUntriagedAction] = useState<string | null>(null);
   const [pendingAfterClassify, setPendingAfterClassify] = useState<string | null>(null);
   const [activeDetailTab, setActiveDetailTab] = useState<"overview" | "steps" | "activity">("overview");
+  const [deployApprovalOpen, setDeployApprovalOpen] = useState(false);
+  const [riskWaiverOpen, setRiskWaiverOpen] = useState(false);
+  const [quickVerifyOpen, setQuickVerifyOpen] = useState(false);
+  const [quickVerifyResultAction, setQuickVerifyResultAction] = useState<"passed" | "failed" | null>(null);
 
   const isNew = defect.status === "NEW";
   const isClassified = !!(defect.severity && defect.priority);
@@ -413,7 +624,7 @@ function DefectRow({
     switch (action) {
       case "assign": setAssignOpen(true); break;
       case "retest": setFlagRetestNewOpen(true); break;
-      case "acceptBiz": setFlagBusinessOpen(true); break;
+      case "riskWaiver": setRiskWaiverOpen(true); break;
       case "block": setFlagBlockedNewOpen(true); break;
     }
   };
@@ -431,6 +642,9 @@ function DefectRow({
   const isReady = defect.status === "READY_FOR_VERIFICATION";
   const isClosed = defect.status === "CLOSED" || defect.status === "PASSED_BY_AGREEMENT";
   const isPendingBiz = defect.status === "PENDING_BIZ_ACCEPTANCE";
+  const isPendingDeployApproval = defect.status === "PENDING_DEPLOYMENT_APPROVAL";
+  const isPendingRiskAcceptance = defect.status === "PENDING_RISK_ACCEPTANCE";
+  const isInVerification = defect.status === "IN_VERIFICATION";
 
   const invalidateProject = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["project-defects"] });
@@ -523,6 +737,31 @@ function DefectRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const requestDeployApprovalMut = useMutation({
+    mutationFn: () => customFetch(`/defects/${defect.id}/request-deployment-approval`, { method: "PATCH" }),
+    onSuccess: () => { invalidateProject(); toast.success("Deployment approval requested"); setDeployApprovalOpen(false); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const submitRiskWaiverMut = useMutation({
+    mutationFn: (justification: string) => customFetch(`/defects/${defect.id}/submit-risk-waiver`, { method: "PATCH", body: JSON.stringify({ justification }) }),
+    onSuccess: () => { invalidateProject(); toast.success("Risk waiver submitted"); setRiskWaiverOpen(false); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const quickVerifyMut = useMutation({
+    mutationFn: () => customFetch(`/defects/${defect.id}/quick-verify`, { method: "PATCH" }),
+    onSuccess: () => { invalidateProject(); toast.success("Quick verification started"); setQuickVerifyOpen(false); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const quickVerifyResultMut = useMutation({
+    mutationFn: (data: { result: string; notes?: string }) =>
+      customFetch(`/defects/${defect.id}/quick-verify-result`, { method: "PATCH", body: JSON.stringify(data) }),
+    onSuccess: () => { invalidateProject(); toast.success("Quick verification recorded"); setQuickVerifyResultAction(null); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const acceptBizRiskMut = useMutation({
     mutationFn: (justification: string) => customFetch(`/defects/${defect.id}/accept-by-agreement`, { method: "PATCH", body: JSON.stringify({ justification }) }),
     onSuccess: () => { invalidateProject(); toast.success("Accepted by agreement"); setAcceptBizRiskOpen(false); },
@@ -579,18 +818,52 @@ function DefectRow({
 
   const stepInfo = extractFailedStep(defect);
 
-  const statusSteps: Step[] = [
-    { key: "NEW", label: "New" },
-    { key: "TRIAGED", label: "Triaged" },
-    { key: "ASSIGNED", label: "Assigned" },
-    { key: "IN_PROGRESS", label: "In Progress" },
-    { key: "BLOCKED", label: "Blocked" },
-    { key: "RESOLVED_DEV", label: "Resolved" },
-    { key: "READY_FOR_VERIFICATION", label: "Verification" },
-    { key: "PENDING_BIZ_ACCEPTANCE", label: "Pending Biz" },
-    { key: "CLOSED", label: "Closed" },
-  ];
-  const mainFlow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, BLOCKED:4, RESOLVED_DEV:5, READY_FOR_VERIFICATION:6, PENDING_BIZ_ACCEPTANCE:7, CLOSED:8, PASSED_BY_AGREEMENT:8, REGRESSED:3 };
+  const { statusSteps, mainFlow, isRegressed } = useMemo(() => {
+    if (activeTab === "business") {
+      const steps: Step[] = [
+        { key: "NEW", label: "New" },
+        { key: "TRIAGED", label: "Triaged" },
+        { key: "WITH_DEV", label: "With Development" },
+        { key: "READY_FOR_VERIFICATION", label: "Verification" },
+        { key: "CLOSED", label: "Closed/Finalized" },
+      ];
+      const flow: Record<string, number> = {
+        NEW: 0, TRIAGED: 1,
+        ASSIGNED: 2, IN_PROGRESS: 2, BLOCKED: 2, RESOLVED_DEV: 2, REGRESSED: 2,
+        READY_FOR_VERIFICATION: 3, IN_VERIFICATION: 3, PENDING_BIZ_ACCEPTANCE: 3,
+        CLOSED: 4, PASSED_BY_AGREEMENT: 4, PENDING_DEPLOYMENT_APPROVAL: 4, PENDING_RISK_ACCEPTANCE: 4,
+      };
+      return { statusSteps: steps, mainFlow: flow, isRegressed: defect.regression_index > 0 };
+    }
+    if (activeTab === "developer") {
+      const steps: Step[] = [
+        { key: "ASSIGNED", label: "Assigned" },
+        { key: "IN_PROGRESS", label: "In Progress" },
+        { key: "BLOCKED", label: "Blocked" },
+        { key: "RESOLVED_DEV", label: "Resolved" },
+      ];
+      const flow: Record<string, number> = {
+        ASSIGNED: 0, IN_PROGRESS: 1, BLOCKED: 2, RESOLVED_DEV: 3, REGRESSED: 0,
+      };
+      return { statusSteps: steps, mainFlow: flow, isRegressed: defect.regression_index > 0 };
+    }
+    const steps: Step[] = [
+      { key: "NEW", label: "New" },
+      { key: "TRIAGED", label: "Triaged" },
+      { key: "ASSIGNED", label: "Assigned" },
+      { key: "IN_PROGRESS", label: "In Progress" },
+      { key: "BLOCKED", label: "Blocked" },
+      { key: "RESOLVED_DEV", label: "Resolved" },
+      { key: "READY_FOR_VERIFICATION", label: "Verification" },
+      { key: "IN_VERIFICATION", label: "In Verification" },
+      { key: "PENDING_DEPLOYMENT_APPROVAL", label: "Deploy Approval" },
+      { key: "PENDING_RISK_ACCEPTANCE", label: "Risk Waiver" },
+      { key: "PENDING_BIZ_ACCEPTANCE", label: "Pending Biz" },
+      { key: "CLOSED", label: "Closed" },
+    ];
+    const flow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, BLOCKED:4, RESOLVED_DEV:5, READY_FOR_VERIFICATION:6, IN_VERIFICATION:7, PENDING_DEPLOYMENT_APPROVAL:8, PENDING_RISK_ACCEPTANCE:9, PENDING_BIZ_ACCEPTANCE:10, CLOSED:11, PASSED_BY_AGREEMENT:11, REGRESSED:3 };
+    return { statusSteps: steps, mainFlow: flow, isRegressed: defect.regression_index > 0 };
+  }, [activeTab, defect.regression_index]);
   const currentStatusIdx = mainFlow[defect.status] ?? 0;
 
   // Derive actually completed steps from system notes to avoid marking skipped states as completed
@@ -618,7 +891,7 @@ function DefectRow({
       if (i != null && i < currentStatusIdx) idx.add(i);
     }
     // If defect is in a terminal state, mark the final step as completed too
-    if (defect.status === "CLOSED" || defect.status === "PASSED_BY_AGREEMENT") {
+    if (["CLOSED", "PASSED_BY_AGREEMENT"].includes(defect.status)) {
       idx.add(statusSteps.length - 1);
     }
     return [...idx].sort((a, b) => a - b);
@@ -657,8 +930,8 @@ function DefectRow({
           {defect.priority ?? "—"}
         </td>
         <td className="p-md font-body-sm text-body-sm whitespace-nowrap">
-          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${statusBadge[defect.status] ?? ""}`}>
-            {statusDisplay[defect.status] ?? defect.status}
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadge[defect.status] ?? ""}`}>
+            {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? "With Development" : statusDisplay[defect.status] ?? defect.status}
           </span>
           {defect.regression_index > 0 && (
             <span className="ml-1 inline-flex items-center px-1 py-0.5 rounded text-[9px] font-bold bg-orange-100 text-orange-700 border border-orange-200" title="Previously failed verification">
@@ -678,16 +951,11 @@ function DefectRow({
                 <button onClick={() => setClassifyOpen(true)} className="bg-secondary-container/40 text-on-secondary-container px-2 py-1 rounded-md text-xs font-bold hover:bg-secondary-container transition-colors" title="Set severity and priority">
                   Classify
                 </button>
-                {/* Assign to Engineering — requires triage first */}
+                {/* Assign to Engineering */}
                 <button
-                  onClick={() => isClassified ? handleUntriagedAction("assign") : undefined}
-                  disabled={!isClassified}
-                  className={`px-2 py-1 rounded-md text-xs font-bold transition-colors ${
-                    isClassified
-                      ? "bg-amber-100 text-amber-800 hover:bg-amber-200 cursor-pointer"
-                      : "bg-amber-50 text-amber-400 cursor-not-allowed opacity-60"
-                  }`}
-                  title={isClassified ? "Assign to Developer" : "Classify defect before assigning"}
+                  onClick={() => handleUntriagedAction("assign")}
+                  className="px-2 py-1 rounded-md text-xs font-bold bg-amber-100 text-amber-800 hover:bg-amber-200 cursor-pointer transition-colors"
+                  title="Assign to Developer"
                 >
                   Assign
                 </button>
@@ -695,18 +963,13 @@ function DefectRow({
                 <button onClick={() => handleUntriagedAction("retest")} className="bg-blue-100 text-blue-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-blue-200 transition-colors" title="Send for verification">
                   Retest
                 </button>
-                {/* Flag for Business Decision — requires triage first */}
+                {/* Submit Risk Waiver (NEW → PENDING_RISK_ACCEPTANCE) */}
                 <button
-                  onClick={() => isClassified ? handleUntriagedAction("acceptBiz") : undefined}
-                  disabled={!isClassified}
-                  className={`px-2 py-1 rounded-md text-xs font-bold transition-colors ${
-                    isClassified
-                      ? "bg-purple-100 text-purple-800 hover:bg-purple-200 cursor-pointer"
-                      : "bg-purple-50 text-purple-400 cursor-not-allowed opacity-60"
-                  }`}
-                  title={isClassified ? "Flag for Business Decision" : "Classify defect before flagging for business decision"}
+                  onClick={() => handleUntriagedAction("riskWaiver")}
+                  className="px-2 py-1 rounded-md text-xs font-bold bg-pink-100 text-pink-800 hover:bg-pink-200 cursor-pointer transition-colors"
+                  title="Submit Risk Waiver"
                 >
-                  Flag Biz
+                  Risk Waiver
                 </button>
                 {/* Flag as Blocked (NEW → BLOCKED) */}
                 <button onClick={() => handleUntriagedAction("block")} className="bg-red-100 text-red-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-red-200 transition-colors" title="Flag as blocked">
@@ -720,9 +983,16 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">category</span>
               </button>
             )}
-            {canManage && !isClosed && !isPendingBiz && !isNew && (
-              <button onClick={() => setFlagBusinessOpen(true)} className="p-1.5 hover:bg-purple-100 hover:text-purple-700 rounded text-on-surface-variant transition-colors" title="Flag for Business Decision">
-                <span className="material-symbols-outlined text-sm">pending_actions</span>
+            {/* Pathway A: Request Deployment Approval (READY_FOR_VERIFICATION | RESOLVED_DEV → PENDING_DEPLOYMENT_APPROVAL) */}
+            {canManage && !isClosed && !isNew && !isPendingDeployApproval && !isPendingRiskAcceptance && !isInVerification && !isPendingBiz && (isReady || isResolved) && (
+              <button onClick={() => setDeployApprovalOpen(true)} className="p-1.5 hover:bg-teal-100 hover:text-teal-700 rounded text-on-surface-variant transition-colors" title="Request Deployment Approval">
+                <span className="material-symbols-outlined text-sm">rocket_launch</span>
+              </button>
+            )}
+            {/* Pathway B: Submit Risk Waiver (non-terminal defects → PENDING_RISK_ACCEPTANCE) */}
+            {canManage && !isClosed && !isNew && !isPendingDeployApproval && !isPendingRiskAcceptance && !isInVerification && !isPendingBiz && (
+              <button onClick={() => setRiskWaiverOpen(true)} className="p-1.5 hover:bg-pink-100 hover:text-pink-700 rounded text-on-surface-variant transition-colors" title="Submit Risk Waiver">
+                <span className="material-symbols-outlined text-sm">gavel</span>
               </button>
             )}
             {/* TEST_LEAD: Assign (TRIAGED → ASSIGNED) */}
@@ -773,6 +1043,12 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">fact_check</span>
               </button>
             )}
+            {/* Quick Verification: Verify Defect (READY_FOR_VERIFICATION → IN_VERIFICATION) */}
+            {(isTester || canManage) && isReady && (
+              <button onClick={() => setQuickVerifyOpen(true)} className="p-1.5 hover:bg-sky-100 hover:text-sky-700 rounded text-on-surface-variant transition-colors" title="Quick Verify Defect">
+                <span className="material-symbols-outlined text-sm">sync</span>
+              </button>
+            )}
             {/* BUSINESS_OWNER: Accept verification (READY_FOR_VERIFICATION → CLOSED) */}
             {isBusinessOwner && isReady && (
               <button onClick={() => setBizAcceptOpen(true)} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Accept">
@@ -790,6 +1066,17 @@ function DefectRow({
               <button onClick={() => setRescheduleOpen(true)} className="p-1.5 hover:bg-orange-100 hover:text-orange-700 rounded text-on-surface-variant transition-colors" title="Reschedule Retest — return to developer">
                 <span className="material-symbols-outlined text-sm">schedule</span>
               </button>
+            )}
+            {/* Quick Verification Pass/Fail (IN_VERIFICATION → CLOSED | ASSIGNED) */}
+            {(isTester || canManage) && isInVerification && (
+              <>
+                <button onClick={() => { setQuickVerifyResultAction("passed"); }} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Quick Verify — Pass">
+                  <span className="material-symbols-outlined text-sm">check_circle</span>
+                </button>
+                <button onClick={() => { setQuickVerifyResultAction("failed"); }} className="p-1.5 hover:bg-red-100 hover:text-red-700 rounded text-on-surface-variant transition-colors" title="Quick Verify — Fail">
+                  <span className="material-symbols-outlined text-sm">cancel</span>
+                </button>
+              </>
             )}
             {/* BUSINESS_OWNER: Accept by Agreement (PENDING_BIZ_ACCEPTANCE → PASSED_BY_AGREEMENT) */}
             {isBusinessOwner && isPendingBiz && (
@@ -817,11 +1104,20 @@ function DefectRow({
                 <h3 className="font-title-sm text-title-sm text-on-surface">
                   DEF-{defect.id} — {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
                 </h3>
-                <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-bold border ${statusBadge[defect.status] ?? ""}`}>
-                  {statusDisplay[defect.status] ?? defect.status}
+                <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-bold border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadge[defect.status] ?? ""}`}>
+                  {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? "With Development" : statusDisplay[defect.status] ?? defect.status}
                 </span>
               </div>
               <Stepper steps={statusSteps} currentIndex={currentStatusIdx} completedIndices={completedStatusIndices} />
+
+              {isRegressed && activeTab !== "full" && (
+                <div className={`mt-md flex items-center gap-2 p-sm rounded-lg ${activeTab === "developer" ? "bg-red-50 border border-red-200" : "bg-orange-50 border border-orange-200"}`}>
+                  <span className="material-symbols-outlined text-sm text-red-600">warning</span>
+                  <span className="text-xs font-bold text-red-700">
+                    Previously rejected {defect.regression_index} time{defect.regression_index === 1 ? "" : "s"} — returned for rework
+                  </span>
+                </div>
+              )}
 
               {/* Tab Menu */}
               <div className="flex gap-xs mt-md border-b border-outline-variant/30">
@@ -849,7 +1145,31 @@ function DefectRow({
             {/* Tab Content */}
             <div className="p-lg">
               {activeDetailTab === "overview" && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-xl">
+                <>
+                  {(activeTab === "developer" && isRegressed) && (
+                    <DeveloperRejectionBanner defect={defect} />
+                  )}
+
+                  {(activeTab === "full") && (
+                    <div className="grid grid-cols-3 gap-md mb-lg">
+                      <div className="bg-surface-container-low rounded-lg p-md border border-outline-variant/40">
+                        <span className="text-[10px] font-bold text-outline uppercase tracking-wider">Lifetime Age</span>
+                        <p className="text-title-sm font-title-sm text-on-surface mt-1">
+                          {Math.floor((Date.now() - new Date(defect.created_at).getTime()) / (1000 * 60 * 60 * 24))}d
+                        </p>
+                      </div>
+                      <div className="bg-surface-container-low rounded-lg p-md border border-outline-variant/40">
+                        <span className="text-[10px] font-bold text-outline uppercase tracking-wider">Regressions</span>
+                        <p className="text-title-sm font-title-sm text-on-surface mt-1">{defect.regression_index}</p>
+                      </div>
+                      <div className="bg-surface-container-low rounded-lg p-md border border-outline-variant/40">
+                        <span className="text-[10px] font-bold text-outline uppercase tracking-wider">Root Cause</span>
+                        <p className="text-body-sm font-body-sm text-on-surface mt-1">{defect.root_cause_category ?? "Not set"}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-xl">
                   <div className="space-y-md">
                     <div>
                       <h4 className="text-xs font-bold text-outline uppercase mb-sm">Test Scenario</h4>
@@ -919,23 +1239,25 @@ function DefectRow({
                         ))}
                       </div>
                     )}
-                    {defect.regression_index > 0 && (
-                      <div className="p-md bg-orange-50 border border-orange-200 rounded-lg">
-                        <h4 className="text-xs font-bold text-orange-700 uppercase mb-sm flex items-center gap-1">
-                          <span className="material-symbols-outlined text-sm">warning</span>
-                          Previously Failed Verification
-                        </h4>
-                        <p className="font-body-sm text-body-sm text-orange-700">
-                          This defect has been rejected <strong>{defect.regression_index}</strong> time{defect.regression_index === 1 ? "" : "s"} and returned to the developer for rework.
-                        </p>
-                      </div>
-                    )}
+                {defect.regression_index > 0 && activeTab !== "business" && (
+                  <div className="p-md bg-orange-50 border border-orange-200 rounded-lg">
+                    <h4 className="text-xs font-bold text-orange-700 uppercase mb-sm flex items-center gap-1">
+                      <span className="material-symbols-outlined text-sm">warning</span>
+                      Previously Failed Verification
+                    </h4>
+                    <p className="font-body-sm text-body-sm text-orange-700">
+                      This defect has been rejected <strong>{defect.regression_index}</strong> time{defect.regression_index === 1 ? "" : "s"} and returned to the developer for rework.
+                    </p>
+                  </div>
+                )}
                     <div className="flex items-center gap-lg mt-sm text-xs text-on-surface-variant">
                       <span>Created: {new Date(defect.created_at).toLocaleString()}</span>
                       <span>Updated: {new Date(defect.updated_at).toLocaleString()}</span>
                     </div>
                   </div>
                 </div>
+
+              </>
               )}
 
               {activeDetailTab === "steps" && (
@@ -967,13 +1289,71 @@ function DefectRow({
                 <div>
                   {defect.notes && defect.notes.length > 0 ? (
                     <div className="space-y-sm max-h-80 overflow-y-auto pr-md">
-                      {(() => {
+            {(() => {
                         const seen = new Set<string>();
+                        const shownStatuses = new Set<string>();
+                        const microNoise = new Set(['ASSIGNED', 'IN_PROGRESS', 'BLOCKED', 'RESOLVED_DEV']);
                         const deduped: DefectNote[] = [];
+                        
                         for (const n of defect.notes ?? []) {
+                          // 1. Deduplication
                           const key = `${n.id}-${n.note}-${n.created_at}`;
                           if (seen.has(key)) continue;
                           seen.add(key);
+
+                          // 2. If not business tab, or a user comment, keep it
+                          if (activeTab !== "business" || !n.is_system_note) {
+                            deduped.push(n);
+                            continue;
+                          }
+
+                          // 3. Macro actions (e.g., initial creation)
+                          if (n.action === 'CREATED' || n.action === 'NEW') {
+                            deduped.push(n);
+                            continue;
+                          }
+
+                          // 4. Explicitly block non-status technical field updates
+                          const lowerNote = n.note.toLowerCase();
+                          if (
+                            lowerNote.includes('root cause') ||
+                            lowerNote.includes('regression index') ||
+                            lowerNote.includes('assignee') ||
+                            lowerNote.includes('assigned to')
+                          ) {
+                            continue; // Drop these internal dev metric updates
+                          }
+
+                          // 5. Bulletproof Status Regex (Handles quotes, brackets, and raw text)
+                          const statusMatch = n.note.match(/to\s+['"\[]?([A-Z_]+)['"\]]?/i);
+                          
+                          if (statusMatch && statusMatch[1]) {
+                            const extractedStatus = statusMatch[1].toUpperCase();
+
+                            if (extractedStatus === 'NEW') {
+                              deduped.push(n);
+                              continue;
+                            }
+
+                            if (microNoise.has(extractedStatus)) {
+                              // ALWAYS block IN_PROGRESS, BLOCKED, and RESOLVED_DEV
+                              if (['IN_PROGRESS', 'BLOCKED', 'RESOLVED_DEV'].includes(extractedStatus)) {
+                                continue;
+                              }
+                              
+                              // Allow ASSIGNED as the sole Handoff Milestone
+                              if (extractedStatus === 'ASSIGNED') {
+                                deduped.push(n);
+                              }
+                              continue;
+                            }
+
+                            shownStatuses.add(extractedStatus);
+                            deduped.push(n);
+                            continue;
+                          }
+
+                          // 6. Fallback: irregular system note (e.g. creation text) — always show
                           deduped.push(n);
                         }
                         return deduped;
@@ -1148,6 +1528,85 @@ function DefectRow({
           <FlagBlockedForm
             onSave={(reason) => flagBlockedNewMut.mutate(reason)}
             loading={flagBlockedNewMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Request Deployment Approval Dialog */}
+      {deployApprovalOpen && (
+        <Dialog onClose={() => setDeployApprovalOpen(false)} title="Request Deployment Approval">
+          <div className="space-y-md">
+            <p className="font-body-sm text-on-surface-variant">
+              This will route the defect to <strong>Pending Deployment Approval</strong> status.
+              A notification will be sent to Business Owners for review. No justification is required.
+            </p>
+            <div className="flex justify-end gap-md pt-sm">
+              <button
+                onClick={() => setDeployApprovalOpen(false)}
+                className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => requestDeployApprovalMut.mutate()}
+                disabled={requestDeployApprovalMut.isPending}
+                className="px-4 py-sm bg-teal-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all"
+              >
+                {requestDeployApprovalMut.isPending ? "Requesting..." : "Confirm & Request Approval"}
+              </button>
+            </div>
+          </div>
+        </Dialog>
+      )}
+
+      {/* Submit Risk Waiver Dialog */}
+      {riskWaiverOpen && (
+        <Dialog onClose={() => setRiskWaiverOpen(false)} title="Submit Risk Waiver">
+          <RiskWaiverForm
+            onSave={(justification) => submitRiskWaiverMut.mutate(justification)}
+            loading={submitRiskWaiverMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Quick Verify Dialog */}
+      {quickVerifyOpen && (
+        <Dialog onClose={() => setQuickVerifyOpen(false)} title="Quick Verify Defect">
+          <div className="space-y-md">
+            <div className="flex items-start gap-3 bg-sky-50 border border-sky-200 rounded-lg p-md">
+              <span className="material-symbols-outlined text-sky-600 text-xl flex-shrink-0">sync</span>
+              <p className="font-body-sm text-sky-900">
+                This will create a temporary verification run and move the defect to <strong>In Verification</strong>.
+                You will then record a Pass or Fail result.
+              </p>
+            </div>
+            <div className="flex justify-end gap-md pt-sm">
+              <button
+                onClick={() => setQuickVerifyOpen(false)}
+                className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => quickVerifyMut.mutate()}
+                disabled={quickVerifyMut.isPending}
+                className="px-4 py-sm bg-sky-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all"
+              >
+                {quickVerifyMut.isPending ? "Creating..." : "Start Quick Verify"}
+              </button>
+            </div>
+          </div>
+        </Dialog>
+      )}
+
+      {/* Quick Verify Result Dialog */}
+      {quickVerifyResultAction && (
+        <Dialog onClose={() => setQuickVerifyResultAction(null)} title={quickVerifyResultAction === "passed" ? "Quick Verify — Pass" : "Quick Verify — Fail"}>
+          <QuickVerifyResultForm
+            result={quickVerifyResultAction}
+            onSave={(data) => quickVerifyResultMut.mutate(data)}
+            onCancel={() => setQuickVerifyResultAction(null)}
+            loading={quickVerifyResultMut.isPending}
           />
         </Dialog>
       )}
@@ -1626,6 +2085,80 @@ function ResolveForm({ onSave, onCancel, loading }: { onSave: (rootCause: string
         <button type="submit" disabled={loading || !isValid}
           className="px-4 py-sm bg-blue-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
           {loading ? "Submitting..." : "Resolve as Developer"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function RiskWaiverForm({ onSave, loading }: { onSave: (justification: string) => void; loading: boolean }) {
+  const [justification, setJustification] = useState("");
+  const charsLeft = 10 - justification.length;
+  const isValid = justification.trim().length >= 10;
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave(justification.trim()); }} className="space-y-md">
+      <p className="font-body-sm text-on-surface-variant">
+        This will route the defect to <strong>Pending Risk Acceptance</strong> status.
+        A formal notification will be sent to Risk/Compliance. Provide a
+        justification for why this defect should be accepted as a risk.
+      </p>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Risk Justification *</label>
+        <textarea value={justification} onChange={(e) => setJustification(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Explain why this defect should be accepted as a business risk..." required />
+        <p className={`text-label-xs ${charsLeft <= 0 ? "text-success" : "text-on-surface-variant/60"}`}>
+          {charsLeft <= 0 ? "Minimum length met" : `${charsLeft} characters remaining (minimum 10)`}
+        </p>
+      </div>
+      <button type="submit" disabled={loading || !isValid} className="w-full py-sm bg-pink-600 text-white rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
+        {loading ? "Submitting..." : "Submit Risk Waiver"}
+      </button>
+    </form>
+  );
+}
+
+function QuickVerifyResultForm({
+  result, onSave, onCancel, loading,
+}: {
+  result: "passed" | "failed";
+  onSave: (data: { result: string; notes?: string }) => void;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  const [notes, setNotes] = useState("");
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); onSave({ result, notes: notes.trim() || undefined }); }} className="space-y-md">
+      <div className={`flex items-start gap-3 rounded-lg p-md ${result === "passed" ? "bg-green-50 border border-green-200" : "bg-red-50 border border-red-200"}`}>
+        <span className={`material-symbols-outlined text-xl flex-shrink-0 ${result === "passed" ? "text-green-600" : "text-red-600"}`}>
+          {result === "passed" ? "check_circle" : "warning"}
+        </span>
+        <div>
+          <p className={`font-label-md text-label-md ${result === "passed" ? "text-green-900" : "text-red-900"}`}>
+            {result === "passed" ? "Defect Passed Verification" : "Defect Failed Verification"}
+          </p>
+          <p className={`font-body-sm text-body-sm ${result === "passed" ? "text-green-800" : "text-red-800"}`}>
+            {result === "passed"
+              ? "This defect will be closed. It is ready for deployment."
+              : "This defect will be returned to ASSIGNED status and the regression counter will be incremented."}
+          </p>
+        </div>
+      </div>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Verification Notes (optional)</label>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          className="w-full h-20 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
+          placeholder={result === "passed" ? "Optional notes about the verification..." : "Describe what failed and what needs to be reworked..."}
+        />
+      </div>
+      <div className="flex justify-end gap-md pt-sm">
+        <button type="button" onClick={onCancel}
+          className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors">
+          Cancel
+        </button>
+        <button type="submit" disabled={loading}
+          className={`px-4 py-sm text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all ${result === "passed" ? "bg-green-600" : "bg-red-600"}`}>
+          {loading ? "Recording..." : result === "passed" ? "Confirm Pass" : "Confirm Fail"}
         </button>
       </div>
     </form>

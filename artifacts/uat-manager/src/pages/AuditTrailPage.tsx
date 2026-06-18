@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useRoute } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { customFetch } from "../lib/api-client";
+import { getStoredUser } from "../lib/auth";
+import { useProjectRole } from "../hooks/useProjectRole";
+import { Badge } from "../components/ui/badge";
+import { isMacroEvent, isEscalation, isAdminUndo } from "../lib/audit-filters";
 import type { StatusAuditLog, User } from "../types/api";
 
 interface AuditLogEntry extends StatusAuditLog {
@@ -88,7 +92,12 @@ function getDateGroupLabel(dateStr: string): string {
 export function AuditTrailPage({ params: propParams }: { params?: { id?: string } } = {}) {
   const [, routeParams] = useRoute<{ id: string }>("/projects/:id/audit");
   const projectId = propParams?.id ?? routeParams?.id ?? undefined;
+  const user = getStoredUser();
+  const role = useProjectRole(projectId ? Number(projectId) : null);
   const [entityType, setEntityType] = useState("");
+
+  const showFullByDefault = role === "DEVELOPER" || role === "ADMIN" || role === "TEST_LEAD" || user?.role === "ADMIN";
+  const [viewMode, setViewMode] = useState<"milestones" | "full">(showFullByDefault ? "full" : "milestones");
 
   const {
     data: logs,
@@ -108,7 +117,12 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
     document.title = "Audit Trail | TestCaseHub";
   }, []);
 
-  const grouped = logs?.reduce<Record<string, AuditLogEntry[]>>((acc, log) => {
+  const filteredLogs = useMemo(() => {
+    if (!logs || viewMode === "full") return logs ?? [];
+    return logs.filter((entry) => isMacroEvent(entry));
+  }, [logs, viewMode]);
+
+  const grouped = filteredLogs.reduce<Record<string, AuditLogEntry[]>>((acc, log) => {
     const key = getDateGroupKey(log.changed_at);
     if (!acc[key]) acc[key] = [];
     acc[key].push(log);
@@ -127,7 +141,7 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
         </h1>
       </div>
 
-      <div className="bg-surface-container-lowest/70 backdrop-filter backdrop-blur-md border border-outline-variant rounded-xl p-4 mb-xl flex items-center gap-3">
+      <div className="bg-surface-container-lowest/70 backdrop-filter backdrop-blur-md border border-outline-variant rounded-xl p-4 mb-xl flex flex-wrap items-center gap-3">
         <div className="relative flex-1 max-w-xs">
           <select
             value={entityType}
@@ -143,6 +157,29 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
           <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant pointer-events-none text-[18px]">
             expand_more
           </span>
+        </div>
+
+        <div className="flex items-center gap-1 bg-surface-container-high rounded-lg p-0.5">
+          <button
+            onClick={() => setViewMode("milestones")}
+            className={`px-3 py-1.5 rounded-md text-label-sm font-label-md transition-all ${
+              viewMode === "milestones"
+                ? "bg-surface-container-lowest text-secondary shadow-sm"
+                : "text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            Milestones
+          </button>
+          <button
+            onClick={() => setViewMode("full")}
+            className={`px-3 py-1.5 rounded-md text-label-sm font-label-md transition-all ${
+              viewMode === "full"
+                ? "bg-surface-container-lowest text-secondary shadow-sm"
+                : "text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            Full Technical Audit
+          </button>
         </div>
 
         {entityType && (
@@ -227,34 +264,55 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
                     </div>
 
                     <div className={`flex-1 ${idx < arr.length - 1 ? "pb-6" : "pb-4"}`}>
-                      <div className="bg-surface-container-lowest/70 backdrop-filter backdrop-blur-md border border-outline-variant rounded-xl p-4">
-                        <p className="text-body-sm text-on-surface">
-                          <span className="font-semibold">
-                            {entry.changedBy?.name ?? "System"}
-                          </span>{" "}
-                          changed{" "}
-                          <span className="font-medium capitalize">
-                            {entry.entity_type}
-                          </span>{" "}
-                          #
-                          {entry.entity_id}{" "}
-                          {entry.from_status && (
-                            <>
-                              from{" "}
-                              <span className="font-medium">
-                                '{entry.from_status}'
-                              </span>{" "}
-                            </>
+                      <div className={`rounded-xl p-4 border ${
+                        isEscalation(entry)
+                          ? "bg-red-50/80 border-red-200"
+                          : isAdminUndo(entry)
+                            ? "bg-amber-50/80 border-amber-200"
+                            : "bg-surface-container-lowest/70 backdrop-filter backdrop-blur-md border-outline-variant"
+                      }`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-body-sm text-on-surface flex-1">
+                            <span className="font-semibold">
+                              {entry.changedBy?.name ?? "System"}
+                            </span>{" "}
+                            changed{" "}
+                            <span className="font-medium capitalize">
+                              {entry.entity_type}
+                            </span>{" "}
+                            #
+                            {entry.entity_id}{" "}
+                            {entry.from_status && (
+                              <>
+                                from{" "}
+                                <span className="font-medium">
+                                  '{entry.from_status}'
+                                </span>{" "}
+                              </>
+                            )}
+                            to{" "}
+                            <span className="font-medium">
+                              '{entry.to_status}'
+                            </span>
+                          </p>
+
+                          {isEscalation(entry) && (
+                            <Badge variant="error">
+                              <span className="material-symbols-outlined text-[12px]">warning</span>
+                              Escalation
+                            </Badge>
                           )}
-                          to{" "}
-                          <span className="font-medium">
-                            '{entry.to_status}'
-                          </span>
-                        </p>
+                          {isAdminUndo(entry) && !isEscalation(entry) && (
+                            <Badge variant="warning">
+                              <span className="material-symbols-outlined text-[12px]">undo</span>
+                              Admin Undo
+                            </Badge>
+                          )}
+                        </div>
 
                         {entry.reason && (
-                          <p className="text-body-sm text-on-surface-variant italic mt-1">
-                            {entry.reason}
+                          <p className="text-body-sm text-on-surface-variant mt-2">
+                            <span className="font-medium">Reason:</span> {entry.reason}
                           </p>
                         )}
 

@@ -228,13 +228,15 @@ router.patch("/defects/:defectId/flag-blocked", async (req: AuthenticatedRequest
 });
 
 // PATCH /defects/:defectId/flag-retest-from-new — TEST_LEAD only
-// NEW ────────────────────────────────────────────────────────> READY_FOR_VERIFICATION
-// Automatically provisions a defect_retests trace and a retest_reason
+// NEW | TRIAGED | ASSIGNED | IN_PROGRESS | BLOCKED | RESOLVED_DEV | REGRESSED
+//   ─────────────────────────────────────────────────────────────────────────> READY_FOR_VERIFICATION
+// Automatically provisions a defect_retests trace and a retest_reason.
+// Accepts any non-terminal, non-closed status so Test Leads can retest from any stage.
 router.patch("/defects/:defectId/flag-retest-from-new", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
     const bodySchema = z.object({
-      reason: z.string().default("Flagged for retesting from NEW status"),
+      reason: z.string().default("Flagged for retesting"),
       targetVerificationRunId: z.number().optional(),
     });
     const data = bodySchema.parse(req.body);
@@ -246,7 +248,11 @@ router.patch("/defects/:defectId/flag-retest-from-new", async (req: Authenticate
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    if (defect.status !== "NEW") { res.status(400).json({ message: "Only NEW defects can be flagged for retesting from new" }); return; }
+    const terminalStatuses = ["CLOSED", "PASSED_BY_AGREEMENT", "PENDING_BIZ_ACCEPTANCE", "PENDING_DEPLOYMENT_APPROVAL", "PENDING_RISK_ACCEPTANCE", "IN_VERIFICATION"];
+    if (terminalStatuses.includes(defect.status)) {
+      res.status(400).json({ message: "Defect cannot be retested in its current state." });
+      return;
+    }
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
@@ -302,6 +308,222 @@ router.patch("/defects/:defectId/flag-accepted-by-business", async (req: Authent
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PENDING_BIZ_ACCEPTANCE", reason: data.note });
     await logSystemNote(defectId, oldStatus, "PENDING_BIZ_ACCEPTANCE", req.user!.userId, data.note);
     res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/request-deployment-approval — TEST_LEAD only
+// READY_FOR_VERIFICATION | RESOLVED_DEV ─────────────────────> PENDING_DEPLOYMENT_APPROVAL
+// Simple confirmation — no mandatory justification.
+router.patch("/defects/:defectId/request-deployment-approval", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    if (!["READY_FOR_VERIFICATION", "RESOLVED_DEV"].includes(defect.status)) {
+      res.status(400).json({ message: "Defect must be READY_FOR_VERIFICATION or RESOLVED_DEV to request deployment approval." });
+      return;
+    }
+
+    const oldStatus = defect.status;
+    const [updated] = await db.update(schema.defects)
+      .set({ status: "PENDING_DEPLOYMENT_APPROVAL", updated_at: new Date() })
+      .where(eq(schema.defects.id, defectId))
+      .returning();
+
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PENDING_DEPLOYMENT_APPROVAL", reason: "Deployment approval requested" });
+    await logSystemNote(defectId, oldStatus, "PENDING_DEPLOYMENT_APPROVAL", req.user!.userId, "Deployment approval requested");
+    // TODO: Notify Business Owners (when notification infrastructure is available)
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/submit-risk-waiver — TEST_LEAD only
+// Any non-terminal, non-approval state ──────────────────────> PENDING_RISK_ACCEPTANCE
+// Requires mandatory justification (min 10 chars).
+router.patch("/defects/:defectId/submit-risk-waiver", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({ justification: z.string().min(10, "Justification must be at least 10 characters") });
+    const data = bodySchema.parse(req.body);
+
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    const nonFlagable = ["NEW", "CLOSED", "PASSED_BY_AGREEMENT", "PENDING_DEPLOYMENT_APPROVAL", "PENDING_RISK_ACCEPTANCE", "PENDING_BIZ_ACCEPTANCE"];
+    if (nonFlagable.includes(defect.status)) {
+      res.status(400).json({
+        message: defect.status === "NEW"
+          ? "Defect must be triaged before submitting a risk waiver."
+          : "Defect cannot be submitted for risk waiver in its current state."
+      });
+      return;
+    }
+
+    const oldStatus = defect.status;
+    const [updated] = await db.update(schema.defects)
+      .set({ status: "PENDING_RISK_ACCEPTANCE", accepted_by_business_note: data.justification, updated_at: new Date() })
+      .where(eq(schema.defects.id, defectId))
+      .returning();
+
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PENDING_RISK_ACCEPTANCE", reason: data.justification });
+    await logSystemNote(defectId, oldStatus, "PENDING_RISK_ACCEPTANCE", req.user!.userId, data.justification);
+    // TODO: Notify Risk/Compliance team (when notification infrastructure is available)
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/quick-verify — TEST_LEAD | TESTER
+// READY_FOR_VERIFICATION ────────────────────────────────────> IN_VERIFICATION
+// Auto-generates a hidden verification test run and a single Verification record.
+router.patch("/defects/:defectId/quick-verify", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD", "TESTER"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    if (defect.status !== "READY_FOR_VERIFICATION") {
+      res.status(400).json({ message: "Defect must be READY_FOR_VERIFICATION to start a quick verification." });
+      return;
+    }
+
+    const oldStatus = defect.status;
+
+    // Look up the test_case to find the parent use_case_id for scenario injection
+    const testCase = await db.query.testCases.findFirst({
+      where: eq(schema.testCases.id, defect.test_case_id),
+    });
+
+    // Create a hidden verification test run linked to the same project
+    // Pre-confirm entry criteria so the quick verify is frictionless
+    const [verificationRun] = await db.insert(schema.testRuns).values({
+      project_id: projectId,
+      name: `Quick Verify — DEF-${defect.id}`,
+      status: "in_progress",
+      entry_confirmed: true,
+      entry_confirmed_by_user_id: req.user!.userId,
+      entry_confirmed_at: new Date(),
+    }).returning();
+
+    // Inject the parent scenario into the new test run so it isn't empty
+    if (testCase?.use_case_id) {
+      await db.insert(schema.testRunUseCases).values({
+        test_run_id: verificationRun.id,
+        use_case_id: testCase.use_case_id,
+        assigned_tester_id: req.user!.userId,
+        status: "in_progress",
+      });
+    }
+
+    // Create a defect_retest record linking this verification run to the defect
+    const [retestRecord] = await db.insert(schema.defectRetests).values({
+      defect_id: defectId,
+      test_run_id: defect.test_run_id,
+      target_verification_run_id: verificationRun.id,
+      assigned_tester_id: req.user!.userId,
+    }).returning();
+
+    // Transition defect to IN_VERIFICATION
+    const [updated] = await db.update(schema.defects)
+      .set({ status: "IN_VERIFICATION", updated_at: new Date() })
+      .where(eq(schema.defects.id, defectId))
+      .returning();
+
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "IN_VERIFICATION", reason: "Quick verification started" });
+    await logSystemNote(defectId, oldStatus, "IN_VERIFICATION", req.user!.userId, `Quick verification started — verification run #${verificationRun.id} created`);
+
+    res.json({ defect: updated, verificationRun, retestId: retestRecord.id });
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/quick-verify-result — TEST_LEAD | TESTER
+// IN_VERIFICATION ───────────────────────────────────────────> READY_FOR_DEPLOYMENT (pass) | ASSIGNED (fail + regression bump)
+router.patch("/defects/:defectId/quick-verify-result", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({
+      result: z.enum(["passed", "failed"]),
+      notes: z.string().optional(),
+    });
+    const data = bodySchema.parse(req.body);
+
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD", "TESTER"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    if (defect.status !== "IN_VERIFICATION") {
+      res.status(400).json({ message: "Defect must be IN_VERIFICATION to record a quick verify result." });
+      return;
+    }
+
+    const oldStatus = defect.status;
+
+    if (data.result === "passed") {
+      // Pass → transition to READY_FOR_DEPLOYMENT (or CLOSED)
+      const [updated] = await db.update(schema.defects)
+        .set({ status: "CLOSED", regression_index: 0, updated_at: new Date(), closed_at: new Date() })
+        .where(eq(schema.defects.id, defectId))
+        .returning();
+
+      // Update the pending retest record
+      const openRetest = await db.query.defectRetests.findFirst({
+        where: and(
+          eq(schema.defectRetests.defect_id, defectId),
+          eq(schema.defectRetests.retest_result, null),
+        ),
+      });
+      if (openRetest) {
+        await db.update(schema.defectRetests)
+          .set({ retest_result: "passed", retest_notes: data.notes ?? null, retested_by_user_id: req.user!.userId, retested_at: new Date() })
+          .where(eq(schema.defectRetests.id, openRetest.id));
+      }
+
+      await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "CLOSED", reason: data.notes ?? "Quick verify passed" });
+      await logSystemNote(defectId, oldStatus, "CLOSED", req.user!.userId, `Quick verification passed. ${data.notes ?? ""}`);
+      res.json(updated);
+    } else {
+      // Fail → transition back to ASSIGNED and increment regression counter
+      const [updated] = await db.update(schema.defects)
+        .set({
+          status: "ASSIGNED",
+          regression_index: sql`${schema.defects.regression_index} + 1`,
+          updated_at: new Date(),
+        })
+        .where(eq(schema.defects.id, defectId))
+        .returning();
+
+      // Update the pending retest record
+      const openRetest = await db.query.defectRetests.findFirst({
+        where: and(
+          eq(schema.defectRetests.defect_id, defectId),
+          eq(schema.defectRetests.retest_result, null),
+        ),
+      });
+      if (openRetest) {
+        await db.update(schema.defectRetests)
+          .set({ retest_result: "failed", retest_notes: data.notes ?? null, retested_by_user_id: req.user!.userId, retested_at: new Date() })
+          .where(eq(schema.defectRetests.id, openRetest.id));
+      }
+
+      await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "ASSIGNED", reason: data.notes ?? "Quick verify failed" });
+      await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, `Quick verification failed. Regression counter incremented. ${data.notes ?? ""}`);
+      res.json(updated);
+    }
   } catch (err) { next(err); }
 });
 

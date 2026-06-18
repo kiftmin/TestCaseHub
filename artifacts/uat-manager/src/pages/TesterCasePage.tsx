@@ -1283,7 +1283,11 @@ function QuickWizard({
       }),
     onMutate: () => { pendingMutations.current++; },
     onSuccess: (_data, vars) => {
-      removeDraft(vars.stepId);
+      // Don't remove the draft from entries — that would clear the textarea's
+      // "what actually happened" text on the next render.  Just clear the
+      // sessionStorage copy since it has been persisted to the API.
+      const key = draftKey(testRunId, scenarioId, vars.stepId);
+      sessionStorage.removeItem(key);
     },
     onError: (e: Error) => toast.error(e.message),
     onSettled: () => { pendingMutations.current--; },
@@ -1295,8 +1299,8 @@ function QuickWizard({
       stepId,
       data: {
         passed,
-        actual_result: entry.actual_result ?? "",
-        comments: entry.comments ?? "",
+        actual_result: entry.actual_result,
+        comments: entry.comments,
       },
     });
     setLocalResults((prev) => {
@@ -1331,10 +1335,11 @@ function QuickWizard({
     if (steps.length === 0) return false;
     return steps.every((s) => {
       const e = entries.get(s.id);
+      const local = localResults.get(s.id);
       const persisted = persistedResults.get(s.id);
-      return (e?.passed ?? persisted ?? null) !== null;
+      return (e?.passed ?? local ?? persisted ?? null) !== null;
     });
-  }, [steps, entries, persistedResults]);
+  }, [steps, entries, localResults, persistedResults]);
 
   // Validate failed steps have actual_result filled (check both entries and persisted)
   const validateFailedSteps = useMemo(() => {

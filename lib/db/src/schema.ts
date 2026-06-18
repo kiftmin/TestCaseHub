@@ -262,6 +262,7 @@ export const defectStatusEnum = pgEnum("defect_status", [
   "NEW", "TRIAGED", "ASSIGNED", "IN_PROGRESS", "BLOCKED",
   "RESOLVED_DEV", "READY_FOR_VERIFICATION", "REGRESSED", "CLOSED",
   "PENDING_BIZ_ACCEPTANCE", "PASSED_BY_AGREEMENT",
+  "PENDING_DEPLOYMENT_APPROVAL", "PENDING_RISK_ACCEPTANCE", "IN_VERIFICATION",
 ]);
 
 export const defects = pgTable("defects", {

@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { PDFDownloadLink } from "@react-pdf/renderer";
 import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
+import { SignOffCertificatePDF } from "../lib/pdf-documents";
 import type { Project, SignOffData, Defect, StatusAuditLog } from "../types/api";
 
 export function SignOffCertificatePage({ params }: { params: { id: string } }) {
@@ -120,20 +122,49 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
 
   return (
     <div className="space-y-lg sign-off-page">
-      {/* Print Controls */}
+      {/* PDF Export */}
       <div className="flex justify-end no-print">
-        <button
-          onClick={() => window.print()}
+        <PDFDownloadLink
+          document={
+            <SignOffCertificatePDF
+              projectName={project?.name ?? ""}
+              projectCode={project?.project_code ?? ""}
+              moduleName={project?.module_name ?? ""}
+              version={project?.version ?? ""}
+              scope={project?.scope ?? ""}
+              objectives={project?.objectives ?? ""}
+              outOfScope={project?.out_of_scope ?? ""}
+              entryCriteria={project?.entry_criteria ?? ""}
+              exitCriteria={project?.exit_criteria ?? ""}
+              totalTestRuns={uatSummary?.totalTestRuns ?? 0}
+              totalScenarios={uatSummary?.totalScenarios ?? 0}
+              passRate={uatSummary?.passRate ?? 0}
+              acceptedCount={signOffData?.businessDecisions?.accepted?.length ?? 0}
+              tlSigned={tlSigned}
+              tlName={signOffData?.testLead?.name ?? ""}
+              tlDate={signOffData?.testLead?.date ?? ""}
+              boSigned={boSigned}
+              boName={signOffData?.businessOwner?.name ?? ""}
+              boDate={signOffData?.businessOwner?.date ?? ""}
+              businessDecisions={signOffData?.businessDecisions}
+              isFullySigned={isFullySigned}
+            />
+          }
+          fileName={`sign-off-certificate-${project?.project_code ?? "export"}.pdf`}
           className="flex items-center gap-sm bg-secondary text-on-secondary px-lg py-sm rounded-lg font-label-md hover:brightness-110 transition-all"
         >
-          <span className="material-symbols-outlined text-sm">print</span>
-          Download / Print Certificate
-        </button>
+          {({ loading }) => (
+            <>
+              <span className="material-symbols-outlined text-sm">file_download</span>
+              {loading ? "Preparing Certificate..." : "Download Certificate (PDF)"}
+            </>
+          )}
+        </PDFDownloadLink>
       </div>
 
       {/* Certificate */}
-      <div className="bg-white cert-border shadow-sm print-container relative overflow-hidden p-12 md:p-16">
-        <div className="watermark">CERTIFIED</div>
+      <div className="bg-white border border-gray-200 shadow-sm relative overflow-hidden p-12 md:p-16">
+        <div className="hidden">CERTIFIED</div>
 
         {/* 1. Header */}
         <div className="flex flex-col md:flex-row justify-between items-start border-b border-outline-variant pb-lg mb-xl">
@@ -323,7 +354,7 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
 
         {/* 6. Business Decisions & Risk Waivers */}
         {signOffData?.businessDecisions && signOffData.businessDecisions.count > 0 && (
-          <section className="page-break mb-xl">
+          <section className="mb-xl">
             <h2 className="font-title-sm text-title-sm text-primary mb-md flex items-center gap-sm">
               <span className="material-symbols-outlined text-secondary">gavel</span>
               Business Decisions &amp; Risk Waivers
@@ -384,32 +415,6 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
           </section>
         )}
 
-        {/* 6.5 Print-only Signature Block */}
-        <section className="sign-off-print-signatures mb-xl print:break-inside-avoid hidden print:block">
-          <h2 className="font-title-sm text-title-sm text-primary mb-lg flex items-center gap-sm">
-            <span className="material-symbols-outlined text-secondary">signature</span>
-            Signatures
-          </h2>
-          <div className="grid md:grid-cols-2 gap-xl">
-            <div>
-              <p className="font-label-md text-label-md font-bold mb-md">Business Owner Signature</p>
-              <div className="border-b-2 border-black mt-lg" style={{ height: "2em" }}></div>
-              <div className="flex justify-between mt-sm">
-                <span className="text-label-sm text-on-surface-variant">Signature</span>
-                <span className="text-label-sm text-on-surface-variant">Date: _____________</span>
-              </div>
-            </div>
-            <div>
-              <p className="font-label-md text-label-md font-bold mb-md">QA Lead Signature</p>
-              <div className="border-b-2 border-black mt-lg" style={{ height: "2em" }}></div>
-              <div className="flex justify-between mt-sm">
-                <span className="text-label-sm text-on-surface-variant">Signature</span>
-                <span className="text-label-sm text-on-surface-variant">Date: _____________</span>
-              </div>
-            </div>
-          </div>
-        </section>
-
         {/* 7. Certificate Status Banner */}
         <footer className={`p-md rounded-lg flex flex-col md:flex-row justify-between items-center gap-md ${
           isFullySigned ? "bg-primary text-white" : "bg-amber-500 text-white"
@@ -424,48 +429,6 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
           </div>
         </footer>
       </div>
-
-      <style>{`
-        @media print {
-          .no-print { display: none !important; }
-          body { background: white !important; padding: 0 !important; }
-          .print-container { border: 2px solid #000 !important; margin: 0 !important; padding: 40px !important; box-shadow: none !important; }
-          .watermark { 
-            display: block !important; 
-            position: fixed; 
-            top: 50%; 
-            left: 50%; 
-            transform: translate(-50%, -50%) rotate(-45deg); 
-            font-size: 8rem; 
-            color: rgba(0,0,0,0.05); 
-            z-index: -1;
-            font-weight: 900;
-            pointer-events: none;
-          }
-          .sign-off-signatures {
-            page-break-inside: avoid;
-          }
-          .page-break {
-            page-break-before: always;
-            margin-top: 1in;
-          }
-          .sign-off-page .cert-border {
-            border: 2px solid #000 !important;
-          }
-        }
-        .watermark { display: none; }
-        .cert-border {
-          border: 1px solid #e2e8f0;
-          position: relative;
-        }
-        .cert-border::before {
-          content: '';
-          position: absolute;
-          top: 12px; left: 12px; right: 12px; bottom: 12px;
-          border: 1px solid #c6c6cd;
-          pointer-events: none;
-        }
-      `}</style>
     </div>
   );
 }

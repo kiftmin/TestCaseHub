@@ -7,7 +7,7 @@ import { useProjectRole } from "../hooks/useProjectRole";
 import { Stepper, type Step } from "../components/ui/stepper";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { DEFECT_VIEWS } from "../lib/defect-views";
-import { downloadCsv } from "../lib/csv-utils";
+import { downloadDefectsExcel } from "../lib/csv-utils";
 import type { Defect, DefectNote, TestRun, ProjectAssignment } from "../types/api";
 
 const statusBadge: Record<string, string> = {
@@ -427,23 +427,20 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     }
   }), [filtered, sortField, sortDir]);
 
-  const handleExportCsv = useCallback(() => {
+  const handleExportExcel = useCallback(() => {
     const date = new Date().toISOString().slice(0, 10);
-    const filename = `defects-log-${date}.csv`;
-    const headers = ["ID", "Title", "Severity", "State", "Assignee", "Target Release"];
-    const rows = sorted.map((d) => [
-      `DEF-${d.id}`,
-      d.testCase?.title ?? "",
-      d.severity ?? "",
-      d.status.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase()),
-      d.execution?.tester?.name ?? "",
-      "",
-    ]);
-    downloadCsv(filename, headers, rows);
+    downloadDefectsExcel(`defects-log-${date}.xlsx`, sorted.map((d) => ({
+      id: d.id,
+      title: d.testCase?.title ?? "",
+      status: d.status.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase()),
+      severity: d.severity,
+      assignee: d.execution?.tester?.name ?? "",
+      targetRelease: "",
+    })));
   }, [sorted]);
 
   return (
-    <div className="space-y-lg print:hidden">
+    <div className="space-y-lg">
       <header className="flex items-start justify-between gap-md">
         <div className="flex items-start gap-md">
           <div className="shrink-0 w-11 h-11 rounded-xl bg-secondary-container text-on-secondary-container flex items-center justify-center">
@@ -480,18 +477,11 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
           </TabsList>
           <div className="flex items-center gap-sm">
             <button
-              onClick={handleExportCsv}
+              onClick={handleExportExcel}
               className="flex items-center gap-sm px-md py-sm border border-outline text-on-surface rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
             >
               <span className="material-symbols-outlined text-sm">file_download</span>
-              Export CSV
-            </button>
-            <button
-              onClick={() => window.print()}
-              className="flex items-center gap-sm px-md py-sm border border-outline text-on-surface rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
-            >
-              <span className="material-symbols-outlined text-sm">print</span>
-              Print Log
+              Export Excel
             </button>
           </div>
         </div>
@@ -622,42 +612,6 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
         </TabsContent>
       </Tabs>
     </div>
-
-    {/* Print-only: Defect Log */}
-    <div className="hidden print:block" style={{ maxWidth: "297mm", margin: "0 auto", padding: "10mm" }}>
-      <h1 className="text-xl font-bold mb-4">Defect Log</h1>
-      <table className="w-full text-left text-sm border-collapse">
-        <thead>
-          <tr className="border-b-2 border-black">
-            <th className="py-2 px-2 font-bold">ID</th>
-            <th className="py-2 px-2 font-bold">Title</th>
-            <th className="py-2 px-2 font-bold">Severity</th>
-            <th className="py-2 px-2 font-bold">State</th>
-            <th className="py-2 px-2 font-bold">Assignee</th>
-            <th className="py-2 px-2 font-bold">Target Release</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((d) => (
-            <tr key={d.id} className="print:break-inside-avoid border-b border-gray-300">
-              <td className="py-1.5 px-2 font-mono">DEF-{d.id}</td>
-              <td className="py-1.5 px-2">{d.testCase?.title ?? ""}</td>
-              <td className="py-1.5 px-2">{d.severity ?? ""}</td>
-              <td className="py-1.5 px-2">{d.status.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}</td>
-              <td className="py-1.5 px-2">{d.execution?.tester?.name ?? ""}</td>
-              <td className="py-1.5 px-2"></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-
-    <style>{`
-      @media print {
-        @page { size: landscape; }
-        body { background: white !important; }
-      }
-    `}</style>
   );
 }
 

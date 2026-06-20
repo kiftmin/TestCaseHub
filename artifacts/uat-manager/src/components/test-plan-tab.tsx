@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { PDFDownloadLink } from "@react-pdf/renderer";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { EmptyState } from "./ui/empty-state";
@@ -15,6 +16,7 @@ import {
   type TestCaseFormData,
   type StepFormData,
 } from "./test-plan-dialogs";
+import { TestPlanDocumentPDF } from "../lib/pdf-documents";
 import type { Project, UseCase, TestCase, TestStep } from "../types/api";
 
 /* ────────────────────────────────────────────────────────────────────
@@ -332,10 +334,6 @@ export function TestPlanTab({ projectId }: { projectId: number }) {
     0
   );
 
-  const handlePrintPlan = () => {
-    window.print();
-  };
-
   return (
     <section className="space-y-md">
       <PlanHeader
@@ -346,10 +344,27 @@ export function TestPlanTab({ projectId }: { projectId: number }) {
         onAddScenario={() =>
           setScenarioDialog({ open: true, mode: "create", scenario: null })
         }
-        onPrint={handlePrintPlan}
-      />
+      >
+        <PDFDownloadLink
+          document={
+            <TestPlanDocumentPDF
+              projectName={project?.name ?? ""}
+              projectObj={project ?? undefined}
+              useCases={useCases}
+            />
+          }
+          fileName={`test-plan-${project?.project_code ?? "export"}.pdf`}
+          className="flex items-center gap-sm px-md py-sm border border-outline text-on-surface rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
+        >
+          {({ loading }) => (
+            <>
+              <span className="material-symbols-outlined text-sm">file_download</span>
+              {loading ? "Preparing..." : "Export Full Plan"}
+            </>
+          )}
+        </PDFDownloadLink>
+      </PlanHeader>
 
-      <div className="print:hidden">
       {useCases.length === 0 ? (
         <EmptyState
           icon="checklist"
@@ -515,46 +530,6 @@ export function TestPlanTab({ projectId }: { projectId: number }) {
       />
 
       {confirm.dialog}
-      </div>
-
-      {/* Print-only: Full Test Plan */}
-      <div className="hidden print:block" style={{ maxWidth: "210mm", margin: "0 auto", padding: "15mm 10mm" }}>
-        <h1 className="text-2xl font-bold mb-2">Test Plan: {project?.name}</h1>
-        {project?.objectives && <p className="text-sm mb-1"><strong>Objectives:</strong> {project.objectives}</p>}
-        {project?.scope && <p className="text-sm mb-1"><strong>Scope:</strong> {project.scope}</p>}
-        {project?.designed_by && <p className="text-sm mb-1"><strong>Designed By:</strong> {project.designed_by}</p>}
-        <p className="text-sm mb-4"><strong>Module:</strong> {project?.module_name} &middot; <strong>Version:</strong> v{project?.version}</p>
-
-        {useCases.map((uc) => (
-          <div key={uc.id} className="print:break-inside-avoid mb-6 border border-black p-4">
-            <h2 className="text-lg font-bold mb-2">{uc.code} - {uc.name}</h2>
-            {uc.testCases?.map((tc) => (
-              <div key={tc.id} className="print:break-inside-avoid ml-4 mb-4 border-l-2 border-gray-300 pl-4">
-                <h3 className="font-semibold">[{tc.case_number}] {tc.title}</h3>
-                {tc.acceptance_criteria && (
-                  <p className="text-sm mt-1"><strong>Acceptance:</strong> {tc.acceptance_criteria}</p>
-                )}
-                {tc.steps && tc.steps.length > 0 && (
-                  <ol className="list-decimal ml-5 mt-2 text-sm space-y-1">
-                    {tc.steps.map((s) => (
-                      <li key={s.id}>
-                        <strong>{s.step_number}.</strong> {s.instruction}
-                        {s.expected_result && <span className="ml-2">→ <em>{s.expected_result}</em></span>}
-                      </li>
-                    ))}
-                  </ol>
-                )}
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-
-      <style>{`
-        @media print {
-          body { background: white !important; }
-        }
-      `}</style>
     </section>
   );
 }
@@ -569,14 +544,14 @@ function PlanHeader({
   stepCount,
   canEdit,
   onAddScenario,
-  onPrint,
+  children,
 }: {
   scenarioCount: number;
   caseCount: number;
   stepCount: number;
   canEdit: boolean;
   onAddScenario: () => void;
-  onPrint?: () => void;
+  children?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-md bg-surface-container-lowest border border-outline-variant rounded-xl p-md">
@@ -597,15 +572,7 @@ function PlanHeader({
         </div>
       </div>
       <div className="flex items-center gap-sm">
-        {onPrint && (
-          <button
-            onClick={onPrint}
-            className="flex items-center gap-sm px-md py-sm border border-outline text-on-surface rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
-          >
-            <span className="material-symbols-outlined text-sm">print</span>
-            Export Full Plan
-          </button>
-        )}
+        {children}
         {canEdit && (
           <Button variant="primary" onClick={onAddScenario}>
             <span className="material-symbols-outlined text-[18px]">add</span>

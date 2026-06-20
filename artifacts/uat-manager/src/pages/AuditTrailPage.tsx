@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { customFetch, API_ORIGIN } from "../lib/api-client";
 import { getToken, getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
+import { downloadAuditExcel } from "../lib/csv-utils";
 import { Badge } from "../components/ui/badge";
 import { isMacroEvent, isEscalation, isAdminUndo } from "../lib/audit-filters";
 import type { StatusAuditLog, User } from "../types/api";
@@ -133,25 +134,18 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
     ? Object.entries(grouped).sort(([a], [b]) => b.localeCompare(a))
     : [];
 
-  const handleDownloadCsv = useCallback(async () => {
+  const handleDownloadExcel = useCallback(async () => {
     try {
       const token = getToken();
-      const res = await fetch(`${API_ORIGIN}/api/projects/${projectId}/audit-log/csv`, {
+      const res = await fetch(`${API_ORIGIN}/api/projects/${projectId}/audit-log?limit=100000`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (!res.ok) throw new Error("Download failed");
-      const blob = await res.blob();
+      const logs: AuditLogEntry[] = await res.json();
       const date = new Date().toISOString().slice(0, 10);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `audit-ledger-${date}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      downloadAuditExcel(`audit-ledger-${date}.xlsx`, logs);
     } catch (e) {
-      console.error("CSV download failed", e);
+      console.error("Excel download failed", e);
     }
   }, [projectId]);
 
@@ -162,11 +156,11 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
           Audit Trail
         </h1>
         <button
-          onClick={handleDownloadCsv}
+          onClick={handleDownloadExcel}
           className="flex items-center gap-sm bg-secondary text-on-secondary px-lg py-sm rounded-lg font-label-md hover:brightness-110 transition-all"
         >
           <span className="material-symbols-outlined text-sm">file_download</span>
-          Download Audit Ledger (.csv)
+          Download Audit Ledger (.xlsx)
         </button>
       </div>
 

@@ -18,6 +18,17 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
     queryFn: () => customFetch<Project>(`/projects/${projectId}`),
   });
 
+  const { data: uatSummary } = useQuery({
+    queryKey: ["uat-summary", projectId],
+    queryFn: () => customFetch<{
+      totalScenarios: number;
+      totalTestRuns: number;
+      passRate: number;
+      defectsByStatus: Record<string, number>;
+      defectsBySeverity: Record<string, number>;
+    }>(`/projects/${projectId}/uat-summary`),
+  });
+
   const { data: signOff } = useQuery({
     queryKey: ["sign-off", projectId],
     queryFn: () => customFetch<{ is_signed_off: number; sign_off_data: string }>(`/projects/${projectId}/sign-off-status`),
@@ -191,6 +202,34 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
           </div>
         </section>
 
+        {/* 4.5 Executive Metrics */}
+        <section className="mb-xl">
+          <h2 className="font-title-sm text-title-sm text-primary mb-md flex items-center gap-sm">
+            <span className="material-symbols-outlined text-secondary">insights</span>
+            Executive Summary
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-md">
+            <div className="bg-surface-container-low p-md rounded-lg text-center">
+              <div className="text-display-lg-mobile font-bold text-primary">{uatSummary?.totalTestRuns ?? 0}</div>
+              <div className="text-label-sm text-on-surface-variant">Test Runs Executed</div>
+            </div>
+            <div className="bg-surface-container-low p-md rounded-lg text-center">
+              <div className="text-display-lg-mobile font-bold text-green-700">{uatSummary?.totalScenarios ?? 0}</div>
+              <div className="text-label-sm text-on-surface-variant">Total Scenarios</div>
+            </div>
+            <div className="bg-surface-container-low p-md rounded-lg text-center">
+              <div className="text-display-lg-mobile font-bold text-primary">{uatSummary?.passRate ?? 0}%</div>
+              <div className="text-label-sm text-on-surface-variant">Pass Rate</div>
+            </div>
+            <div className="bg-surface-container-low p-md rounded-lg text-center">
+              <div className="text-display-lg-mobile font-bold text-amber-700">
+                {signOffData?.businessDecisions?.accepted?.length ?? 0}
+              </div>
+              <div className="text-label-sm text-on-surface-variant">Accepted / Waived</div>
+            </div>
+          </div>
+        </section>
+
         {/* 5. Dual Signature Section */}
         <section className="mb-xl grid md:grid-cols-2 gap-lg sign-off-signatures">
           {/* Test Lead Signature */}
@@ -344,6 +383,32 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
             </p>
           </section>
         )}
+
+        {/* 6.5 Print-only Signature Block */}
+        <section className="sign-off-print-signatures mb-xl print:break-inside-avoid hidden print:block">
+          <h2 className="font-title-sm text-title-sm text-primary mb-lg flex items-center gap-sm">
+            <span className="material-symbols-outlined text-secondary">signature</span>
+            Signatures
+          </h2>
+          <div className="grid md:grid-cols-2 gap-xl">
+            <div>
+              <p className="font-label-md text-label-md font-bold mb-md">Business Owner Signature</p>
+              <div className="border-b-2 border-black mt-lg" style={{ height: "2em" }}></div>
+              <div className="flex justify-between mt-sm">
+                <span className="text-label-sm text-on-surface-variant">Signature</span>
+                <span className="text-label-sm text-on-surface-variant">Date: _____________</span>
+              </div>
+            </div>
+            <div>
+              <p className="font-label-md text-label-md font-bold mb-md">QA Lead Signature</p>
+              <div className="border-b-2 border-black mt-lg" style={{ height: "2em" }}></div>
+              <div className="flex justify-between mt-sm">
+                <span className="text-label-sm text-on-surface-variant">Signature</span>
+                <span className="text-label-sm text-on-surface-variant">Date: _____________</span>
+              </div>
+            </div>
+          </div>
+        </section>
 
         {/* 7. Certificate Status Banner */}
         <footer className={`p-md rounded-lg flex flex-col md:flex-row justify-between items-center gap-md ${

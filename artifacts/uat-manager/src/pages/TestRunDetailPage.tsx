@@ -221,7 +221,8 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
   };
 
   return (
-    <div className="space-y-lg">
+    <>
+    <div className="space-y-lg print:hidden">
       {/* Section 1: Header */}
       <div className="flex items-start justify-between">
         <div>
@@ -323,6 +324,13 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
                 Share with Testers
               </button>
             )}
+            <button
+              onClick={() => window.print()}
+              className="flex items-center gap-sm px-md py-sm border border-outline text-on-surface rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
+            >
+              <span className="material-symbols-outlined text-sm">print</span>
+              Print Offline Sheet
+            </button>
             {canManage && (
               <button
                 onClick={() => { setEditingName(true); setEditName(testRun.name); }}
@@ -572,6 +580,66 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
         />
       )}
     </div>
+
+    {/* Print-only content */}
+    <div className="hidden print:block print:space-y-lg" style={{ maxWidth: "210mm", margin: "0 auto", padding: "15mm 10mm" }}>
+      <div className="print:break-after-avoid">
+        <h1 className="text-xl font-bold mb-1">{testRun.project?.name ?? `Project #${testRun.project_id}`}</h1>
+        <h2 className="text-lg font-semibold mb-4">{testRun.name}</h2>
+        <div className="flex gap-lg text-sm mb-4">
+          <div>
+            <span className="font-medium">Tester:</span>
+            <span className="border-b border-black inline-block w-40 ml-2">&nbsp;</span>
+          </div>
+          <div>
+            <span className="font-medium">Date:</span>
+            <span className="border-b border-black inline-block w-32 ml-2">&nbsp;</span>
+          </div>
+          <div>
+            <span className="font-medium">Run ID:</span>
+            <span className="ml-2">#{testRunId}</span>
+          </div>
+        </div>
+      </div>
+
+      {filteredUseCases.map((truc) => {
+        const steps = (truc.useCase as UseCase & { testCases?: (TestCase & { steps?: TestStep[] })[] })?.testCases?.flatMap(tc => tc.steps ?? []) ?? [];
+        return steps.map((step, si) => (
+          <div key={step.id} className="print:break-inside-avoid border border-black mb-4 p-4">
+            <div className="font-medium mb-1">Step {step.step_number}: {step.instruction}</div>
+            {step.expected_result && (
+              <div className="text-sm mb-2"><span className="font-medium">Expected:</span> {step.expected_result}</div>
+            )}
+            <div className="flex gap-6 mb-3">
+              <label className="flex items-center gap-2 text-sm">
+                <span className="inline-block w-5 h-5 border-2 border-black"></span>
+                PASS
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <span className="inline-block w-5 h-5 border-2 border-black"></span>
+                FAIL
+              </label>
+            </div>
+            <div className="mb-2">
+              <span className="font-medium text-sm">Actual Result:</span>
+              <div className="border-b border-black mt-1" style={{ height: "3em" }}></div>
+            </div>
+            <div>
+              <span className="font-medium text-sm">Defect Notes / ID:</span>
+              <div className="border-b border-black mt-1" style={{ height: "3em" }}></div>
+            </div>
+          </div>
+        ));
+      })}
+    </div>
+
+    <style>{`
+      @media print {
+        body { background: white !important; }
+        .no-print { display: none !important; }
+      }
+    `}</style>
+    </>
   );
 }
 

@@ -329,6 +329,64 @@ router.get("/:projectId/uat-summary", async (req: AuthenticatedRequest, res, nex
   } catch (err) { next(err); }
 });
 
+function escapeCsvField(value: unknown): string {
+  if (value == null) return "";
+  const str = String(value);
+  const dangerousFirstChar = /^[=+\-@]/;
+  const needsQuoting = /[,"\n\r]/;
+  let escaped = str;
+  if (dangerousFirstChar.test(escaped)) escaped = "'" + escaped;
+  if (needsQuoting.test(escaped)) escaped = '"' + escaped.replace(/"/g, '""') + '"';
+  return escaped;
+}
+
+// GET /api/projects/:projectId/audit-log/csv — full audit log CSV download
+router.get("/:projectId/audit-log/csv", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const projectId = Number(req.params.projectId);
+    const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
+    if (!project) { res.status(404).json({ message: "Project not found" }); return; }
+
+    const entityType = req.query.entityType as string | undefined;
+    const entityId = req.query.entityId ? Number(req.query.entityId) : undefined;
+
+    const conditions: any[] = [];
+    if (entityType) conditions.push(eq(schema.statusAuditLog.entity_type, entityType));
+    if (entityId) {
+      conditions.push(eq(schema.statusAuditLog.entity_id, entityId));
+    } else {
+      conditions.push(eq(schema.statusAuditLog.entity_id, projectId));
+    }
+
+    const logs = await db.query.statusAuditLog.findMany({
+      where: and(...conditions),
+      with: { changedBy: true },
+      orderBy: desc(schema.statusAuditLog.changed_at),
+    });
+
+    const date = new Date().toISOString().slice(0, 10);
+    const filename = `audit-ledger-${date}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+    const headers = ["Timestamp", "User", "Action Type", "Entity Affected", "Prior State", "Post State"];
+    const rows = logs.map((log) => [
+      log.changed_at,
+      log.changedBy?.name ?? log.changedBy?.username ?? `User #${log.changed_by_user_id}`,
+      log.from_status && log.to_status ? `${log.from_status} → ${log.to_status}` : (log.to_status ?? ""),
+      `${log.entity_type} #${log.entity_id}`,
+      log.from_status ?? "",
+      log.to_status ?? "",
+    ]);
+
+    let csv = headers.map(escapeCsvField).join(",") + "\r\n";
+    for (const row of rows) {
+      csv += row.map(escapeCsvField).join(",") + "\r\n";
+    }
+    res.send(csv);
+  } catch (err) { next(err); }
+});
+
 // GET /api/projects/:projectId/audit-log
 router.get("/:projectId/audit-log", async (req: AuthenticatedRequest, res, next) => {
   try {

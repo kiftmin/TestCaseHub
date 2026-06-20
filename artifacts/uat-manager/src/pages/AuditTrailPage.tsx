@@ -1,8 +1,8 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { useRoute } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { customFetch } from "../lib/api-client";
-import { getStoredUser } from "../lib/auth";
+import { customFetch, API_ORIGIN } from "../lib/api-client";
+import { getToken, getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
 import { Badge } from "../components/ui/badge";
 import { isMacroEvent, isEscalation, isAdminUndo } from "../lib/audit-filters";
@@ -133,12 +133,41 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
     ? Object.entries(grouped).sort(([a], [b]) => b.localeCompare(a))
     : [];
 
+  const handleDownloadCsv = useCallback(async () => {
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_ORIGIN}/api/projects/${projectId}/audit-log/csv`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const date = new Date().toISOString().slice(0, 10);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `audit-ledger-${date}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("CSV download failed", e);
+    }
+  }, [projectId]);
+
   return (
     <div className="max-w-3xl mx-auto px-gutter py-xl">
       <div className="flex items-center justify-between mb-xl">
         <h1 className="font-display-lg text-display-lg text-primary tracking-tight">
           Audit Trail
         </h1>
+        <button
+          onClick={handleDownloadCsv}
+          className="flex items-center gap-sm bg-secondary text-on-secondary px-lg py-sm rounded-lg font-label-md hover:brightness-110 transition-all"
+        >
+          <span className="material-symbols-outlined text-sm">file_download</span>
+          Download Audit Ledger (.csv)
+        </button>
       </div>
 
       <div className="bg-surface-container-lowest/70 backdrop-filter backdrop-blur-md border border-outline-variant rounded-xl p-4 mb-xl flex flex-wrap items-center gap-3">

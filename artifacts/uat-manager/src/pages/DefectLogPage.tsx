@@ -1391,10 +1391,10 @@ function DefectRow({
                         const isFailed = sr.passed === false;
                         const matchesDefect = stepInfo.stepNumber != null && String(sr.step?.step_number) === stepInfo.stepNumber;
                         return (
-                          <div key={sr.id} className={`rounded-lg border-l-4 p-sm text-sm transition-all ${isFailed && matchesDefect ? "border-error bg-red-50 shadow-sm" : isFailed ? "border-error bg-surface-container-high" : "border-green-500 bg-surface-container-high/50"}`}>
+                          <div key={sr.id} className={`rounded-lg border-l-4 p-sm text-sm transition-all ${matchesDefect ? "border-error bg-red-50 shadow-sm" : "opacity-50"}`}>
                             <div className="flex items-center gap-sm mb-xs">
                               <span className="font-semibold text-xs">Step {sr.step?.step_number ?? sr.step_id}</span>
-                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${isFailed ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}>{isFailed ? "FAIL" : "PASS"}</span>
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${matchesDefect ? "bg-red-100 text-red-800" : isFailed ? "bg-red-50 text-red-400" : "bg-green-100 text-green-800"}`}>{isFailed ? "FAIL" : "PASS"}</span>
                             </div>
                             <p className="text-on-surface mb-xs"><span className="font-medium">Instruction:</span> {sr.step?.instruction ?? "N/A"}</p>
                             {sr.step?.expected_result && <p className="text-on-surface mb-xs"><span className="font-medium">Expected:</span> {sr.step.expected_result}</p>}

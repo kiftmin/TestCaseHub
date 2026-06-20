@@ -5,6 +5,45 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+  .action-btn {
+    @apply p-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-high transition-colors;
+  }
+  .action-btn-secondary {
+    @apply action-btn hover:bg-secondary-container hover:text-on-secondary-container;
+  }
+  .action-btn-amber {
+    @apply action-btn hover:bg-amber-100 hover:text-amber-700;
+  }
+  .action-btn-cyan {
+    @apply action-btn hover:bg-cyan-100 hover:text-cyan-700;
+  }
+  .action-btn-blue {
+    @apply action-btn hover:bg-blue-100 hover:text-blue-700;
+  }
+  .action-btn-red {
+    @apply action-btn hover:bg-red-100 hover:text-red-700;
+  }
+  .action-btn-green {
+    @apply action-btn hover:bg-green-100 hover:text-green-700;
+  }
+  .action-btn-orange {
+    @apply action-btn hover:bg-orange-100 hover:text-orange-700;
+  }
+  .action-btn-sky {
+    @apply action-btn hover:bg-sky-100 hover:text-sky-700;
+  }
+  .action-btn-teal {
+    @apply action-btn hover:bg-teal-100 hover:text-teal-700;
+  }
+  .action-btn-purple {
+    @apply action-btn hover:bg-purple-100 hover:text-purple-700;
+  }
+  .action-btn-neutral {
+    @apply action-btn;
+  }
+}
+
 .material-symbols-outlined {
   font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
   vertical-align: middle;

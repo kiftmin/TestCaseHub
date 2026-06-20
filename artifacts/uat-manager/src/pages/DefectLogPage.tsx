@@ -58,10 +58,7 @@ const severityColors: Record<string, string> = {
   Cosmetic: "text-on-surface-variant",
 };
 
-const severityRowBg: Record<string, string> = {
-  Critical: "bg-red-50",
-  Major: "bg-amber-50",
-};
+
 
 const severityDot: Record<string, string> = {
   Critical: "bg-red-500",
@@ -111,30 +108,30 @@ function StatusDistCard({
   return (
     <button
       onClick={onClick}
-      className={`relative text-left p-sm rounded-xl border transition-all flex flex-col justify-between h-20 w-full min-w-0 ${
+      className={`relative text-left px-md py-sm rounded-xl border transition-all flex flex-col justify-between h-[72px] w-full min-w-0 ${
         isActive
-          ? "bg-surface-container border-secondary shadow-sm"
-          : "bg-surface border-outline-variant hover:bg-surface-container-high"
+          ? "bg-surface-container border-secondary ring-1 ring-secondary/30 shadow-sm"
+          : "bg-surface border-outline-variant hover:bg-surface-container-high hover:border-outline"
       }`}
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-1">
         <div className="flex items-center gap-1.5 min-w-0">
           {icon && (
             <span className={`material-symbols-outlined text-lg ${isActive ? "text-secondary" : "text-on-surface-variant"}`}>
               {icon}
             </span>
           )}
-          <span className="font-label-sm text-label-sm text-on-surface-variant truncate">
+          <span className="text-[11px] font-semibold text-on-surface-variant truncate tracking-tight">
             {label}
           </span>
         </div>
-        <span className={`text-xl font-bold ml-2 ${isActive ? "text-secondary" : "text-on-surface"}`}>
+        <span className={`text-lg font-bold leading-none ${isActive ? "text-secondary" : "text-on-surface"}`}>
           {count}
         </span>
       </div>
-      <div className="w-full h-1.5 rounded-full overflow-hidden mt-2 bg-surface-container-highest">
+      <div className="w-full h-1 rounded-full overflow-hidden bg-surface-container-highest">
         <div
-          className={`h-full rounded-full transition-all ${isActive ? "bg-secondary" : "bg-outline-variant/50"}`}
+          className={`h-full rounded-full transition-all duration-300 ${isActive ? "bg-secondary" : "bg-outline-variant/50"}`}
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -211,18 +208,18 @@ function TabContent({
       <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
-            <thead className="bg-surface-container-low border-b border-outline-variant">
-              <tr>
+            <thead>
+              <tr className="bg-surface-container-low border-b border-outline-variant">
                 <SortTh field="id" label="ID" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <SortTh field="test_case" label="Test Case / Step" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <SortTh field="severity" label="Sev" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <SortTh field="priority" label="Pri" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <SortTh field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                 <SortTh field="created_at" label="Created" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <th className="p-md text-xs font-bold text-outline uppercase text-right whitespace-nowrap">Actions</th>
+                <th className="px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider text-right whitespace-nowrap">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-outline-variant">
+            <tbody className="divide-y divide-outline-variant/60">
               {sorted.map((defect) => (
                 <DefectRow
                   key={defect.id}
@@ -240,16 +237,19 @@ function TabContent({
                 {sorted.length === 0 && (
                 <tr>
                   <td colSpan={7} className="p-lg text-center text-on-surface-variant font-body-sm">
-                    No defects found
+                    <div className="flex flex-col items-center gap-2 py-lg">
+                      <span className="material-symbols-outlined text-3xl text-outline-variant">search_off</span>
+                      <p className="text-on-surface-variant">No defects match the current filters</p>
+                    </div>
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
-        <div className="p-md bg-surface-container-low border-t border-outline-variant flex items-center justify-between">
+        <div className="px-md py-sm bg-surface-container-low border-t border-outline-variant flex items-center justify-between">
           <p className="text-xs text-on-surface-variant">
-            Showing <span className="font-bold">{sorted.length}</span> of <span className="font-bold">{total}</span> defects
+            Showing <span className="font-semibold">{sorted.length}</span> of <span className="font-semibold">{total}</span> defects
           </p>
         </div>
       </div>
@@ -267,12 +267,12 @@ function DeveloperRejectionBanner({ defect }: { defect: Defect }) {
     } catch { /* ignore parse errors */ }
   }
   return (
-    <div className="mb-lg p-md bg-red-50 border border-red-200 rounded-lg">
+    <div className="mb-lg px-md py-sm bg-red-50 border border-red-200 rounded-lg">
       <div className="flex items-start gap-3">
         <span className="material-symbols-outlined text-red-600 text-xl flex-shrink-0">error</span>
         <div>
-          <h4 className="text-xs font-bold text-red-700 uppercase mb-xs">QA Rejection Notice</h4>
-          <p className="font-body-sm text-red-700">
+          <p className="text-[10px] font-bold text-red-700 uppercase tracking-wider mb-xs">QA Rejection Notice</p>
+          <p className="font-body-sm text-body-sm text-red-700">
             {rejectionNote ?? `This defect failed verification and was returned (rejected ${defect.regression_index} time${defect.regression_index === 1 ? "" : "s"}).`}
           </p>
         </div>
@@ -428,37 +428,51 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
 
   return (
     <div className="space-y-lg">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="font-display-lg text-display-lg text-primary">Defect Log</h2>
-          <p className="font-body-base text-on-surface-variant">
-            Tracking {allDefects?.length ?? 0} defects across {testRuns?.length ?? 0} runs.
-          </p>
+      <header className="flex items-start justify-between gap-md">
+        <div className="flex items-start gap-md">
+          <div className="shrink-0 w-11 h-11 rounded-xl bg-secondary-container text-on-secondary-container flex items-center justify-center">
+            <span className="material-symbols-outlined text-[22px]">bug_report</span>
+          </div>
+          <div>
+            <h1 className="font-display-lg text-display-lg text-primary leading-tight">Defect Log</h1>
+            <p className="font-body-base text-on-surface-variant mt-0.5">
+              Tracking <span className="font-semibold text-on-surface">{allDefects?.length ?? 0}</span> defects across <span className="font-semibold text-on-surface">{testRuns?.length ?? 0}</span> runs.
+            </p>
+          </div>
         </div>
-      </div>
+      </header>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-lg">
         <div className="flex items-center justify-between">
           <TabsList>
-            <TabsTrigger value="business">Business / QA</TabsTrigger>
+            <TabsTrigger value="business">
+              <span className="material-symbols-outlined text-sm">business_center</span>
+              Business / QA
+            </TabsTrigger>
             {(role === "DEVELOPER" || role === "TEST_LEAD" || role === "ADMIN") && (
-              <TabsTrigger value="developer">Developer Workspace</TabsTrigger>
+              <TabsTrigger value="developer">
+                <span className="material-symbols-outlined text-sm">code</span>
+                Developer
+              </TabsTrigger>
             )}
             {(role === "ADMIN" || role === "TEST_LEAD" || role === "UAT_COORDINATOR") && (
-              <TabsTrigger value="full">Full Board</TabsTrigger>
+              <TabsTrigger value="full">
+                <span className="material-symbols-outlined text-sm">dashboard</span>
+                Full Board
+              </TabsTrigger>
             )}
           </TabsList>
         </div>
 
         {/* Filter Bar */}
         <section className="bg-surface border border-outline-variant rounded-xl p-md shadow-sm">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-md">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-md">
             <div className="space-y-1">
-              <label className="text-xs font-semibold text-outline uppercase tracking-wider">Test Run</label>
+              <label className="text-[10px] font-bold text-outline uppercase tracking-wider">Test Run</label>
               <select
                 value={runFilter}
                 onChange={(e) => setRunFilter(e.target.value)}
-                className="w-full bg-surface-container-low border-outline-variant rounded-lg p-2 text-sm focus:ring-secondary focus:border-secondary"
+                className="w-full bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm text-sm focus:outline-none focus:ring-2 focus:ring-secondary/30 focus:border-secondary transition-all"
               >
                 <option value="all">All Runs</option>
                 {testRuns?.map((r) => (
@@ -467,11 +481,11 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
               </select>
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-semibold text-outline uppercase tracking-wider">Status</label>
+              <label className="text-[10px] font-bold text-outline uppercase tracking-wider">Status</label>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="w-full bg-surface-container-low border-outline-variant rounded-lg p-2 text-sm focus:ring-secondary focus:border-secondary"
+                className="w-full bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm text-sm focus:outline-none focus:ring-2 focus:ring-secondary/30 focus:border-secondary transition-all"
               >
                 <option value="all">All Statuses</option>
                 {[...tabStatuses].map((s) => (
@@ -480,11 +494,11 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
               </select>
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-semibold text-outline uppercase tracking-wider">Severity</label>
+              <label className="text-[10px] font-bold text-outline uppercase tracking-wider">Severity</label>
               <select
                 value={severityFilter}
                 onChange={(e) => setSeverityFilter(e.target.value)}
-                className="w-full bg-surface-container-low border-outline-variant rounded-lg p-2 text-sm focus:ring-secondary focus:border-secondary"
+                className="w-full bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm text-sm focus:outline-none focus:ring-2 focus:ring-secondary/30 focus:border-secondary transition-all"
               >
                 <option value="all">All Severities</option>
                 <option value="Critical">Critical</option>
@@ -493,13 +507,23 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
                 <option value="Cosmetic">Cosmetic</option>
               </select>
             </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-outline uppercase tracking-wider">Search</label>
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search defects..."
+                className="w-full bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm text-sm focus:outline-none focus:ring-2 focus:ring-secondary/30 focus:border-secondary transition-all"
+              />
+            </div>
             <div className="flex items-end">
               <button
                 onClick={() => { setRunFilter("all"); setStatusFilter("all"); setSeverityFilter("all"); setSearch(""); }}
-                className="w-full bg-surface-container-high text-on-surface font-label-md text-label-md py-2 rounded-lg hover:bg-outline-variant transition-colors flex items-center justify-center gap-2"
+                className="w-full bg-surface-container-high text-on-surface font-label-md text-label-md py-sm rounded-lg hover:bg-outline-variant transition-colors flex items-center justify-center gap-2"
               >
                 <span className="material-symbols-outlined text-sm">filter_list</span>
-                Clear All Filters
+                Clear
               </button>
             </div>
           </div>
@@ -629,6 +653,7 @@ function DefectRow({
     setUntriagedAction(null);
     setPendingAfterClassify(null);
     switch (action) {
+      case "classify": setClassifyOpen(true); break;
       case "assign": setAssignOpen(true); break;
       case "retest": setFlagRetestNewOpen(true); break;
       case "block": setFlagBlockedNewOpen(true); break;
@@ -650,6 +675,12 @@ function DefectRow({
   const isPendingBiz = defect.status === "PENDING_BIZ_ACCEPTANCE";
   const isPendingDeployApproval = defect.status === "PENDING_DEPLOYMENT_APPROVAL";
   const isInVerification = defect.status === "IN_VERIFICATION";
+
+  const canRetestFromAnyState =
+    !isClosed &&
+    !isPendingBiz &&
+    !isPendingDeployApproval &&
+    !isInVerification;
 
   const invalidateProject = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["project-defects"] });
@@ -891,234 +922,314 @@ function DefectRow({
   return (
     <>
       <tr
-        className={`group hover:bg-surface-container-low cursor-pointer transition-colors ${severityRowBg[defect.severity ?? ""] ?? ""} ${isClosed ? "opacity-60" : ""}`}
+        className={`group hover:bg-surface-container-low cursor-pointer transition-colors ${isClosed ? "opacity-70" : ""}`}
         onClick={onToggle}
       >
-        <td className="p-md whitespace-nowrap">
+        <td className="px-md py-sm whitespace-nowrap">
           <div className="flex items-center gap-2">
             <span className={`inline-block w-2 h-2 rounded-full ${severityDot[defect.severity ?? ""] ?? "bg-gray-300"} shrink-0`} />
-            <span className="font-label-md text-label-md text-secondary font-bold">
+            <span className="font-label-md text-label-md text-secondary font-semibold">
               DEF-{defect.id}
             </span>
           </div>
         </td>
-        <td className="p-md">
+        <td className="px-md py-sm">
           <div className="flex flex-col gap-0.5">
-            <p className="font-label-md text-label-md text-on-surface leading-tight">
+            <p className="font-label-md text-label-md text-on-surface leading-tight truncate max-w-[240px]">
               {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
             </p>
             {stepInfo.instruction && (
-              <p className="text-xs text-on-surface-variant leading-tight">
+              <p className="text-xs text-on-surface-variant leading-tight truncate max-w-[240px]">
                 Step {stepInfo.stepNumber}: {stepInfo.instruction}
               </p>
             )}
           </div>
         </td>
-        <td className={`p-md font-body-sm text-body-sm whitespace-nowrap ${severityColors[defect.severity ?? ""] ?? ""}`}>
-          {defect.severity ?? "—"}
+        <td className={`px-md py-sm text-sm whitespace-nowrap ${severityColors[defect.severity ?? ""] ?? ""}`}>
+          <span className="font-medium">{defect.severity ?? "—"}</span>
         </td>
-        <td className="p-md font-body-sm text-body-sm whitespace-nowrap text-on-surface-variant">
-          {defect.priority ?? "—"}
+        <td className="px-md py-sm text-sm whitespace-nowrap text-on-surface-variant">
+          <span className="font-medium">{defect.priority ?? "—"}</span>
         </td>
-        <td className="p-md font-body-sm text-body-sm whitespace-nowrap">
-          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadgeClass(defect)}`}>
+        <td className="p-md whitespace-nowrap">
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadgeClass(defect)}`}>
+            {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? null : <span className="material-symbols-outlined text-[12px]">{statusIcon[defect.status] ?? "circle"}</span>}
             {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? "With Development" : statusDisplay[defect.status] ?? defect.status}
           </span>
           {defect.regression_index > 0 && (
-            <span className="ml-1 inline-flex items-center px-1 py-0.5 rounded text-[9px] font-bold bg-orange-100 text-orange-700 border border-orange-200" title="Previously failed verification">
+            <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider bg-orange-100 text-orange-700 border border-orange-200" title="Previously failed verification">
               REJ×{defect.regression_index}
             </span>
           )}
         </td>
-        <td className="p-md font-body-sm text-body-sm text-on-surface-variant whitespace-nowrap">
+        <td className="px-md py-sm text-sm text-on-surface-variant whitespace-nowrap">
           {new Date(defect.created_at).toLocaleDateString()}
         </td>
-        <td className="p-md text-right" onClick={(e) => e.stopPropagation()}>
-          <div className="flex justify-end gap-1 opacity-40 group-hover:opacity-100 transition-opacity">
-            {/* NEW-specific triage pathways — Classify always available, others guarded by triage check */}
-            {canManage && isNew && (
-              <>
-                {/* Classify (NEW → TRIAGED) */}
-                <button onClick={() => setClassifyOpen(true)} className="bg-secondary-container/40 text-on-secondary-container px-2 py-1 rounded-md text-xs font-bold hover:bg-secondary-container transition-colors" title="Set severity and priority">
-                  Classify
-                </button>
-                {/* Assign to Engineering */}
-                <button
-                  onClick={() => handleUntriagedAction("assign")}
-                  className="px-2 py-1 rounded-md text-xs font-bold bg-amber-100 text-amber-800 hover:bg-amber-200 cursor-pointer transition-colors"
-                  title="Assign to Developer"
-                >
-                  Assign
-                </button>
-                {/* Flag for Retesting (NEW → READY_FOR_VERIFICATION) */}
-                <button onClick={() => handleUntriagedAction("retest")} className="bg-blue-100 text-blue-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-blue-200 transition-colors" title="Send for verification">
-                  Retest
-                </button>
-                {/* Flag as Blocked (NEW → BLOCKED) */}
-                <button onClick={() => handleUntriagedAction("block")} className="bg-red-100 text-red-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-red-200 transition-colors" title="Flag as blocked">
-                  Block
-                </button>
-              </>
-            )}
-            {/* Classify — always available for TEST_LEAD on non-terminal defects (reclassify severity/priority) */}
-            {canManage && !isNew && !isClosed && !isPendingBiz && (
-              <button onClick={() => setClassifyOpen(true)} className="p-1.5 hover:bg-secondary-container hover:text-on-secondary-container rounded text-on-surface-variant transition-colors" title="Reclassify severity and priority">
+        <td className="px-md py-sm text-right" onClick={(e) => e.stopPropagation()}>
+          <div className="flex justify-end gap-0.5">
+            {/* Classify / Reclassify */}
+            {canManage && !isClosed && !isPendingBiz && !isPendingDeployApproval && !isInVerification && (
+              <button
+                onClick={() => isNew ? setClassifyOpen(true) : handleUntriagedAction("classify")}
+                className="action-btn action-btn-secondary"
+                title={isNew ? "Set severity and priority" : "Reclassify severity and priority"}
+              >
                 <span className="material-symbols-outlined text-sm">category</span>
               </button>
             )}
-            {/* Pathway A: Request Deployment Approval (READY_FOR_VERIFICATION | RESOLVED_DEV → PENDING_DEPLOYMENT_APPROVAL) */}
-            {canManage && !isClosed && !isNew && !isPendingDeployApproval && !isInVerification && !isPendingBiz && (isReady || isResolved) && (
-              <button onClick={() => setDeployApprovalOpen(true)} className="p-1.5 hover:bg-teal-100 hover:text-teal-700 rounded text-on-surface-variant transition-colors" title="Request Deployment Approval">
-                <span className="material-symbols-outlined text-sm">rocket_launch</span>
-              </button>
-            )}
-            {/* Pathway B: Submit for Business Decision (non-terminal defects → PENDING_BIZ_ACCEPTANCE) */}
-            {canManage && !isClosed && !isNew && !isPendingDeployApproval && !isInVerification && !isPendingBiz && (
-              <button onClick={() => setShowBusinessDecisionDialog(true)} className="p-1.5 hover:bg-purple-100 hover:text-purple-700 rounded text-on-surface-variant transition-colors" title="Submit for Business Decision">
-                <span className="material-symbols-outlined text-sm">pending_actions</span>
-              </button>
-            )}
-            {/* TEST_LEAD: Assign (TRIAGED → ASSIGNED) */}
-            {canManage && !isNew && isTriaged && (
-              <button onClick={() => setAssignOpen(true)} className="p-1.5 hover:bg-amber-100 hover:text-amber-700 rounded text-on-surface-variant transition-colors" title="Assign to Developer">
+            {/* Assign (NEW → skip; TRIAGED → ASSIGNED) */}
+            {canManage && (isNew || isTriaged) && (
+              <button
+                onClick={() => handleUntriagedAction("assign")}
+                className="action-btn action-btn-amber"
+                title="Assign to Developer"
+              >
                 <span className="material-symbols-outlined text-sm">assignment</span>
               </button>
             )}
-            {/* DEVELOPER: Start (ASSIGNED → IN_PROGRESS) */}
+            {/* Developer: Start Work (ASSIGNED → IN_PROGRESS) */}
             {isDeveloper && isAssigned && (
-              <button onClick={() => startMut.mutate()} className="p-1.5 hover:bg-cyan-100 hover:text-cyan-700 rounded text-on-surface-variant transition-colors" title="Start Work">
+              <button
+                onClick={() => startMut.mutate()}
+                className="action-btn action-btn-cyan"
+                title="Start Work"
+              >
                 <span className="material-symbols-outlined text-sm">play_arrow</span>
               </button>
             )}
-            {/* DEVELOPER: Resolve (ASSIGNED | IN_PROGRESS → RESOLVED_DEV) */}
+            {/* Developer: Resolve (ASSIGNED | IN_PROGRESS → RESOLVED_DEV) */}
             {isDeveloper && (isAssigned || isInProgress) && (
-              <button onClick={() => setResolveOpen(true)} className="p-1.5 hover:bg-blue-100 hover:text-blue-700 rounded text-on-surface-variant transition-colors" title="Resolve as Developer">
+              <button
+                onClick={() => setResolveOpen(true)}
+                className="action-btn action-btn-blue"
+                title="Resolve as Developer"
+              >
                 <span className="material-symbols-outlined text-sm">bug_report</span>
               </button>
             )}
-            {/* DEVELOPER: Block (ASSIGNED | IN_PROGRESS → BLOCKED) */}
+            {/* Developer: Block (ASSIGNED | IN_PROGRESS → BLOCKED) */}
             {isDeveloper && (isAssigned || isInProgress) && (
-              <button onClick={() => setBlockOpen(true)} className="p-1.5 hover:bg-red-100 hover:text-red-700 rounded text-on-surface-variant transition-colors" title="Block">
+              <button
+                onClick={() => setBlockOpen(true)}
+                className="action-btn action-btn-red"
+                title="Block"
+              >
                 <span className="material-symbols-outlined text-sm">block</span>
               </button>
             )}
-            {/* DEVELOPER | TEST_LEAD: Unblock (BLOCKED → <prior state>) */}
+            {/* Unblock (BLOCKED → prior state) */}
             {(isDeveloper || canManage) && isBlocked && (
-              <button onClick={() => setUnblockOpen(true)} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Unblock">
+              <button
+                onClick={() => setUnblockOpen(true)}
+                className="action-btn action-btn-green"
+                title="Unblock"
+              >
                 <span className="material-symbols-outlined text-sm">lock_open</span>
               </button>
             )}
-            {/* DEVELOPER | TEST_LEAD: Resume Work (RESOLVED_DEV → IN_PROGRESS) */}
+            {/* Resume Work (RESOLVED_DEV → IN_PROGRESS) */}
             {(isDeveloper || canManage) && isResolved && (
-              <button onClick={() => setResumeWorkOpen(true)} className="p-1.5 hover:bg-orange-100 hover:text-orange-700 rounded text-on-surface-variant transition-colors" title="Resume Work">
+              <button
+                onClick={() => setResumeWorkOpen(true)}
+                className="action-btn action-btn-orange"
+                title="Resume Work"
+              >
                 <span className="material-symbols-outlined text-sm">undo</span>
               </button>
             )}
-            {/* TEST_LEAD: Flag Retest (RESOLVED_DEV → READY_FOR_VERIFICATION) */}
+            {/* Flag Retest (RESOLVED_DEV → READY_FOR_VERIFICATION) */}
             {canManage && isResolved && (
-              <button onClick={() => flagRetestMut.mutate()} className="p-1.5 hover:bg-amber-100 hover:text-amber-700 rounded text-on-surface-variant transition-colors" title="Send for Verification">
+              <button
+                onClick={() => flagRetestMut.mutate()}
+                className="action-btn action-btn-amber"
+                title="Send for Verification"
+              >
                 <span className="material-symbols-outlined text-sm">history_edu</span>
               </button>
             )}
-            {/* TESTER | TEST_LEAD: Record Retest Result (READY_FOR_VERIFICATION → CLOSED | REGRESSED) */}
-            {(isTester || canManage) && isReady && (
-              <button onClick={() => setRetestOpen(true)} className="p-1.5 hover:bg-blue-100 hover:text-blue-700 rounded text-on-surface-variant transition-colors" title="Record Retest Result">
+            {/* Flag Retest from NEW or non-terminal */}
+            {canManage && canRetestFromAnyState && (
+              <button
+                onClick={() => handleUntriagedAction("retest")}
+                className="action-btn action-btn-blue"
+                title="Flag for retesting"
+              >
                 <span className="material-symbols-outlined text-sm">fact_check</span>
               </button>
             )}
-            {/* Quick Verification: Verify Defect (READY_FOR_VERIFICATION → IN_VERIFICATION) */}
+            {/* Flag Blocked from NEW */}
+            {canManage && isNew && (
+              <button
+                onClick={() => handleUntriagedAction("block")}
+                className="action-btn action-btn-red"
+                title="Flag as blocked"
+              >
+                <span className="material-symbols-outlined text-sm">block</span>
+              </button>
+            )}
+            {/* Quick Verify (READY_FOR_VERIFICATION → IN_VERIFICATION) */}
             {(isTester || canManage) && isReady && (
-              <button onClick={() => setQuickVerifyOpen(true)} className="p-1.5 hover:bg-sky-100 hover:text-sky-700 rounded text-on-surface-variant transition-colors" title="Quick Verify Defect">
+              <button
+                onClick={() => setQuickVerifyOpen(true)}
+                className="action-btn action-btn-sky"
+                title="Quick Verify Defect"
+              >
                 <span className="material-symbols-outlined text-sm">sync</span>
               </button>
             )}
-            {/* BUSINESS_OWNER: Accept verification (READY_FOR_VERIFICATION → CLOSED) */}
+            {/* Record Retest Result (READY_FOR_VERIFICATION → CLOSED | REGRESSED) */}
+            {(isTester || canManage) && isReady && (
+              <button
+                onClick={() => setRetestOpen(true)}
+                className="action-btn action-btn-blue"
+                title="Record Retest Result"
+              >
+                <span className="material-symbols-outlined text-sm">fact_check</span>
+              </button>
+            )}
+            {/* Business Owner: Accept (READY_FOR_VERIFICATION → CLOSED) */}
             {isBusinessOwner && isReady && (
-              <button onClick={() => setBizAcceptOpen(true)} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Accept">
+              <button
+                onClick={() => setBizAcceptOpen(true)}
+                className="action-btn action-btn-green"
+                title="Accept"
+              >
                 <span className="material-symbols-outlined text-sm">check_circle</span>
               </button>
             )}
-            {/* BUSINESS_OWNER | TEST_LEAD: Reject verification (READY_FOR_VERIFICATION → ASSIGNED) */}
+            {/* Business Owner | TEST_LEAD: Reject (READY_FOR_VERIFICATION → ASSIGNED) */}
             {(isBusinessOwner || canManage) && isReady && (
-              <button onClick={() => setRejectOpen(true)} className="p-1.5 hover:bg-error-container hover:text-on-error-container rounded text-on-surface-variant transition-colors" title="Reject">
+              <button
+                onClick={() => setRejectOpen(true)}
+                className="action-btn action-btn-red"
+                title="Reject"
+              >
                 <span className="material-symbols-outlined text-sm">cancel</span>
               </button>
             )}
-            {/* TEST_LEAD: Reschedule retest (READY_FOR_VERIFICATION → RESOLVED_DEV) */}
+            {/* Reschedule Retest (READY_FOR_VERIFICATION → RESOLVED_DEV) */}
             {canManage && isReady && (
-              <button onClick={() => setRescheduleOpen(true)} className="p-1.5 hover:bg-orange-100 hover:text-orange-700 rounded text-on-surface-variant transition-colors" title="Reschedule Retest — return to developer">
+              <button
+                onClick={() => setRescheduleOpen(true)}
+                className="action-btn action-btn-orange"
+                title="Reschedule Retest"
+              >
                 <span className="material-symbols-outlined text-sm">schedule</span>
               </button>
             )}
-            {/* Quick Verification Pass/Fail (IN_VERIFICATION → CLOSED | ASSIGNED) */}
+            {/* Quick Verify Pass/Fail (IN_VERIFICATION) */}
             {(isTester || canManage) && isInVerification && (
               <>
-                <button onClick={() => { setQuickVerifyResultAction("passed"); }} className="p-1.5 hover:bg-green-100 hover:text-green-700 rounded text-on-surface-variant transition-colors" title="Quick Verify — Pass">
+                <button
+                  onClick={() => setQuickVerifyResultAction("passed")}
+                  className="action-btn action-btn-green"
+                  title="Quick Verify — Pass"
+                >
                   <span className="material-symbols-outlined text-sm">check_circle</span>
                 </button>
-                <button onClick={() => { setQuickVerifyResultAction("failed"); }} className="p-1.5 hover:bg-red-100 hover:text-red-700 rounded text-on-surface-variant transition-colors" title="Quick Verify — Fail">
+                <button
+                  onClick={() => setQuickVerifyResultAction("failed")}
+                  className="action-btn action-btn-red"
+                  title="Quick Verify — Fail"
+                >
                   <span className="material-symbols-outlined text-sm">cancel</span>
                 </button>
               </>
             )}
-            {/* BUSINESS_OWNER: Accept/Reject (PENDING_BIZ_ACCEPTANCE) — context-aware */}
+            {/* Request Deployment Approval */}
+            {canManage && !isClosed && !isNew && !isPendingDeployApproval && !isInVerification && !isPendingBiz && (isReady || isResolved) && (
+              <button
+                onClick={() => setDeployApprovalOpen(true)}
+                className="action-btn action-btn-teal"
+                title="Request Deployment Approval"
+              >
+                <span className="material-symbols-outlined text-sm">rocket_launch</span>
+              </button>
+            )}
+            {/* Submit for Business Decision */}
+            {canManage && !isClosed && !isNew && !isPendingDeployApproval && !isInVerification && !isPendingBiz && (
+              <button
+                onClick={() => setShowBusinessDecisionDialog(true)}
+                className="action-btn action-btn-purple"
+                title="Submit for Business Decision"
+              >
+                <span className="material-symbols-outlined text-sm">pending_actions</span>
+              </button>
+            )}
+            {/* Business Owner: Accept/Reject Pending Biz Decision */}
             {isBusinessOwner && isPendingBiz && (
               <>
-                <button onClick={() => setAcceptBizRiskOpen(true)} className="p-1.5 hover:bg-purple-100 hover:text-purple-700 rounded text-on-surface-variant transition-colors" title={defect.decision_type === "risk_waiver" ? "Accept as Business Risk" : "Accept by Agreement"}>
+                <button
+                  onClick={() => setAcceptBizRiskOpen(true)}
+                  className="action-btn action-btn-purple"
+                  title={defect.decision_type === "risk_waiver" ? "Accept as Business Risk" : "Accept by Agreement"}
+                >
                   <span className="material-symbols-outlined text-sm">approval</span>
                 </button>
-                <button onClick={() => setRejectBizOpen(true)} className="p-1.5 hover:bg-red-100 hover:text-red-700 rounded text-on-surface-variant transition-colors" title={defect.decision_type === "risk_waiver" ? "Reject Risk Waiver" : "Reject Business Review"}>
+                <button
+                  onClick={() => setRejectBizOpen(true)}
+                  className="action-btn action-btn-red"
+                  title={defect.decision_type === "risk_waiver" ? "Reject Risk Waiver" : "Reject Business Review"}
+                >
                   <span className="material-symbols-outlined text-sm">thumb_down</span>
                 </button>
               </>
             )}
-            <button onClick={() => setNoteOpen(true)} className="p-1.5 hover:bg-surface-container-high rounded text-on-surface-variant transition-colors" title="Add Comment">
+            {/* Add Comment — always available */}
+            <button
+              onClick={() => setNoteOpen(true)}
+              className="action-btn action-btn-neutral"
+              title="Add Comment"
+            >
               <span className="material-symbols-outlined text-sm">comment</span>
             </button>
           </div>
         </td>
       </tr>
-      <tr className={`bg-surface-container-lowest ${expanded ? "" : "hidden"}`}>
+      <tr className={`${expanded ? "" : "hidden"}`}>
         <td className="p-0" colSpan={7}>
-          <div className="mx-lg my-md border border-outline-variant/40 rounded-2xl overflow-hidden shadow-sm">
+          <div className="mx-lg mb-md border border-outline-variant rounded-xl overflow-hidden shadow-sm bg-surface-container-lowest">
             {/* Header with Stepper */}
-            <div className="p-lg border-b border-outline-variant/40 bg-surface">
+            <div className="p-lg border-b border-outline-variant bg-surface">
               <div className="flex items-center justify-between mb-md">
-                <h3 className="font-title-sm text-title-sm text-on-surface">
-                  DEF-{defect.id} — {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
-                </h3>
-                <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-bold border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadgeClass(defect)}`}>
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-title-sm text-title-sm text-on-surface truncate">
+                    DEF-{defect.id} — {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
+                  </h3>
+                </div>
+                <span className={`shrink-0 ml-md inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadgeClass(defect)}`}>
+                  <span className="material-symbols-outlined text-sm">{statusIcon[defect.status] ?? "circle"}</span>
                   {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? "With Development" : statusDisplay[defect.status] ?? defect.status}
                 </span>
               </div>
               <Stepper steps={statusSteps} currentIndex={currentStatusIdx} completedIndices={completedStatusIndices} />
 
               {isRegressed && activeTab !== "full" && (
-                <div className={`mt-md flex items-center gap-2 p-sm rounded-lg ${activeTab === "developer" ? "bg-red-50 border border-red-200" : "bg-orange-50 border border-orange-200"}`}>
+                <div className={`mt-md flex items-center gap-2 px-md py-sm rounded-lg ${activeTab === "developer" ? "bg-red-50 border border-red-200" : "bg-orange-50 border border-orange-200"}`}>
                   <span className="material-symbols-outlined text-sm text-red-600">warning</span>
-                  <span className="text-xs font-bold text-red-700">
+                  <span className="text-xs font-semibold text-red-700">
                     Previously rejected {defect.regression_index} time{defect.regression_index === 1 ? "" : "s"} — returned for rework
                   </span>
                 </div>
               )}
 
               {/* Tab Menu */}
-              <div className="flex gap-xs mt-md border-b border-outline-variant/30">
+              <div className="flex gap-1 mt-md">
                 <button
                   onClick={() => setActiveDetailTab("overview")}
-                  className={`px-md py-sm font-label-sm text-label-sm rounded-t-lg border-b-2 transition-colors ${activeDetailTab === "overview" ? "border-secondary text-secondary" : "border-transparent text-on-surface-variant hover:text-on-surface"}`}
+                  className={`px-md py-sm text-xs font-medium rounded-md transition-colors ${activeDetailTab === "overview" ? "bg-secondary-container/20 text-secondary" : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"}`}
                 >
                   Overview
                 </button>
                 <button
                   onClick={() => setActiveDetailTab("steps")}
-                  className={`px-md py-sm font-label-sm text-label-sm rounded-t-lg border-b-2 transition-colors ${activeDetailTab === "steps" ? "border-secondary text-secondary" : "border-transparent text-on-surface-variant hover:text-on-surface"}`}
+                  className={`px-md py-sm text-xs font-medium rounded-md transition-colors ${activeDetailTab === "steps" ? "bg-secondary-container/20 text-secondary" : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"}`}
                 >
                   Test Steps
                 </button>
                 <button
                   onClick={() => setActiveDetailTab("activity")}
-                  className={`px-md py-sm font-label-sm text-label-sm rounded-t-lg border-b-2 transition-colors ${activeDetailTab === "activity" ? "border-secondary text-secondary" : "border-transparent text-on-surface-variant hover:text-on-surface"}`}
+                  className={`px-md py-sm text-xs font-medium rounded-md transition-colors ${activeDetailTab === "activity" ? "bg-secondary-container/20 text-secondary" : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"}`}
                 >
                   Activity
                 </button>
@@ -1133,122 +1244,143 @@ function DefectRow({
                     <DeveloperRejectionBanner defect={defect} />
                   )}
 
-                  {(activeTab === "full") && (
-                    <div className="grid grid-cols-3 gap-md mb-lg">
-                      <div className="bg-surface-container-low rounded-lg p-md border border-outline-variant/40">
-                        <span className="text-[10px] font-bold text-outline uppercase tracking-wider">Lifetime Age</span>
-                        <p className="text-title-sm font-title-sm text-on-surface mt-1">
-                          {Math.floor((Date.now() - new Date(defect.created_at).getTime()) / (1000 * 60 * 60 * 24))}d
-                        </p>
-                      </div>
-                      <div className="bg-surface-container-low rounded-lg p-md border border-outline-variant/40">
-                        <span className="text-[10px] font-bold text-outline uppercase tracking-wider">Regressions</span>
-                        <p className="text-title-sm font-title-sm text-on-surface mt-1">{defect.regression_index}</p>
-                      </div>
-                      <div className="bg-surface-container-low rounded-lg p-md border border-outline-variant/40">
-                        <span className="text-[10px] font-bold text-outline uppercase tracking-wider">Root Cause</span>
-                        <p className="text-body-sm font-body-sm text-on-surface mt-1">{defect.root_cause_category ?? "Not set"}</p>
-                      </div>
+                  {/* KPI Row */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-md mb-lg">
+                    <div className="bg-surface-container-low rounded-lg px-md py-sm border border-outline-variant/40">
+                      <p className="text-[10px] font-bold text-outline uppercase tracking-wider">Lifetime Age</p>
+                      <p className="font-title-sm text-title-sm text-on-surface mt-0.5">
+                        {Math.floor((Date.now() - new Date(defect.created_at).getTime()) / (1000 * 60 * 60 * 24))}d
+                      </p>
                     </div>
-                  )}
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-xl">
-                  <div className="space-y-md">
-                    <div>
-                      <h4 className="text-xs font-bold text-outline uppercase mb-sm">Test Scenario</h4>
-                      <p className="font-body-sm text-body-sm text-on-surface font-semibold">{defect.testCase?.useCase?.name ?? `Scenario #${defect.testCase?.use_case_id}`}</p>
+                    <div className="bg-surface-container-low rounded-lg px-md py-sm border border-outline-variant/40">
+                      <p className="text-[10px] font-bold text-outline uppercase tracking-wider">Severity</p>
+                      <p className={`font-title-sm text-title-sm mt-0.5 ${severityColors[defect.severity ?? ""] ?? "text-on-surface"}`}>
+                        {defect.severity ?? "—"}
+                      </p>
                     </div>
-                    <div>
-                      <h4 className="text-xs font-bold text-outline uppercase mb-sm">Test Case</h4>
-                      <p className="font-body-sm text-body-sm text-on-surface">{defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}</p>
+                    <div className="bg-surface-container-low rounded-lg px-md py-sm border border-outline-variant/40">
+                      <p className="text-[10px] font-bold text-outline uppercase tracking-wider">Priority</p>
+                      <p className="font-title-sm text-title-sm text-on-surface mt-0.5">{defect.priority ?? "—"}</p>
                     </div>
-                    {stepInfo.instruction && (
-                      <div className="p-md bg-red-50 border border-red-100 rounded-lg">
-                        <h4 className="text-xs font-bold text-red-700 uppercase mb-sm flex items-center gap-1">
-                          <span className="material-symbols-outlined text-sm">error</span>
-                          Failed Step
-                        </h4>
-                        <p className="font-body-sm text-body-sm text-red-600 font-semibold">Step {stepInfo.stepNumber}: {stepInfo.instruction}</p>
-                      </div>
-                    )}
-                    {defect.testCase?.acceptance_criteria && (
-                      <div>
-                        <h4 className="text-xs font-bold text-outline uppercase mb-sm">Acceptance Criteria</h4>
-                        <p className="font-body-sm text-body-sm text-on-surface">{defect.testCase.acceptance_criteria}</p>
-                      </div>
-                    )}
-                    {defect.execution?.notes && (
-                      <div>
-                        <h4 className="text-xs font-bold text-outline uppercase mb-sm">Execution Notes</h4>
-                        <p className="font-body-sm text-body-sm text-on-surface">{defect.execution.notes}</p>
-                      </div>
-                    )}
+                    <div className="bg-surface-container-low rounded-lg px-md py-sm border border-outline-variant/40">
+                      <p className="text-[10px] font-bold text-outline uppercase tracking-wider">Regressions</p>
+                      <p className="font-title-sm text-title-sm text-on-surface mt-0.5">{defect.regression_index}</p>
+                    </div>
                   </div>
-                  <div className="space-y-md">
-                    <div>
-                      <h4 className="text-xs font-bold text-outline uppercase mb-sm">Execution Details</h4>
-                      {defect.execution ? (
-                        <div className="space-y-xs">
-                          <p className="font-body-sm text-body-sm text-on-surface">Tester: {defect.execution.tester?.name ?? defect.execution.tester_name ?? "Unknown"}</p>
-                          <p className="font-body-sm text-body-sm text-on-surface">Result: <span className={`font-bold ${defect.execution.overall_result === "failed" ? "text-error" : defect.execution.overall_result === "passed" ? "text-green-600" : ""}`}>{defect.execution.overall_result ?? "N/A"}</span></p>
-                          <p className="font-body-sm text-body-sm text-on-surface">Executed: {defect.execution.executed_at ? new Date(defect.execution.executed_at).toLocaleString() : "N/A"}</p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-lg">
+                    <div className="space-y-md">
+                      <div>
+                        <p className="text-[10px] font-bold text-outline uppercase tracking-wider mb-xs">Test Scenario</p>
+                        <p className="font-body-sm text-body-sm text-on-surface font-medium">{defect.testCase?.useCase?.name ?? `Scenario #${defect.testCase?.use_case_id}`}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-outline uppercase tracking-wider mb-xs">Test Case</p>
+                        <p className="font-body-sm text-body-sm text-on-surface">{defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}</p>
+                      </div>
+                      {stepInfo.instruction && (
+                        <div className="px-md py-sm bg-red-50 border border-red-100 rounded-lg">
+                          <p className="text-[10px] font-bold text-red-700 uppercase tracking-wider mb-xs flex items-center gap-1">
+                            <span className="material-symbols-outlined text-sm">error</span>
+                            Failed Step
+                          </p>
+                          <p className="font-body-sm text-body-sm text-red-600 font-semibold">Step {stepInfo.stepNumber}: {stepInfo.instruction}</p>
                         </div>
-                      ) : (<p className="text-sm text-on-surface-variant">No execution record available.</p>)}
+                      )}
+                      {defect.testCase?.acceptance_criteria && (
+                        <div>
+                          <p className="text-[10px] font-bold text-outline uppercase tracking-wider mb-xs">Acceptance Criteria</p>
+                          <p className="font-body-sm text-body-sm text-on-surface leading-relaxed">{defect.testCase.acceptance_criteria}</p>
+                        </div>
+                      )}
+                      {defect.execution?.notes && (
+                        <div>
+                          <p className="text-[10px] font-bold text-outline uppercase tracking-wider mb-xs">Execution Notes</p>
+                          <p className="font-body-sm text-body-sm text-on-surface">{defect.execution.notes}</p>
+                        </div>
+                      )}
                     </div>
-                    <div className="border-t border-outline-variant/30 pt-md">
-                      <h4 className="text-xs font-bold text-outline uppercase mb-sm">Tester Notes</h4>
-                      <p className="font-body-sm text-body-sm text-on-surface leading-relaxed">{defect.tester_notes ?? "No tester notes."}</p>
-                    </div>
-                    {defect.accepted_by_business_note && (
-                      <div>
-                        <h4 className="text-xs font-bold text-outline uppercase mb-sm">Acceptance Note</h4>
-                        <p className="font-body-sm text-body-sm text-on-surface">{defect.accepted_by_business_note}</p>
-                      </div>
-                    )}
-                    {defect.retest_reason && (
-                      <div>
-                        <h4 className="text-xs font-bold text-outline uppercase mb-sm">Retest Reason</h4>
-                        <p className="font-body-sm text-body-sm text-on-surface">{defect.retest_reason}</p>
-                      </div>
-                    )}
-                    {defect.retests && defect.retests.length > 0 && (
-                      <div>
-                        <h4 className="text-xs font-bold text-outline uppercase mb-sm">Retest History</h4>
-                        {defect.retests.map((rt) => (
-                          <div key={rt.id} className="flex items-center gap-sm text-xs mb-xs">
-                            <span className={`font-bold ${rt.retest_result === "passed" ? "text-green-600" : rt.retest_result === "failed" ? "text-error" : ""}`}>{rt.retest_result ?? "pending"}</span>
-                            <span className="text-on-surface-variant">{rt.retest_notes ?? ""}</span>
+                    <div className="space-y-md">
+                      <div className="bg-surface-container-low rounded-lg px-md py-sm border border-outline-variant/40">
+                        <p className="text-[10px] font-bold text-outline uppercase tracking-wider mb-xs">Execution Details</p>
+                        {defect.execution ? (
+                          <div className="space-y-0.5">
+                            <p className="font-body-sm text-body-sm text-on-surface">Tester: {defect.execution.tester?.name ?? defect.execution.tester_name ?? "Unknown"}</p>
+                            <p className="font-body-sm text-body-sm text-on-surface">Result: <span className={`font-semibold ${defect.execution.overall_result === "failed" ? "text-error" : defect.execution.overall_result === "passed" ? "text-green-600" : ""}`}>{defect.execution.overall_result ?? "N/A"}</span></p>
+                            <p className="font-body-sm text-body-sm text-on-surface">Executed: {defect.execution.executed_at ? new Date(defect.execution.executed_at).toLocaleString() : "N/A"}</p>
                           </div>
-                        ))}
+                        ) : (<p className="font-body-sm text-body-sm text-on-surface-variant">No execution record available.</p>)}
                       </div>
-                    )}
-                {defect.regression_index > 0 && activeTab !== "business" && (
-                  <div className="p-md bg-orange-50 border border-orange-200 rounded-lg">
-                    <h4 className="text-xs font-bold text-orange-700 uppercase mb-sm flex items-center gap-1">
-                      <span className="material-symbols-outlined text-sm">warning</span>
-                      Previously Failed Verification
-                    </h4>
-                    <p className="font-body-sm text-body-sm text-orange-700">
-                      This defect has been rejected <strong>{defect.regression_index}</strong> time{defect.regression_index === 1 ? "" : "s"} and returned to the developer for rework.
-                    </p>
-                  </div>
-                )}
-                    {isBusinessOwner && isPendingBiz && (
-                <BusinessOwnerDecisionPanel
-                  decisionType={defect.decision_type}
-                  onAccept={() => setAcceptBizRiskOpen(true)}
-                  onReject={() => setRejectBizOpen(true)}
-                />
-              )}
 
-              <div className="flex items-center gap-lg mt-sm text-xs text-on-surface-variant">
-                      <span>Created: {new Date(defect.created_at).toLocaleString()}</span>
-                      <span>Updated: {new Date(defect.updated_at).toLocaleString()}</span>
+                      <div>
+                        <p className="text-[10px] font-bold text-outline uppercase tracking-wider mb-xs">Tester Notes</p>
+                        <p className="font-body-sm text-body-sm text-on-surface leading-relaxed">{defect.tester_notes ?? "No tester notes."}</p>
+                      </div>
+
+                      {defect.root_cause_category && (
+                        <div>
+                          <p className="text-[10px] font-bold text-outline uppercase tracking-wider mb-xs">Root Cause</p>
+                          <p className="font-body-sm text-body-sm text-on-surface">{defect.root_cause_category}</p>
+                        </div>
+                      )}
+
+                      {defect.accepted_by_business_note && (
+                        <div>
+                          <p className="text-[10px] font-bold text-outline uppercase tracking-wider mb-xs">Acceptance Note</p>
+                          <p className="font-body-sm text-body-sm text-on-surface">{defect.accepted_by_business_note}</p>
+                        </div>
+                      )}
+
+                      {defect.retest_reason && (
+                        <div>
+                          <p className="text-[10px] font-bold text-outline uppercase tracking-wider mb-xs">Retest Reason</p>
+                          <p className="font-body-sm text-body-sm text-on-surface">{defect.retest_reason}</p>
+                        </div>
+                      )}
+
+                      {defect.retests && defect.retests.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-bold text-outline uppercase tracking-wider mb-xs">Retest History</p>
+                          <div className="space-y-1">
+                            {defect.retests.map((rt) => (
+                              <div key={rt.id} className="flex items-center gap-sm text-xs px-md py-sm bg-surface-container-low rounded-lg border border-outline-variant/40">
+                                <span className={`font-bold uppercase ${rt.retest_result === "passed" ? "text-green-600" : rt.retest_result === "failed" ? "text-error" : "text-on-surface-variant"}`}>
+                                  {rt.retest_result === "passed" ? "PASS" : rt.retest_result === "failed" ? "FAIL" : "PENDING"}
+                                </span>
+                                {rt.retest_notes && <span className="text-on-surface-variant">— {rt.retest_notes}</span>}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {defect.regression_index > 0 && activeTab !== "business" && (
+                        <div className="px-md py-sm bg-orange-50 border border-orange-200 rounded-lg">
+                          <p className="text-[10px] font-bold text-orange-700 uppercase tracking-wider mb-xs flex items-center gap-1">
+                            <span className="material-symbols-outlined text-sm">warning</span>
+                            Previously Failed Verification
+                          </p>
+                          <p className="font-body-sm text-body-sm text-orange-700">
+                            This defect has been rejected <strong>{defect.regression_index}</strong> time{defect.regression_index === 1 ? "" : "s"} and returned to the developer for rework.
+                          </p>
+                        </div>
+                      )}
+
+                      {isBusinessOwner && isPendingBiz && (
+                        <BusinessOwnerDecisionPanel
+                          decisionType={defect.decision_type}
+                          onAccept={() => setAcceptBizRiskOpen(true)}
+                          onReject={() => setRejectBizOpen(true)}
+                        />
+                      )}
+
+                      <div className="flex items-center gap-lg pt-xs text-[11px] text-on-surface-variant border-t border-outline-variant/30">
+                        <span>Created: {new Date(defect.created_at).toLocaleString()}</span>
+                        <span>Updated: {new Date(defect.updated_at).toLocaleString()}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-
-              </>
+                </>
               )}
 
               {activeDetailTab === "steps" && (
@@ -1259,20 +1391,20 @@ function DefectRow({
                         const isFailed = sr.passed === false;
                         const matchesDefect = stepInfo.stepNumber != null && String(sr.step?.step_number) === stepInfo.stepNumber;
                         return (
-                          <div key={sr.id} className={`border-l-4 rounded-lg p-sm text-sm transition-all ${isFailed && matchesDefect ? "border-error bg-red-50 shadow-sm" : isFailed ? "border-error bg-surface-container-high" : "border-green-500 bg-surface-container-high/50 opacity-70"}`}>
+                          <div key={sr.id} className={`rounded-lg border-l-4 p-sm text-sm transition-all ${isFailed && matchesDefect ? "border-error bg-red-50 shadow-sm" : isFailed ? "border-error bg-surface-container-high" : "border-green-500 bg-surface-container-high/50"}`}>
                             <div className="flex items-center gap-sm mb-xs">
-                              <span className="font-bold text-xs">Step {sr.step?.step_number ?? sr.step_id}</span>
-                              <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${isFailed ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}>{isFailed ? "FAIL" : "PASS"}</span>
+                              <span className="font-semibold text-xs">Step {sr.step?.step_number ?? sr.step_id}</span>
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${isFailed ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}>{isFailed ? "FAIL" : "PASS"}</span>
                             </div>
-                            <p className="text-on-surface mb-xs"><span className="font-semibold">Instruction:</span> {sr.step?.instruction ?? "N/A"}</p>
-                            {sr.step?.expected_result && <p className="text-on-surface mb-xs"><span className="font-semibold">Expected:</span> {sr.step.expected_result}</p>}
-                            {sr.actual_result && <p className="text-on-surface mb-xs"><span className="font-semibold">Actual:</span> {sr.actual_result}</p>}
-                            {sr.comments && <p className="text-on-surface-variant text-xs mt-1"><span className="font-semibold">Comments:</span> {sr.comments}</p>}
+                            <p className="text-on-surface mb-xs"><span className="font-medium">Instruction:</span> {sr.step?.instruction ?? "N/A"}</p>
+                            {sr.step?.expected_result && <p className="text-on-surface mb-xs"><span className="font-medium">Expected:</span> {sr.step.expected_result}</p>}
+                            {sr.actual_result && <p className="text-on-surface mb-xs"><span className="font-medium">Actual:</span> {sr.actual_result}</p>}
+                            {sr.comments && <p className="text-on-surface-variant text-xs mt-1"><span className="font-medium">Comments:</span> {sr.comments}</p>}
                           </div>
                         );
                       })}
                     </div>
-                  ) : (<p className="text-sm text-on-surface-variant text-center py-md">No test steps recorded.</p>)}
+                  ) : (<p className="font-body-sm text-body-sm text-on-surface-variant text-center py-lg">No test steps recorded.</p>)}
                 </div>
               )}
 
@@ -1280,31 +1412,27 @@ function DefectRow({
                 <div>
                   {defect.notes && defect.notes.length > 0 ? (
                     <div className="space-y-sm max-h-80 overflow-y-auto pr-md">
-            {(() => {
+                      {(() => {
                         const seen = new Set<string>();
                         const shownStatuses = new Set<string>();
                         const microNoise = new Set(['ASSIGNED', 'IN_PROGRESS', 'BLOCKED', 'RESOLVED_DEV']);
                         const deduped: DefectNote[] = [];
                         
                         for (const n of defect.notes ?? []) {
-                          // 1. Deduplication
                           const key = `${n.id}-${n.note}-${n.created_at}`;
                           if (seen.has(key)) continue;
                           seen.add(key);
 
-                          // 2. If not business tab, or a user comment, keep it
                           if (activeTab !== "business" || !n.is_system_note) {
                             deduped.push(n);
                             continue;
                           }
 
-                          // 3. Macro actions (e.g., initial creation)
                           if (n.action === 'CREATED' || n.action === 'NEW') {
                             deduped.push(n);
                             continue;
                           }
 
-                          // 4. Explicitly block non-status technical field updates
                           const lowerNote = n.note.toLowerCase();
                           if (
                             lowerNote.includes('root cause') ||
@@ -1312,10 +1440,9 @@ function DefectRow({
                             lowerNote.includes('assignee') ||
                             lowerNote.includes('assigned to')
                           ) {
-                            continue; // Drop these internal dev metric updates
+                            continue;
                           }
 
-                          // 5. Bulletproof Status Regex (Handles quotes, brackets, and raw text)
                           const statusMatch = n.note.match(/to\s+['"\[]?([A-Z_]+)['"\]]?/i);
                           
                           if (statusMatch && statusMatch[1]) {
@@ -1327,12 +1454,10 @@ function DefectRow({
                             }
 
                             if (microNoise.has(extractedStatus)) {
-                              // ALWAYS block IN_PROGRESS, BLOCKED, and RESOLVED_DEV
                               if (['IN_PROGRESS', 'BLOCKED', 'RESOLVED_DEV'].includes(extractedStatus)) {
                                 continue;
                               }
                               
-                              // Allow ASSIGNED as the sole Handoff Milestone
                               if (extractedStatus === 'ASSIGNED') {
                                 deduped.push(n);
                               }
@@ -1344,16 +1469,15 @@ function DefectRow({
                             continue;
                           }
 
-                          // 6. Fallback: irregular system note (e.g. creation text) — always show
                           deduped.push(n);
                         }
                         return deduped;
                       })().map((n) => (
-                        <div key={n.id} className={`rounded-lg p-sm text-sm ${n.is_system_note ? "bg-surface-container-low border border-outline-variant/30" : "bg-surface-container-high"}`}>
+                        <div key={n.id} className={`rounded-lg px-md py-sm text-sm ${n.is_system_note ? "bg-surface-container-low border border-outline-variant/30" : "bg-surface-container-high"}`}>
                           <div className="flex items-start gap-2">
                             {n.is_system_note && (<span className="text-on-surface-variant mt-0.5 flex-shrink-0 material-symbols-outlined text-sm">settings</span>)}
                             <div className="flex-1 min-w-0">
-                              <p className={`text-on-surface ${n.is_system_note ? "italic text-on-surface-variant text-xs" : ""}`}>{n.note}</p>
+                              <p className={`${n.is_system_note ? "italic text-on-surface-variant text-xs" : "text-on-surface"}`}>{n.note}</p>
                               <div className="flex items-center gap-1 mt-1">
                                 <span className="text-[10px] text-on-surface-variant">{n.addedBy?.name ?? `User #${n.added_by_user_id ?? "system"}`}</span>
                                 <span className="text-[10px] text-on-surface-variant">&middot;</span>
@@ -1365,7 +1489,7 @@ function DefectRow({
                         </div>
                       ))}
                     </div>
-                  ) : (<p className="text-sm text-on-surface-variant text-center py-md">No activity recorded.</p>)}
+                  ) : (<p className="font-body-sm text-body-sm text-on-surface-variant text-center py-lg">No activity recorded.</p>)}
                 </div>
               )}
             </div>
@@ -1804,12 +1928,12 @@ function SortTh({ field, label, sortField, sortDir, onSort }: { field: string; l
   const isActive = sortField === field;
   return (
     <th
-      className="p-md text-xs font-bold text-outline uppercase cursor-pointer select-none whitespace-nowrap hover:text-on-surface transition-colors"
+      className="px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider cursor-pointer select-none whitespace-nowrap hover:text-on-surface transition-colors"
       onClick={() => onSort(field)}
     >
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-0.5">
         {label}
-        <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 1" }}>
+        <span className="material-symbols-outlined text-[13px]" style={{ fontVariationSettings: "'FILL' 1" }}>
           {isActive ? (sortDir === "asc" ? "arrow_upward_alt" : "arrow_downward_alt") : "unfold_more"}
         </span>
       </div>
@@ -2245,28 +2369,30 @@ function BusinessOwnerDecisionPanel({
 }) {
   const isRiskWaiver = decisionType === "risk_waiver";
   return (
-    <div className="mt-lg border rounded-xl overflow-hidden">
-      <div className={`p-md flex items-center gap-3 ${isRiskWaiver ? "bg-amber-50 border-b border-amber-200" : "bg-sky-50 border-b border-sky-200"}`}>
-        <span className="text-2xl">{isRiskWaiver ? "⚠️" : "📋"}</span>
+    <div className="border border-outline-variant rounded-xl overflow-hidden">
+      <div className={`px-md py-sm flex items-center gap-3 border-b ${isRiskWaiver ? "bg-amber-50 border-amber-200" : "bg-sky-50 border-sky-200"}`}>
+        <span className={`material-symbols-outlined text-xl ${isRiskWaiver ? "text-amber-600" : "text-sky-600"}`}>
+          {isRiskWaiver ? "warning" : "fact_check"}
+        </span>
         <div>
-          <p className="font-label-md text-label-md font-bold">{isRiskWaiver ? "Risk Waiver Decision" : "Business Review Decision"}</p>
-          <p className="font-body-sm text-body-sm text-on-surface-variant">
+          <p className="text-xs font-bold">{isRiskWaiver ? "Risk Waiver Decision" : "Business Review Decision"}</p>
+          <p className="text-xs text-on-surface-variant mt-0.5">
             {isRiskWaiver
               ? "The Test Lead has flagged this defect as a risk waiver for business acceptance."
               : "The Test Lead has submitted this defect for a business review decision."}
           </p>
         </div>
       </div>
-      <div className="p-md bg-surface flex items-center gap-md">
+      <div className="px-md py-sm bg-surface flex items-center gap-md">
         <button
           onClick={onAccept}
-          className="px-4 py-sm bg-purple-600 text-white rounded-lg font-label-sm hover:brightness-110 transition-all"
+          className="px-4 py-sm bg-purple-600 text-white rounded-lg text-xs font-semibold hover:brightness-110 transition-all"
         >
           {isRiskWaiver ? "Accept as Business Risk" : "Accept by Agreement"}
         </button>
         <button
           onClick={onReject}
-          className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors"
+          className="px-4 py-sm bg-surface border border-outline-variant rounded-lg text-xs font-semibold text-on-surface hover:bg-surface-container-high transition-colors"
         >
           {isRiskWaiver ? "Reject Risk Waiver" : "Decline Business Review"}
         </button>

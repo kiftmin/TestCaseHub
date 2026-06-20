@@ -259,6 +259,11 @@ router.post("/:projectId/sign-off", async (req: AuthenticatedRequest, res, next)
       signature: req.body.signature || "",
     };
 
+    // Merge any additional business decision data if provided
+    if (req.body.businessDecisions) {
+      signOffData.businessDecisions = req.body.businessDecisions;
+    }
+
     const signedOff = signOffData.testLead && signOffData.businessOwner ? 1 : 0;
 
     await db.update(schema.projects)
@@ -335,13 +340,18 @@ router.get("/:projectId/audit-log", async (req: AuthenticatedRequest, res, next)
     const limit = Number(req.query.limit) || 100;
     const offset = Number(req.query.offset) || 0;
     const entityType = req.query.entityType as string | undefined;
+    const entityId = req.query.entityId ? Number(req.query.entityId) : undefined;
 
-    const whereConditions = entityType
-      ? and(eq(schema.statusAuditLog.entity_type, entityType), eq(schema.statusAuditLog.entity_id, projectId))
-      : eq(schema.statusAuditLog.entity_id, projectId);
+    const conditions: any[] = [];
+    if (entityType) conditions.push(eq(schema.statusAuditLog.entity_type, entityType));
+    if (entityId) {
+      conditions.push(eq(schema.statusAuditLog.entity_id, entityId));
+    } else {
+      conditions.push(eq(schema.statusAuditLog.entity_id, projectId));
+    }
 
     const logs = await db.query.statusAuditLog.findMany({
-      where: whereConditions,
+      where: and(...conditions),
       with: { changedBy: true },
       orderBy: desc(schema.statusAuditLog.changed_at),
       limit,

@@ -16,7 +16,7 @@ const router = express.Router();
 router.get("/test-runs/:testRunId/defects", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
-    const result = await db.query.defects.findMany({
+    let result = await db.query.defects.findMany({
       where: eq(schema.defects.test_run_id, testRunId),
       with: {
         testCase: { with: { steps: true, useCase: true } },
@@ -25,6 +25,7 @@ router.get("/test-runs/:testRunId/defects", async (req: AuthenticatedRequest, re
         retests: true,
       },
     });
+    result = await Promise.all(result.map(enrichDecisionType));
     res.json(result);
   } catch (err) { next(err); }
 });
@@ -33,7 +34,7 @@ router.get("/test-runs/:testRunId/defects", async (req: AuthenticatedRequest, re
 router.get("/projects/:projectId/defects", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
-    const result = await db.query.defects.findMany({
+    let result = await db.query.defects.findMany({
       where: eq(schema.defects.project_id, projectId),
       with: {
         testCase: { with: { steps: true, useCase: true } },
@@ -42,6 +43,7 @@ router.get("/projects/:projectId/defects", async (req: AuthenticatedRequest, res
         retests: true,
       },
     });
+    result = await Promise.all(result.map(enrichDecisionType));
     res.json(result);
   } catch (err) { next(err); }
 });
@@ -60,7 +62,7 @@ router.get("/defects/:defectId", async (req: AuthenticatedRequest, res, next) =>
       },
     });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    res.json(defect);
+    res.json(await enrichDecisionType(defect));
   } catch (err) { next(err); }
 });
 
@@ -112,6 +114,26 @@ async function getPriorState(
     columns: { from_status: true },
   });
   return entry?.from_status ?? fallback;
+}
+
+/**
+ * Enriches a defect with decision_type parsed from the audit log
+ * when the defect is in PENDING_BIZ_ACCEPTANCE status.
+ */
+async function enrichDecisionType(defect: any): Promise<any> {
+  if (defect?.status === "PENDING_BIZ_ACCEPTANCE") {
+    const auditEntry = await db.query.statusAuditLog.findFirst({
+      where: and(
+        eq(schema.statusAuditLog.entity_id, defect.id),
+        eq(schema.statusAuditLog.entity_type, "defect"),
+        eq(schema.statusAuditLog.to_status, "PENDING_BIZ_ACCEPTANCE")
+      ),
+      orderBy: [desc(schema.statusAuditLog.changed_at)],
+    });
+    const reason = auditEntry?.reason || "";
+    defect.decision_type = reason.startsWith("[RISK WAIVER]") ? "risk_waiver" : "business_review";
+  }
+  return defect;
 }
 
 // ---------------------------------------------------------------------------
@@ -248,7 +270,7 @@ router.patch("/defects/:defectId/flag-retest-from-new", async (req: Authenticate
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    const terminalStatuses = ["CLOSED", "PASSED_BY_AGREEMENT", "PENDING_BIZ_ACCEPTANCE", "PENDING_DEPLOYMENT_APPROVAL", "PENDING_RISK_ACCEPTANCE", "IN_VERIFICATION"];
+    const terminalStatuses = ["CLOSED", "PASSED_BY_AGREEMENT", "PENDING_BIZ_ACCEPTANCE", "PENDING_DEPLOYMENT_APPROVAL", "IN_VERIFICATION"];
     if (terminalStatuses.includes(defect.status)) {
       res.status(400).json({ message: "Defect cannot be retested in its current state." });
       return;
@@ -272,14 +294,17 @@ router.patch("/defects/:defectId/flag-retest-from-new", async (req: Authenticate
   } catch (err) { next(err); }
 });
 
-// PATCH /defects/:defectId/flag-accepted-by-business — TEST_LEAD only
+// PATCH /defects/:defectId/submit-for-business-decision — TEST_LEAD only
 // TRIAGED | ASSIGNED | IN_PROGRESS | BLOCKED | RESOLVED_DEV | READY_FOR_VERIFICATION
-//   ──────────────────────────────────────────────────────> PENDING_BIZ_ACCEPTANCE
-// NEW defects must be triaged first. Requires justification (min 10 chars).
-router.patch("/defects/:defectId/flag-accepted-by-business", async (req: AuthenticatedRequest, res, next) => {
+//   ────────────────────────────────────────────────────────────> PENDING_BIZ_ACCEPTANCE
+// Single unified endpoint for risk waivers and general business decisions.
+router.patch("/defects/:defectId/submit-for-business-decision", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
-    const bodySchema = z.object({ note: z.string().min(10, "Justification must be at least 10 characters") });
+    const bodySchema = z.object({
+      justification: z.string().min(10, "Justification must be at least 10 characters"),
+      decisionType: z.enum(["risk_waiver", "business_review"]).default("business_review"),
+    });
     const data = bodySchema.parse(req.body);
 
     const projectId = await getProjectId(defectId);
@@ -289,24 +314,38 @@ router.patch("/defects/:defectId/flag-accepted-by-business", async (req: Authent
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    const nonFlaggable = ["NEW", "CLOSED", "PASSED_BY_AGREEMENT", "PENDING_BIZ_ACCEPTANCE"];
-    if (nonFlaggable.includes(defect.status)) {
+
+    const validFromStates = ["TRIAGED", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "RESOLVED_DEV", "READY_FOR_VERIFICATION"];
+    if (!validFromStates.includes(defect.status)) {
       res.status(400).json({
-        message: defect.status === "NEW"
-          ? "Defect must be triaged before it can be flagged for business decision."
-          : "Defect cannot be flagged for business decision in its current state."
+        message: `Defect must be in one of these states to submit for business decision: ${validFromStates.join(", ")}. Current status: ${defect.status}`
       });
       return;
     }
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
-      .set({ status: "PENDING_BIZ_ACCEPTANCE", accepted_by_business_note: data.note, updated_at: new Date() })
+      .set({
+        status: "PENDING_BIZ_ACCEPTANCE",
+        accepted_by_business_note: data.justification,
+        updated_at: new Date(),
+      })
       .where(eq(schema.defects.id, defectId))
       .returning();
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PENDING_BIZ_ACCEPTANCE", reason: data.note });
-    await logSystemNote(defectId, oldStatus, "PENDING_BIZ_ACCEPTANCE", req.user!.userId, data.note);
+    const reasonPrefix = data.decisionType === "risk_waiver" ? "[RISK WAIVER] " : "[BUSINESS REVIEW] ";
+    await logAudit({
+      entityType: "defect",
+      entityId: defectId,
+      changedByUserId: req.user!.userId,
+      fromStatus: oldStatus,
+      toStatus: "PENDING_BIZ_ACCEPTANCE",
+      reason: reasonPrefix + data.justification,
+    });
+
+    const decisionTypeLabel = data.decisionType === "risk_waiver" ? "Risk waiver" : "Business review";
+    await logSystemNote(defectId, oldStatus, "PENDING_BIZ_ACCEPTANCE", req.user!.userId, `${decisionTypeLabel} submitted for Business Owner approval: ${data.justification}`);
+
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -338,45 +377,6 @@ router.patch("/defects/:defectId/request-deployment-approval", async (req: Authe
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PENDING_DEPLOYMENT_APPROVAL", reason: "Deployment approval requested" });
     await logSystemNote(defectId, oldStatus, "PENDING_DEPLOYMENT_APPROVAL", req.user!.userId, "Deployment approval requested");
     // TODO: Notify Business Owners (when notification infrastructure is available)
-    res.json(updated);
-  } catch (err) { next(err); }
-});
-
-// PATCH /defects/:defectId/submit-risk-waiver — TEST_LEAD only
-// Any non-terminal, non-approval state ──────────────────────> PENDING_RISK_ACCEPTANCE
-// Requires mandatory justification (min 10 chars).
-router.patch("/defects/:defectId/submit-risk-waiver", async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const defectId = Number(req.params.defectId);
-    const bodySchema = z.object({ justification: z.string().min(10, "Justification must be at least 10 characters") });
-    const data = bodySchema.parse(req.body);
-
-    const projectId = await getProjectId(defectId);
-    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
-    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
-    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
-
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    const nonFlagable = ["NEW", "CLOSED", "PASSED_BY_AGREEMENT", "PENDING_DEPLOYMENT_APPROVAL", "PENDING_RISK_ACCEPTANCE", "PENDING_BIZ_ACCEPTANCE"];
-    if (nonFlagable.includes(defect.status)) {
-      res.status(400).json({
-        message: defect.status === "NEW"
-          ? "Defect must be triaged before submitting a risk waiver."
-          : "Defect cannot be submitted for risk waiver in its current state."
-      });
-      return;
-    }
-
-    const oldStatus = defect.status;
-    const [updated] = await db.update(schema.defects)
-      .set({ status: "PENDING_RISK_ACCEPTANCE", accepted_by_business_note: data.justification, updated_at: new Date() })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
-
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PENDING_RISK_ACCEPTANCE", reason: data.justification });
-    await logSystemNote(defectId, oldStatus, "PENDING_RISK_ACCEPTANCE", req.user!.userId, data.justification);
-    // TODO: Notify Risk/Compliance team (when notification infrastructure is available)
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -1195,8 +1195,18 @@ router.patch("/defects/:defectId/accept-by-agreement", async (req: Authenticated
       .where(eq(schema.defects.id, defectId))
       .returning();
 
+    const auditEntry = await db.query.statusAuditLog.findFirst({
+      where: and(
+        eq(schema.statusAuditLog.entity_id, defectId),
+        eq(schema.statusAuditLog.entity_type, "defect"),
+        eq(schema.statusAuditLog.to_status, "PENDING_BIZ_ACCEPTANCE")
+      ),
+      orderBy: [desc(schema.statusAuditLog.changed_at)],
+    });
+    const decisionType = auditEntry?.reason?.startsWith("[RISK WAIVER]") ? "Risk Waiver" : "Business Review";
+
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PASSED_BY_AGREEMENT", reason: data.justification, justification: data.justification });
-    await logSystemNote(defectId, oldStatus, "PASSED_BY_AGREEMENT", req.user!.userId, data.justification);
+    await logSystemNote(defectId, oldStatus, "PASSED_BY_AGREEMENT", req.user!.userId, `[${decisionType}] ${data.justification}`);
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -1229,6 +1239,16 @@ router.patch("/defects/:defectId/reject-biz-acceptance", async (req: Authenticat
 
     const rollbackStatus = await getPriorState(defectId, "PENDING_BIZ_ACCEPTANCE", "TRIAGED");
 
+    const auditEntry = await db.query.statusAuditLog.findFirst({
+      where: and(
+        eq(schema.statusAuditLog.entity_id, defectId),
+        eq(schema.statusAuditLog.entity_type, "defect"),
+        eq(schema.statusAuditLog.to_status, "PENDING_BIZ_ACCEPTANCE")
+      ),
+      orderBy: [desc(schema.statusAuditLog.changed_at)],
+    });
+    const decisionType = auditEntry?.reason?.startsWith("[RISK WAIVER]") ? "Risk Waiver" : "Business Review";
+
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
       .set({
@@ -1247,7 +1267,7 @@ router.patch("/defects/:defectId/reject-biz-acceptance", async (req: Authenticat
       toStatus: rollbackStatus,
       reason: data.reason,
     });
-    await logSystemNote(defectId, oldStatus, rollbackStatus, req.user!.userId, data.reason);
+    await logSystemNote(defectId, oldStatus, rollbackStatus, req.user!.userId, `[${decisionType}] ${data.reason}`);
     res.json(updated);
   } catch (err) { next(err); }
 });

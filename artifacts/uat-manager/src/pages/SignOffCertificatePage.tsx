@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
-import type { Project, SignOffData } from "../types/api";
+import type { Project, SignOffData, Defect, StatusAuditLog } from "../types/api";
 
 export function SignOffCertificatePage({ params }: { params: { id: string } }) {
   const projectId = Number(params.id);
@@ -36,9 +36,60 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
   const boSigned = !!signOffData.businessOwner;
   const collected = [tlSigned, boSigned].filter(Boolean).length;
 
+  const fetchBusinessDecisions = async () => {
+    const defects = await customFetch<Defect[]>(`/projects/${projectId}/defects`);
+    const accepted: SignOffData["businessDecisions"]["accepted"] = [];
+    const rejected: SignOffData["businessDecisions"]["rejected"] = [];
+
+    for (const defect of defects) {
+      if (defect.status === "PASSED_BY_AGREEMENT" && defect.accepted_by_business_note) {
+        const auditLog = await customFetch<StatusAuditLog[]>(
+          `/projects/${projectId}/audit-log?entityType=defect&entityId=${defect.id}`
+        );
+
+        const acceptanceEntry = auditLog.find(
+          (e) => e.from_status === "PENDING_BIZ_ACCEPTANCE" && e.to_status === "PASSED_BY_AGREEMENT"
+        );
+        const submissionEntry = auditLog.find((e) => e.to_status === "PENDING_BIZ_ACCEPTANCE");
+
+        if (submissionEntry && acceptanceEntry) {
+          const reason = submissionEntry.reason || "";
+          const decisionType = reason.startsWith("[RISK WAIVER]") ? ("risk_waiver" as const) : ("business_review" as const);
+          const justification = reason.replace(/^\[(RISK WAIVER|BUSINESS REVIEW)\]\s*/, "");
+          const changedBy = (submissionEntry as any).changedBy;
+          const acceptedBy = (acceptanceEntry as any).changedBy;
+
+          accepted.push({
+            defectId: defect.id,
+            bugNumber: defect.bug_number ?? undefined,
+            severity: defect.severity || "Unknown",
+            justification,
+            submittedBy: changedBy?.name || `User #${submissionEntry.changed_by_user_id}`,
+            submittedAt: submissionEntry.changed_at,
+            acceptedBy: acceptedBy?.name || `User #${acceptanceEntry.changed_by_user_id}`,
+            acceptedAt: acceptanceEntry.changed_at,
+            decisionType,
+            testCaseName: defect.testCase?.title,
+          });
+        }
+      }
+    }
+
+    return {
+      count: accepted.length + rejected.length,
+      accepted,
+      rejected,
+    };
+  };
+
   const signMut = useMutation({
-    mutationFn: (data: { name: string; role: string; signature: string }) =>
-      customFetch(`/projects/${projectId}/sign-off`, { method: "POST", body: JSON.stringify(data) }),
+    mutationFn: async (data: { name: string; role: string; signature: string }) => {
+      const businessDecisions = await fetchBusinessDecisions();
+      return customFetch(`/projects/${projectId}/sign-off`, {
+        method: "POST",
+        body: JSON.stringify({ ...data, businessDecisions }),
+      });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["sign-off", projectId] });
       queryClient.invalidateQueries({ queryKey: ["project", projectId] });
@@ -231,7 +282,70 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
           </div>
         </section>
 
-        {/* 6. Certificate Status Banner */}
+        {/* 6. Business Decisions & Risk Waivers */}
+        {signOffData?.businessDecisions && signOffData.businessDecisions.count > 0 && (
+          <section className="page-break mb-xl">
+            <h2 className="font-title-sm text-title-sm text-primary mb-md flex items-center gap-sm">
+              <span className="material-symbols-outlined text-secondary">gavel</span>
+              Business Decisions &amp; Risk Waivers
+            </h2>
+
+            {signOffData.businessDecisions.accepted.length > 0 && (
+              <div className="mb-lg">
+                <h3 className="font-label-md text-label-md font-bold text-green-700 mb-md">Accepted Decisions</h3>
+                <div className="space-y-md">
+                  {signOffData.businessDecisions.accepted.map((decision) => (
+                    <div key={decision.defectId} className="border border-green-300 bg-green-50 rounded-lg p-md">
+                      <div className="grid grid-cols-2 gap-md mb-sm">
+                        <div>
+                          <p className="text-xs font-semibold text-outline uppercase">Defect ID</p>
+                          <p className="font-label-md text-label-md font-bold">DEF-{decision.defectId}{decision.bugNumber ? ` (BUG-${decision.bugNumber})` : ""}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold text-outline uppercase">Type</p>
+                          <p className="font-label-md text-label-md font-bold flex items-center gap-1">
+                            <span>{decision.decisionType === "risk_waiver" ? "⚠️" : "📋"}</span>
+                            {decision.decisionType === "risk_waiver" ? "Risk Waiver" : "Business Review"}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold text-outline uppercase">Severity</p>
+                          <p className="font-label-md text-label-md font-bold">{decision.severity}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold text-outline uppercase">Test Case</p>
+                          <p className="text-body-sm text-body-sm">{decision.testCaseName || "N/A"}</p>
+                        </div>
+                      </div>
+                      <div className="bg-white p-sm rounded border border-green-200 mb-sm">
+                        <p className="text-xs font-semibold text-outline uppercase mb-xs">Justification</p>
+                        <p className="text-body-sm text-body-sm whitespace-pre-wrap">{decision.justification}</p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-md text-body-sm text-body-sm">
+                        <div>
+                          <p className="font-semibold text-on-surface-variant">Submitted By</p>
+                          <p className="text-on-surface">{decision.submittedBy}</p>
+                          <p className="text-xs text-on-surface-variant">{new Date(decision.submittedAt).toLocaleString()}</p>
+                        </div>
+                        <div>
+                          <p className="font-semibold text-on-surface-variant">Approved By</p>
+                          <p className="text-on-surface">{decision.acceptedBy}</p>
+                          <p className="text-xs text-on-surface-variant">{new Date(decision.acceptedAt).toLocaleString()}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <p className="mt-lg text-body-sm text-body-sm text-on-surface-variant italic">
+              All business decisions are immutably recorded in the project audit log and are subject to governance review.
+            </p>
+          </section>
+        )}
+
+        {/* 7. Certificate Status Banner */}
         <footer className={`p-md rounded-lg flex flex-col md:flex-row justify-between items-center gap-md ${
           isFullySigned ? "bg-primary text-white" : "bg-amber-500 text-white"
         }`}>
@@ -265,6 +379,10 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
           }
           .sign-off-signatures {
             page-break-inside: avoid;
+          }
+          .page-break {
+            page-break-before: always;
+            margin-top: 1in;
           }
           .sign-off-page .cert-border {
             border: 2px solid #000 !important;

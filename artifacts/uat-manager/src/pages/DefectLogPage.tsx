@@ -17,12 +17,11 @@ const statusBadge: Record<string, string> = {
   BLOCKED: "bg-red-100 text-red-800 border-red-200",
   RESOLVED_DEV: "bg-indigo-100 text-indigo-800 border-indigo-200",
   READY_FOR_VERIFICATION: "bg-blue-100 text-blue-800 border-blue-200",
-  PENDING_BIZ_ACCEPTANCE: "bg-amber-100 text-amber-800 border-amber-200",
   REGRESSED: "bg-red-100 text-red-800 border-red-200",
   CLOSED: "bg-green-100 text-green-800 border-green-200",
   PASSED_BY_AGREEMENT: "bg-purple-100 text-purple-800 border-purple-200",
   PENDING_DEPLOYMENT_APPROVAL: "bg-teal-100 text-teal-800 border-teal-200",
-  PENDING_RISK_ACCEPTANCE: "bg-pink-100 text-pink-800 border-pink-200",
+
   IN_VERIFICATION: "bg-sky-100 text-sky-800 border-sky-200",
 };
 
@@ -39,9 +38,18 @@ const statusDisplay: Record<string, string> = {
   CLOSED: "Closed",
   PASSED_BY_AGREEMENT: "Passed by Agreement",
   PENDING_DEPLOYMENT_APPROVAL: "Pending Deployment Approval",
-  PENDING_RISK_ACCEPTANCE: "Pending Risk Acceptance",
+
   IN_VERIFICATION: "In Verification",
 };
+
+function statusBadgeClass(defect: { status: string; decision_type?: string }): string {
+  if (defect.status === "PENDING_BIZ_ACCEPTANCE") {
+    return defect.decision_type === "risk_waiver"
+      ? "bg-amber-100 text-amber-800 border-amber-200"
+      : "bg-sky-100 text-sky-800 border-sky-200";
+  }
+  return statusBadge[defect.status] ?? "";
+}
 
 const severityColors: Record<string, string> = {
   Critical: "text-error",
@@ -79,7 +87,7 @@ const statusIcon: Record<string, string> = {
   CLOSED: "check_circle",
   PASSED_BY_AGREEMENT: "approval",
   PENDING_DEPLOYMENT_APPROVAL: "rocket_launch",
-  PENDING_RISK_ACCEPTANCE: "gavel",
+
   IN_VERIFICATION: "sync",
 };
 
@@ -593,7 +601,7 @@ function DefectRow({
   const [noteOpen, setNoteOpen] = useState(false);
   const [flagRetestNewOpen, setFlagRetestNewOpen] = useState(false);
   const [flagBlockedNewOpen, setFlagBlockedNewOpen] = useState(false);
-  const [flagBusinessOpen, setFlagBusinessOpen] = useState(false);
+  const [showBusinessDecisionDialog, setShowBusinessDecisionDialog] = useState(false);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
   const [resolveOpen, setResolveOpen] = useState(false);
   const [resumeWorkOpen, setResumeWorkOpen] = useState(false);
@@ -603,7 +611,6 @@ function DefectRow({
   const [pendingAfterClassify, setPendingAfterClassify] = useState<string | null>(null);
   const [activeDetailTab, setActiveDetailTab] = useState<"overview" | "steps" | "activity">("overview");
   const [deployApprovalOpen, setDeployApprovalOpen] = useState(false);
-  const [riskWaiverOpen, setRiskWaiverOpen] = useState(false);
   const [quickVerifyOpen, setQuickVerifyOpen] = useState(false);
   const [quickVerifyResultAction, setQuickVerifyResultAction] = useState<"passed" | "failed" | null>(null);
 
@@ -624,7 +631,6 @@ function DefectRow({
     switch (action) {
       case "assign": setAssignOpen(true); break;
       case "retest": setFlagRetestNewOpen(true); break;
-      case "riskWaiver": setRiskWaiverOpen(true); break;
       case "block": setFlagBlockedNewOpen(true); break;
     }
   };
@@ -643,7 +649,6 @@ function DefectRow({
   const isClosed = defect.status === "CLOSED" || defect.status === "PASSED_BY_AGREEMENT";
   const isPendingBiz = defect.status === "PENDING_BIZ_ACCEPTANCE";
   const isPendingDeployApproval = defect.status === "PENDING_DEPLOYMENT_APPROVAL";
-  const isPendingRiskAcceptance = defect.status === "PENDING_RISK_ACCEPTANCE";
   const isInVerification = defect.status === "IN_VERIFICATION";
 
   const invalidateProject = useCallback(() => {
@@ -655,14 +660,6 @@ function DefectRow({
   const classifyMut = useMutation({
     mutationFn: (data: { severity: string; priority: string }) =>
       customFetch(`/defects/${defect.id}/classify`, { method: "PATCH", body: JSON.stringify(data) }),
-    onSuccess: () => {
-      invalidateProject();
-      toast.success("Defect classified");
-      setClassifyOpen(false);
-      const next = pendingAfterClassify;
-      setPendingAfterClassify(null);
-      if (next) setTimeout(() => proceedWithAction(next), 100);
-    },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -731,21 +728,16 @@ function DefectRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const flagAcceptedByBusinessMut = useMutation({
-    mutationFn: (note: string) => customFetch(`/defects/${defect.id}/flag-accepted-by-business`, { method: "PATCH", body: JSON.stringify({ note }) }),
-    onSuccess: () => { invalidateProject(); toast.success("Defect flagged for business decision"); setFlagBusinessOpen(false); },
+  const submitBusinessDecisionMut = useMutation({
+    mutationFn: (data: { justification: string; decisionType: "risk_waiver" | "business_review" }) =>
+      customFetch(`/defects/${defect.id}/submit-for-business-decision`, { method: "PATCH", body: JSON.stringify(data) }),
+    onSuccess: () => { invalidateProject(); toast.success("Submitted for business decision"); setShowBusinessDecisionDialog(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const requestDeployApprovalMut = useMutation({
     mutationFn: () => customFetch(`/defects/${defect.id}/request-deployment-approval`, { method: "PATCH" }),
     onSuccess: () => { invalidateProject(); toast.success("Deployment approval requested"); setDeployApprovalOpen(false); },
-    onError: (e: Error) => toast.error(e.message),
-  });
-
-  const submitRiskWaiverMut = useMutation({
-    mutationFn: (justification: string) => customFetch(`/defects/${defect.id}/submit-risk-waiver`, { method: "PATCH", body: JSON.stringify({ justification }) }),
-    onSuccess: () => { invalidateProject(); toast.success("Risk waiver submitted"); setRiskWaiverOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -831,7 +823,7 @@ function DefectRow({
         NEW: 0, TRIAGED: 1,
         ASSIGNED: 2, IN_PROGRESS: 2, BLOCKED: 2, RESOLVED_DEV: 2, REGRESSED: 2,
         READY_FOR_VERIFICATION: 3, IN_VERIFICATION: 3, PENDING_BIZ_ACCEPTANCE: 3,
-        CLOSED: 4, PASSED_BY_AGREEMENT: 4, PENDING_DEPLOYMENT_APPROVAL: 4, PENDING_RISK_ACCEPTANCE: 4,
+        CLOSED: 4, PASSED_BY_AGREEMENT: 4, PENDING_DEPLOYMENT_APPROVAL: 4,
       };
       return { statusSteps: steps, mainFlow: flow, isRegressed: defect.regression_index > 0 };
     }
@@ -857,11 +849,10 @@ function DefectRow({
       { key: "READY_FOR_VERIFICATION", label: "Verification" },
       { key: "IN_VERIFICATION", label: "In Verification" },
       { key: "PENDING_DEPLOYMENT_APPROVAL", label: "Deploy Approval" },
-      { key: "PENDING_RISK_ACCEPTANCE", label: "Risk Waiver" },
       { key: "PENDING_BIZ_ACCEPTANCE", label: "Pending Biz" },
       { key: "CLOSED", label: "Closed" },
     ];
-    const flow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, BLOCKED:4, RESOLVED_DEV:5, READY_FOR_VERIFICATION:6, IN_VERIFICATION:7, PENDING_DEPLOYMENT_APPROVAL:8, PENDING_RISK_ACCEPTANCE:9, PENDING_BIZ_ACCEPTANCE:10, CLOSED:11, PASSED_BY_AGREEMENT:11, REGRESSED:3 };
+    const flow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, BLOCKED:4, RESOLVED_DEV:5, READY_FOR_VERIFICATION:6, IN_VERIFICATION:7, PENDING_DEPLOYMENT_APPROVAL:8, PENDING_BIZ_ACCEPTANCE:9, CLOSED:10, PASSED_BY_AGREEMENT:10, REGRESSED:3 };
     return { statusSteps: steps, mainFlow: flow, isRegressed: defect.regression_index > 0 };
   }, [activeTab, defect.regression_index]);
   const currentStatusIdx = mainFlow[defect.status] ?? 0;
@@ -930,7 +921,7 @@ function DefectRow({
           {defect.priority ?? "—"}
         </td>
         <td className="p-md font-body-sm text-body-sm whitespace-nowrap">
-          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadge[defect.status] ?? ""}`}>
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadgeClass(defect)}`}>
             {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? "With Development" : statusDisplay[defect.status] ?? defect.status}
           </span>
           {defect.regression_index > 0 && (
@@ -963,14 +954,6 @@ function DefectRow({
                 <button onClick={() => handleUntriagedAction("retest")} className="bg-blue-100 text-blue-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-blue-200 transition-colors" title="Send for verification">
                   Retest
                 </button>
-                {/* Submit Risk Waiver (NEW → PENDING_RISK_ACCEPTANCE) */}
-                <button
-                  onClick={() => handleUntriagedAction("riskWaiver")}
-                  className="px-2 py-1 rounded-md text-xs font-bold bg-pink-100 text-pink-800 hover:bg-pink-200 cursor-pointer transition-colors"
-                  title="Submit Risk Waiver"
-                >
-                  Risk Waiver
-                </button>
                 {/* Flag as Blocked (NEW → BLOCKED) */}
                 <button onClick={() => handleUntriagedAction("block")} className="bg-red-100 text-red-800 px-2 py-1 rounded-md text-xs font-bold hover:bg-red-200 transition-colors" title="Flag as blocked">
                   Block
@@ -984,15 +967,15 @@ function DefectRow({
               </button>
             )}
             {/* Pathway A: Request Deployment Approval (READY_FOR_VERIFICATION | RESOLVED_DEV → PENDING_DEPLOYMENT_APPROVAL) */}
-            {canManage && !isClosed && !isNew && !isPendingDeployApproval && !isPendingRiskAcceptance && !isInVerification && !isPendingBiz && (isReady || isResolved) && (
+            {canManage && !isClosed && !isNew && !isPendingDeployApproval && !isInVerification && !isPendingBiz && (isReady || isResolved) && (
               <button onClick={() => setDeployApprovalOpen(true)} className="p-1.5 hover:bg-teal-100 hover:text-teal-700 rounded text-on-surface-variant transition-colors" title="Request Deployment Approval">
                 <span className="material-symbols-outlined text-sm">rocket_launch</span>
               </button>
             )}
-            {/* Pathway B: Submit Risk Waiver (non-terminal defects → PENDING_RISK_ACCEPTANCE) */}
-            {canManage && !isClosed && !isNew && !isPendingDeployApproval && !isPendingRiskAcceptance && !isInVerification && !isPendingBiz && (
-              <button onClick={() => setRiskWaiverOpen(true)} className="p-1.5 hover:bg-pink-100 hover:text-pink-700 rounded text-on-surface-variant transition-colors" title="Submit Risk Waiver">
-                <span className="material-symbols-outlined text-sm">gavel</span>
+            {/* Pathway B: Submit for Business Decision (non-terminal defects → PENDING_BIZ_ACCEPTANCE) */}
+            {canManage && !isClosed && !isNew && !isPendingDeployApproval && !isInVerification && !isPendingBiz && (
+              <button onClick={() => setShowBusinessDecisionDialog(true)} className="p-1.5 hover:bg-purple-100 hover:text-purple-700 rounded text-on-surface-variant transition-colors" title="Submit for Business Decision">
+                <span className="material-symbols-outlined text-sm">pending_actions</span>
               </button>
             )}
             {/* TEST_LEAD: Assign (TRIAGED → ASSIGNED) */}
@@ -1078,13 +1061,13 @@ function DefectRow({
                 </button>
               </>
             )}
-            {/* BUSINESS_OWNER: Accept by Agreement (PENDING_BIZ_ACCEPTANCE → PASSED_BY_AGREEMENT) */}
+            {/* BUSINESS_OWNER: Accept/Reject (PENDING_BIZ_ACCEPTANCE) — context-aware */}
             {isBusinessOwner && isPendingBiz && (
               <>
-                <button onClick={() => setAcceptBizRiskOpen(true)} className="p-1.5 hover:bg-purple-100 hover:text-purple-700 rounded text-on-surface-variant transition-colors" title="Accept as Business Risk">
+                <button onClick={() => setAcceptBizRiskOpen(true)} className="p-1.5 hover:bg-purple-100 hover:text-purple-700 rounded text-on-surface-variant transition-colors" title={defect.decision_type === "risk_waiver" ? "Accept as Business Risk" : "Accept by Agreement"}>
                   <span className="material-symbols-outlined text-sm">approval</span>
                 </button>
-                <button onClick={() => setRejectBizOpen(true)} className="p-1.5 hover:bg-red-100 hover:text-red-700 rounded text-on-surface-variant transition-colors" title="Reject Business Risk Acceptance">
+                <button onClick={() => setRejectBizOpen(true)} className="p-1.5 hover:bg-red-100 hover:text-red-700 rounded text-on-surface-variant transition-colors" title={defect.decision_type === "risk_waiver" ? "Reject Risk Waiver" : "Reject Business Review"}>
                   <span className="material-symbols-outlined text-sm">thumb_down</span>
                 </button>
               </>
@@ -1104,7 +1087,7 @@ function DefectRow({
                 <h3 className="font-title-sm text-title-sm text-on-surface">
                   DEF-{defect.id} — {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
                 </h3>
-                <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-bold border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadge[defect.status] ?? ""}`}>
+                <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-bold border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadgeClass(defect)}`}>
                   {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? "With Development" : statusDisplay[defect.status] ?? defect.status}
                 </span>
               </div>
@@ -1250,7 +1233,15 @@ function DefectRow({
                     </p>
                   </div>
                 )}
-                    <div className="flex items-center gap-lg mt-sm text-xs text-on-surface-variant">
+                    {isBusinessOwner && isPendingBiz && (
+                <BusinessOwnerDecisionPanel
+                  decisionType={defect.decision_type}
+                  onAccept={() => setAcceptBizRiskOpen(true)}
+                  onReject={() => setRejectBizOpen(true)}
+                />
+              )}
+
+              <div className="flex items-center gap-lg mt-sm text-xs text-on-surface-variant">
                       <span>Created: {new Date(defect.created_at).toLocaleString()}</span>
                       <span>Updated: {new Date(defect.updated_at).toLocaleString()}</span>
                     </div>
@@ -1386,7 +1377,23 @@ function DefectRow({
       {classifyOpen && (
         <Dialog onClose={() => setClassifyOpen(false)} title={isNew ? "Classify Defect" : "Reclassify Defect"}>
           <ClassifyForm
-            onSave={(data) => classifyMut.mutate(data)}
+            onSave={(data) => {
+      classifyMut.mutate(data, {
+        onSuccess: () => {
+          toast.success("Defect classified");
+          setClassifyOpen(false);
+
+          const next = pendingAfterClassify;
+          setPendingAfterClassify(null);
+
+          invalidateProject();
+
+          if (next) {
+            proceedWithAction(next);
+          }
+        },
+      });
+    }}
             loading={classifyMut.isPending}
           />
         </Dialog>
@@ -1464,29 +1471,43 @@ function DefectRow({
         </Dialog>
       )}
 
-      {/* Accept Biz Risk Dialog */}
+      {/* Accept Biz Risk Dialog — context-aware based on decision_type */}
       {acceptBizRiskOpen && (
-        <Dialog onClose={() => setAcceptBizRiskOpen(false)} title="Accept as Business Risk">
+        <Dialog onClose={() => setAcceptBizRiskOpen(false)} title={defect.decision_type === "risk_waiver" ? "Accept as Business Risk" : "Accept by Agreement"}>
           <div className="space-y-md">
-            <p className="font-body-sm text-on-surface-variant">
-              This defect will be marked as accepted. A go-live justification is required for audit purposes.
-            </p>
+            {defect.decision_type === "risk_waiver" ? (
+              <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg p-md">
+                <span className="text-xl flex-shrink-0">⚠️</span>
+                <p className="font-body-sm text-amber-900">
+                  This is a <strong>Risk Waiver</strong> decision. The defect will be marked as a business risk and go-live is authorized. A justification is required for audit purposes.
+                </p>
+              </div>
+            ) : (
+              <div className="flex items-start gap-3 bg-sky-50 border border-sky-200 rounded-lg p-md">
+                <span className="text-xl flex-shrink-0">📋</span>
+                <p className="font-body-sm text-sky-900">
+                  This is a <strong>Business Review</strong> decision. The defect is accepted by agreement. A justification is required for audit purposes.
+                </p>
+              </div>
+            )}
             <AcceptBizRiskForm
               onSave={(justification) => acceptBizRiskMut.mutate(justification)}
               onCancel={() => setAcceptBizRiskOpen(false)}
               loading={acceptBizRiskMut.isPending}
+              decisionType={defect.decision_type}
             />
           </div>
         </Dialog>
       )}
 
-      {/* Reject Business Risk Acceptance Dialog */}
+      {/* Reject Business Risk Acceptance Dialog — context-aware based on decision_type */}
       {rejectBizOpen && (
-        <Dialog onClose={() => setRejectBizOpen(false)} title="Reject Business Risk Acceptance">
+        <Dialog onClose={() => setRejectBizOpen(false)} title={defect.decision_type === "risk_waiver" ? "Reject Risk Waiver" : "Reject Business Review"}>
           <RejectBizAcceptanceForm
             onSave={(reason) => rejectBizAcceptanceMut.mutate(reason)}
             onCancel={() => setRejectBizOpen(false)}
             loading={rejectBizAcceptanceMut.isPending}
+            decisionType={defect.decision_type}
           />
         </Dialog>
       )}
@@ -1559,12 +1580,12 @@ function DefectRow({
         </Dialog>
       )}
 
-      {/* Submit Risk Waiver Dialog */}
-      {riskWaiverOpen && (
-        <Dialog onClose={() => setRiskWaiverOpen(false)} title="Submit Risk Waiver">
-          <RiskWaiverForm
-            onSave={(justification) => submitRiskWaiverMut.mutate(justification)}
-            loading={submitRiskWaiverMut.isPending}
+      {/* Submit for Business Decision Dialog */}
+      {showBusinessDecisionDialog && (
+        <Dialog onClose={() => setShowBusinessDecisionDialog(false)} title="Submit for Business Decision">
+          <BusinessDecisionForm
+            onSave={(data) => submitBusinessDecisionMut.mutate(data)}
+            loading={submitBusinessDecisionMut.isPending}
           />
         </Dialog>
       )}
@@ -1607,16 +1628,6 @@ function DefectRow({
             onSave={(data) => quickVerifyResultMut.mutate(data)}
             onCancel={() => setQuickVerifyResultAction(null)}
             loading={quickVerifyResultMut.isPending}
-          />
-        </Dialog>
-      )}
-
-      {/* Flag for Business Decision Dialog */}
-      {flagBusinessOpen && (
-        <Dialog onClose={() => setFlagBusinessOpen(false)} title="Flag for Business Decision">
-          <FlagBusinessForm
-            onSave={(note) => flagAcceptedByBusinessMut.mutate(note)}
-            loading={flagAcceptedByBusinessMut.isPending}
           />
         </Dialog>
       )}
@@ -1667,7 +1678,7 @@ function DefectRow({
             </div>
             <div className="flex gap-sm">
               <button
-                onClick={handleClassifyThenAction}
+                onClick={(e) => { e.stopPropagation(); handleClassifyThenAction(); }}
                 className="flex-1 py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 transition-colors"
               >
                 Triage First
@@ -1713,7 +1724,7 @@ function ClassifyForm({ onSave, loading }: { onSave: (d: { severity: string; pri
   const [severity, setSeverity] = useState("Major");
   const [priority, setPriority] = useState("P2");
   return (
-    <form onSubmit={(e) => { e.preventDefault(); onSave({ severity, priority }); }} className="space-y-md">
+    <form onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); onSave({ severity, priority }); }} className="space-y-md">
       <div className="space-y-sm">
         <label className="font-label-sm text-label-sm">Severity</label>
         <select value={severity} onChange={(e) => setSeverity(e.target.value)} className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm">
@@ -1907,35 +1918,73 @@ function FlagBlockedForm({ onSave, loading }: { onSave: (reason: string) => void
   );
 }
 
-function FlagBusinessForm({ onSave, loading }: { onSave: (note: string) => void; loading: boolean }) {
-  const [note, setNote] = useState("");
-  const charsLeft = 10 - note.length;
-  const isValid = note.trim().length >= 10;
+function BusinessDecisionForm({ onSave, loading }: { onSave: (data: { justification: string; decisionType: "risk_waiver" | "business_review" }) => void; loading: boolean }) {
+  const [justification, setJustification] = useState("");
+  const [decisionType, setDecisionType] = useState<"risk_waiver" | "business_review">("business_review");
+  const charsLeft = 10 - justification.length;
+  const isValid = justification.trim().length >= 10;
   return (
-    <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave(note.trim()); }} className="space-y-md">
+    <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave({ justification: justification.trim(), decisionType }); }} className="space-y-md">
       <p className="font-body-sm text-on-surface-variant">
-        This will route the defect to <strong>Pending Business Decision</strong> status.
-        The Business Owner will be required to formally accept or reject. Provide a
-        justification for why this defect should be considered for business risk acceptance.
+        This will route the defect to <strong>Pending Business Decision</strong> for Business Owner approval.
+        Choose whether this is a risk waiver or a general business review.
       </p>
+
       <div className="space-y-sm">
-        <label className="font-label-sm text-label-sm">Business Justification *</label>
-        <textarea value={note} onChange={(e) => setNote(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Explain why this defect should be considered for business risk acceptance..." required />
+        <label className="font-label-sm text-label-sm">Decision Type</label>
+        <div className="flex gap-md">
+          <label className={`flex-1 flex items-start gap-2 p-md rounded-lg border cursor-pointer transition-colors ${decisionType === "business_review" ? "bg-secondary-container/20 border-secondary" : "bg-surface border-outline-variant hover:bg-surface-container-high"}`}>
+            <input type="radio" name="decisionType" value="business_review" checked={decisionType === "business_review"} onChange={() => setDecisionType("business_review")} className="mt-0.5" />
+            <div>
+              <span className="font-label-sm text-label-sm">Business Review</span>
+              <p className="text-xs text-on-surface-variant">Request Business Owner decision on how to proceed</p>
+            </div>
+          </label>
+          <label className={`flex-1 flex items-start gap-2 p-md rounded-lg border cursor-pointer transition-colors ${decisionType === "risk_waiver" ? "bg-amber-50 border-amber-400" : "bg-surface border-outline-variant hover:bg-surface-container-high"}`}>
+            <input type="radio" name="decisionType" value="risk_waiver" checked={decisionType === "risk_waiver"} onChange={() => setDecisionType("risk_waiver")} className="mt-0.5" />
+            <div>
+              <span className="font-label-sm text-label-sm">Risk Waiver</span>
+              <p className="text-xs text-on-surface-variant">Request approval to ship a known defect with documented risk acceptance</p>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Justification *</label>
+        <textarea
+          value={justification}
+          onChange={(e) => setJustification(e.target.value)}
+          className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
+          placeholder={decisionType === "risk_waiver" ? "Explain why this defect can be accepted as a known risk (mitigation plan, timeline, etc.)" : "Explain the business context and request Business Owner decision"}
+          required
+        />
         <p className={`text-label-xs ${charsLeft <= 0 ? "text-success" : "text-on-surface-variant/60"}`}>
           {charsLeft <= 0 ? "Minimum length met" : `${charsLeft} characters remaining (minimum 10)`}
         </p>
       </div>
+
+      {decisionType === "risk_waiver" && (
+        <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg p-md">
+          <span className="material-symbols-outlined text-amber-600 text-lg flex-shrink-0">warning</span>
+          <p className="text-xs text-amber-900">
+            Once approved by the Business Owner, this defect will be marked as <strong>PASSED_BY_AGREEMENT</strong> and included in UAT sign-off documentation as a known, accepted risk.
+          </p>
+        </div>
+      )}
+
       <button type="submit" disabled={loading || !isValid} className="w-full py-sm bg-purple-600 text-white rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
-        {loading ? "Submitting..." : "Flag for Business Decision"}
+        {loading ? "Submitting..." : "Submit for Approval"}
       </button>
     </form>
   );
 }
 
-function AcceptBizRiskForm({ onSave, onCancel, loading }: { onSave: (justification: string) => void; onCancel: () => void; loading: boolean }) {
+function AcceptBizRiskForm({ onSave, onCancel, loading, decisionType }: { onSave: (justification: string) => void; onCancel: () => void; loading: boolean; decisionType?: "risk_waiver" | "business_review" }) {
   const [justification, setJustification] = useState("");
   const charsLeft = 10 - justification.length;
   const isValid = justification.trim().length >= 10;
+  const isRiskWaiver = decisionType === "risk_waiver";
   return (
     <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave(justification.trim()); }} className="space-y-md">
       <div className="space-y-sm">
@@ -1944,7 +1993,7 @@ function AcceptBizRiskForm({ onSave, onCancel, loading }: { onSave: (justificati
           value={justification}
           onChange={(e) => setJustification(e.target.value)}
           className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
-          placeholder="Explain why this defect is accepted as a business risk..."
+          placeholder={isRiskWaiver ? "Explain why this defect is accepted as a business risk..." : "Explain why this defect is accepted by agreement..."}
           required
         />
         <p className={`text-label-xs ${charsLeft <= 0 ? "text-success" : "text-on-surface-variant/60"}`}>
@@ -1956,7 +2005,7 @@ function AcceptBizRiskForm({ onSave, onCancel, loading }: { onSave: (justificati
           Cancel
         </button>
         <button type="submit" disabled={loading || !isValid} className="px-4 py-sm bg-purple-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
-          {loading ? "Submitting..." : "Confirm & Accept"}
+          {loading ? "Submitting..." : isRiskWaiver ? "Confirm & Accept Risk" : "Confirm & Accept"}
         </button>
       </div>
     </form>
@@ -1989,18 +2038,21 @@ function BizAcceptForm({ onSave, onCancel, loading }: { onSave: (note: string) =
 }
 
 function RejectBizAcceptanceForm({
-  onSave, onCancel, loading,
-}: { onSave: (reason: string) => void; onCancel: () => void; loading: boolean }) {
+  onSave, onCancel, loading, decisionType,
+}: { onSave: (reason: string) => void; onCancel: () => void; loading: boolean; decisionType?: "risk_waiver" | "business_review" }) {
   const [reason, setReason] = useState("");
   const isValid = reason.trim().length >= 10;
+  const isRiskWaiver = decisionType === "risk_waiver";
   return (
     <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave(reason.trim()); }} className="space-y-md">
-      <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-lg p-md">
-        <span className="material-symbols-outlined text-red-600 text-xl flex-shrink-0">warning</span>
-        <p className="font-body-sm text-red-900">
-          This defect will be returned to its <strong>prior state</strong>. The Test Lead
-          will need to re-evaluate and re-flag if a business decision is still required.
-          A rejection reason is required for audit purposes.
+      <div className={`flex items-start gap-3 rounded-lg p-md ${isRiskWaiver ? "bg-red-50 border border-red-200" : "bg-orange-50 border border-orange-200"}`}>
+        <span className="text-xl flex-shrink-0">{isRiskWaiver ? "⚠️" : "📋"}</span>
+        <p className={`font-body-sm ${isRiskWaiver ? "text-red-900" : "text-orange-900"}`}>
+          {isRiskWaiver ? (
+            <>This defect will be returned to its <strong>prior state</strong> and the risk waiver will be declined. The Test Lead will need to re-evaluate the need for a business decision.</>
+          ) : (
+            <>This defect will be returned to its <strong>prior state</strong> and the business review will be declined. The Test Lead will need to re-evaluate the need for a business decision.</>
+          )}
         </p>
       </div>
       <div className="space-y-sm">
@@ -2009,7 +2061,7 @@ function RejectBizAcceptanceForm({
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
-          placeholder="Explain why this defect cannot be accepted as a business risk..."
+          placeholder={isRiskWaiver ? "Explain why this risk waiver is rejected..." : "Explain why this business review is declined..."}
           required
         />
         <p className={`text-label-xs ${reason.trim().length >= 10 ? "text-success" : "text-on-surface-variant/60"}`}>
@@ -2023,7 +2075,7 @@ function RejectBizAcceptanceForm({
         </button>
         <button type="submit" disabled={loading || !isValid}
           className="px-4 py-sm bg-red-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
-          {loading ? "Submitting..." : "Reject & Return to Prior State"}
+          {loading ? "Submitting..." : isRiskWaiver ? "Reject Risk Waiver" : "Decline Business Review"}
         </button>
       </div>
     </form>
@@ -2087,31 +2139,6 @@ function ResolveForm({ onSave, onCancel, loading }: { onSave: (rootCause: string
           {loading ? "Submitting..." : "Resolve as Developer"}
         </button>
       </div>
-    </form>
-  );
-}
-
-function RiskWaiverForm({ onSave, loading }: { onSave: (justification: string) => void; loading: boolean }) {
-  const [justification, setJustification] = useState("");
-  const charsLeft = 10 - justification.length;
-  const isValid = justification.trim().length >= 10;
-  return (
-    <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave(justification.trim()); }} className="space-y-md">
-      <p className="font-body-sm text-on-surface-variant">
-        This will route the defect to <strong>Pending Risk Acceptance</strong> status.
-        A formal notification will be sent to Risk/Compliance. Provide a
-        justification for why this defect should be accepted as a risk.
-      </p>
-      <div className="space-y-sm">
-        <label className="font-label-sm text-label-sm">Risk Justification *</label>
-        <textarea value={justification} onChange={(e) => setJustification(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Explain why this defect should be accepted as a business risk..." required />
-        <p className={`text-label-xs ${charsLeft <= 0 ? "text-success" : "text-on-surface-variant/60"}`}>
-          {charsLeft <= 0 ? "Minimum length met" : `${charsLeft} characters remaining (minimum 10)`}
-        </p>
-      </div>
-      <button type="submit" disabled={loading || !isValid} className="w-full py-sm bg-pink-600 text-white rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
-        {loading ? "Submitting..." : "Submit Risk Waiver"}
-      </button>
     </form>
   );
 }
@@ -2202,5 +2229,48 @@ function SimpleReasonForm({
         </button>
       </div>
     </form>
+  );
+}
+
+/* ─── Business Owner Decision Panel ─────────────────────────────────────── */
+
+function BusinessOwnerDecisionPanel({
+  decisionType,
+  onAccept,
+  onReject,
+}: {
+  decisionType?: "risk_waiver" | "business_review";
+  onAccept: () => void;
+  onReject: () => void;
+}) {
+  const isRiskWaiver = decisionType === "risk_waiver";
+  return (
+    <div className="mt-lg border rounded-xl overflow-hidden">
+      <div className={`p-md flex items-center gap-3 ${isRiskWaiver ? "bg-amber-50 border-b border-amber-200" : "bg-sky-50 border-b border-sky-200"}`}>
+        <span className="text-2xl">{isRiskWaiver ? "⚠️" : "📋"}</span>
+        <div>
+          <p className="font-label-md text-label-md font-bold">{isRiskWaiver ? "Risk Waiver Decision" : "Business Review Decision"}</p>
+          <p className="font-body-sm text-body-sm text-on-surface-variant">
+            {isRiskWaiver
+              ? "The Test Lead has flagged this defect as a risk waiver for business acceptance."
+              : "The Test Lead has submitted this defect for a business review decision."}
+          </p>
+        </div>
+      </div>
+      <div className="p-md bg-surface flex items-center gap-md">
+        <button
+          onClick={onAccept}
+          className="px-4 py-sm bg-purple-600 text-white rounded-lg font-label-sm hover:brightness-110 transition-all"
+        >
+          {isRiskWaiver ? "Accept as Business Risk" : "Accept by Agreement"}
+        </button>
+        <button
+          onClick={onReject}
+          className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors"
+        >
+          {isRiskWaiver ? "Reject Risk Waiver" : "Decline Business Review"}
+        </button>
+      </div>
+    </div>
   );
 }

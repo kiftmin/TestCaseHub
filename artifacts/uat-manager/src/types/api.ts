@@ -57,6 +57,27 @@ export interface SignOffData {
     date: string;
     signature: string;
   };
+  businessDecisions?: {
+    count: number;
+    accepted: Array<{
+      defectId: number;
+      bugNumber?: number;
+      severity: string;
+      justification: string;
+      submittedBy: string;
+      submittedAt: string;
+      acceptedBy: string;
+      acceptedAt: string;
+      decisionType: "risk_waiver" | "business_review";
+      testCaseName?: string;
+    }>;
+    rejected: Array<{
+      defectId: number;
+      rejectionReason: string;
+      rejectedBy: string;
+      rejectedAt: string;
+    }>;
+  };
 }
 
 export interface UseCase {
@@ -195,6 +216,7 @@ export interface Defect {
   retests?: DefectRetest[];
   notes?: DefectNote[];
   project?: Project;
+  decision_type?: "risk_waiver" | "business_review";
 }
 
 export interface DefectRetest {

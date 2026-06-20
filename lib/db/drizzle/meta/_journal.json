@@ -36,6 +36,13 @@
       "when": 1740100000000,
       "tag": "0010_reset_defects_to_new",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1751000000000,
+      "tag": "0013_remove_pending_risk_acceptance",
+      "breakpoints": true
     }
   ]
 }

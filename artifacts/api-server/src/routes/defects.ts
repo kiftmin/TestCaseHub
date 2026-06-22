@@ -1289,7 +1289,7 @@ router.post("/defects/:defectId/notes", async (req: AuthenticatedRequest, res, n
     const testRun = await db.query.testRuns.findFirst({ where: eq(schema.testRuns.id, defect.test_run_id) });
     if (!testRun) { res.status(404).json({ message: "Test run not found" }); return; }
 
-    const projectRole = await checkProjectRole(req, testRun.project_id, ["TEST_LEAD", "BUSINESS_OWNER"]);
+    const projectRole = await checkProjectRole(req, testRun.project_id, ["TEST_LEAD", "BUSINESS_OWNER", "DEVELOPER", "TESTER"]);
     if (!projectRole && req.user!.role !== "ADMIN") {
       const discussions = await db.query.teamDiscussions.findMany({
         where: and(

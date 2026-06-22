@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
@@ -644,40 +645,150 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
       </Tabs>
     </div>
 
-    {/* Print-only compact landscape table for physical defect triage meetings */}
-    <div className="hidden print:block defects-print-log">
-      <h1 className="text-lg font-bold mb-sm">Defect Log</h1>
-      <p className="text-xs text-on-surface-variant mb-md">Generated {new Date().toLocaleString()} — {sorted.length} defects</p>
-      <table className="w-full text-xs border-collapse">
+    {/* ── Corporate print layout ─────────────────────────────────────────── */}
+    <div className="hidden print:block" id="defects-print-root">
+
+      {/* Document header */}
+      <div style={{ borderBottom: "3px solid #4648d4", paddingBottom: "12px", marginBottom: "18px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
+          <div>
+            <p style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.12em", color: "#4648d4", textTransform: "uppercase", marginBottom: "4px" }}>
+              TestCaseHub — Enterprise UAT
+            </p>
+            <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#1b1b1d", margin: 0, lineHeight: 1.2 }}>
+              Defect Log Report
+            </h1>
+            <p style={{ fontSize: "10px", color: "#45464d", marginTop: "4px" }}>
+              {activeTab === "full" ? "All Defects" : activeTab === "business" ? "Business View" : activeTab === "developer" ? "Developer View" : "QA View"}
+              {statusFilter !== "all" && ` · Filtered: ${statusDisplay[statusFilter] ?? statusFilter}`}
+              {severityFilter !== "all" && ` · Severity: ${severityFilter}`}
+            </p>
+          </div>
+          <div style={{ textAlign: "right", fontSize: "9px", color: "#45464d", lineHeight: 1.8 }}>
+            <p style={{ margin: 0, fontWeight: 700, color: "#1b1b1d" }}>CONFIDENTIAL</p>
+            <p style={{ margin: 0 }}>Generated: {new Date().toLocaleString()}</p>
+            <p style={{ margin: 0 }}>Total Records: <strong>{sorted.length}</strong></p>
+          </div>
+        </div>
+      </div>
+
+      {/* Executive summary strip */}
+      {(() => {
+        const critical = sorted.filter(d => d.severity === "Critical").length;
+        const major    = sorted.filter(d => d.severity === "Major").length;
+        const minor    = sorted.filter(d => d.severity === "Minor").length;
+        const open     = sorted.filter(d => !["CLOSED","PASSED_BY_AGREEMENT"].includes(d.status)).length;
+        const closed   = sorted.filter(d =>  ["CLOSED","PASSED_BY_AGREEMENT"].includes(d.status)).length;
+        const cells = [
+          { label: "Total Defects",  value: sorted.length,  color: "#1b1b1d" },
+          { label: "Open",           value: open,            color: "#ba1a1a" },
+          { label: "Closed",         value: closed,          color: "#15803d" },
+          { label: "Critical",       value: critical,        color: "#ba1a1a" },
+          { label: "Major",          value: major,           color: "#b45309" },
+          { label: "Minor",          value: minor,           color: "#45464d" },
+        ];
+        return (
+          <div style={{ display: "flex", border: "1px solid #c6c6cd", borderRadius: "6px", marginBottom: "18px", overflow: "hidden" }}>
+            {cells.map((c, i) => (
+              <div key={c.label} style={{
+                flex: 1,
+                textAlign: "center",
+                padding: "8px 4px",
+                borderRight: i < cells.length - 1 ? "1px solid #c6c6cd" : "none",
+                background: i === 0 ? "#f6f3f5" : "white",
+              }}>
+                <p style={{ fontSize: "16px", fontWeight: 700, color: c.color, margin: 0 }}>{c.value}</p>
+                <p style={{ fontSize: "8px", color: "#45464d", margin: 0, marginTop: "2px", textTransform: "uppercase", letterSpacing: "0.06em" }}>{c.label}</p>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
+      {/* Table */}
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "9px" }}>
         <thead>
-          <tr className="border-b-2 border-black">
-            <th className="text-left p-xs">ID</th>
-            <th className="text-left p-xs">Title</th>
-            <th className="text-left p-xs">Severity</th>
-            <th className="text-left p-xs">State</th>
-            <th className="text-left p-xs">Assignee</th>
-            <th className="text-left p-xs">Target Release</th>
+          <tr style={{ backgroundColor: "#4648d4", color: "white" }}>
+            <th style={{ padding: "7px 8px", textAlign: "left", fontWeight: 700, letterSpacing: "0.06em", width: "7%",  whiteSpace: "nowrap" }}>ID</th>
+            <th style={{ padding: "7px 8px", textAlign: "left", fontWeight: 700, letterSpacing: "0.06em", width: "28%"                      }}>Defect Title</th>
+            <th style={{ padding: "7px 8px", textAlign: "left", fontWeight: 700, letterSpacing: "0.06em", width: "10%"                      }}>Severity</th>
+            <th style={{ padding: "7px 8px", textAlign: "left", fontWeight: 700, letterSpacing: "0.06em", width: "16%"                      }}>State</th>
+            <th style={{ padding: "7px 8px", textAlign: "left", fontWeight: 700, letterSpacing: "0.06em", width: "14%"                      }}>Assignee</th>
+            <th style={{ padding: "7px 8px", textAlign: "left", fontWeight: 700, letterSpacing: "0.06em", width: "13%"                      }}>Scenario</th>
+            <th style={{ padding: "7px 8px", textAlign: "left", fontWeight: 700, letterSpacing: "0.06em", width: "12%", whiteSpace: "nowrap" }}>Created</th>
           </tr>
         </thead>
         <tbody>
-          {sorted.map((d) => (
-            <tr key={d.id} className="border-b border-outline-variant defect-print-row">
-              <td className="p-xs font-bold">DEF-{d.id}</td>
-              <td className="p-xs">{d.testCase?.title ?? ""}</td>
-              <td className="p-xs">{d.severity ?? "—"}</td>
-              <td className="p-xs">{statusDisplay[d.status] ?? d.status}</td>
-              <td className="p-xs">{d.execution?.tester?.name ?? "—"}</td>
-              <td className="p-xs">—</td>
-            </tr>
-          ))}
+          {sorted.map((d, i) => {
+            const sevColor =
+              d.severity === "Critical" ? "#fef2f2" :
+              d.severity === "Major"    ? "#fffbeb" :
+              d.severity === "Minor"    ? "#f0fdf4" : "white";
+            const sevTextColor =
+              d.severity === "Critical" ? "#991b1b" :
+              d.severity === "Major"    ? "#92400e" :
+              d.severity === "Minor"    ? "#166534" : "#45464d";
+            return (
+              <tr
+                key={d.id}
+                className="defect-print-row"
+                style={{ backgroundColor: i % 2 === 0 ? "white" : "#f9f9fb", borderBottom: "1px solid #e4e2e4" }}
+              >
+                <td style={{ padding: "6px 8px", fontWeight: 700, color: "#4648d4", whiteSpace: "nowrap" }}>DEF-{d.id}</td>
+                <td style={{ padding: "6px 8px", color: "#1b1b1d" }}>{d.testCase?.title ?? "—"}</td>
+                <td style={{ padding: "6px 8px" }}>
+                  {d.severity ? (
+                    <span style={{
+                      display: "inline-block",
+                      padding: "2px 7px",
+                      borderRadius: "4px",
+                      backgroundColor: sevColor,
+                      color: sevTextColor,
+                      fontWeight: 700,
+                      fontSize: "8px",
+                      letterSpacing: "0.04em",
+                    }}>
+                      {d.severity}
+                    </span>
+                  ) : "—"}
+                </td>
+                <td style={{ padding: "6px 8px", color: "#1b1b1d" }}>{statusDisplay[d.status] ?? d.status}</td>
+                <td style={{ padding: "6px 8px", color: "#45464d" }}>{d.execution?.tester?.name ?? "—"}</td>
+                <td style={{ padding: "6px 8px", color: "#45464d", fontSize: "8px" }}>{d.testCase?.useCase?.name ?? "—"}</td>
+                <td style={{ padding: "6px 8px", color: "#45464d", whiteSpace: "nowrap" }}>{new Date(d.created_at).toLocaleDateString()}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
+
+      {/* Footer */}
+      <div style={{ marginTop: "18px", paddingTop: "8px", borderTop: "1px solid #c6c6cd", display: "flex", justifyContent: "space-between", fontSize: "8px", color: "#76777d" }}>
+        <span>TestCaseHub Enterprise UAT — Defect Log — CONFIDENTIAL</span>
+        <span>Generated {new Date().toLocaleDateString()}</span>
+      </div>
     </div>
 
     <style>{`
       @media print {
-        @page { size: landscape; }
-        .defects-print-log { color: black; background: white; }
+        @page { size: landscape; margin: 15mm 12mm; }
+
+        /* Make everything invisible but keep layout intact */
+        body * { visibility: hidden; }
+
+        /* Then reveal only our print root and all its children */
+        #defects-print-root,
+        #defects-print-root * { visibility: visible; }
+
+        #defects-print-root {
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100%;
+          background: white;
+          font-family: Arial, Helvetica, sans-serif;
+        }
+
         .defect-print-row { break-inside: avoid; }
       }
     `}</style>
@@ -1589,6 +1700,7 @@ function DefectRow({
         </td>
       </tr>
 
+      {createPortal(<>
       {/* Classify Dialog */}
       {classifyOpen && (
         <Dialog onClose={() => setClassifyOpen(false)} title={isNew ? "Classify Defect" : "Reclassify Defect"}>
@@ -1915,6 +2027,7 @@ function DefectRow({
           </div>
         </Dialog>
       )}
+    </>, document.body)}
     </>
   );
 }

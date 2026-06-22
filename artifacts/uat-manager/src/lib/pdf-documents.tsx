@@ -192,12 +192,16 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.primary,
     height: 24,
     marginBottom: 4,
+    justifyContent: "flex-end",
+    paddingBottom: 2,
   },
   certDateLine: {
     borderBottomWidth: 1,
     borderBottomColor: colors.primary,
     height: 20,
     width: "60%",
+    justifyContent: "flex-end",
+    paddingBottom: 2,
     marginTop: 4,
   },
   ucCode: {
@@ -223,59 +227,209 @@ const styles = StyleSheet.create({
     width: 20,
     fontWeight: 600,
   },
+  formHeaderField: {
+    flexDirection: "row",
+    gap: 6,
+    fontSize: 9,
+  },
+  formHeaderLabel: {
+    fontWeight: 700,
+    color: colors.muted,
+  },
+  formHeaderBlank: {
+    flex: 1,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.primary,
+    height: 12,
+  },
+  scenarioHeading: {
+    backgroundColor: colors.primary,
+    color: colors.white,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    fontSize: 12,
+    fontWeight: 700,
+    marginTop: 18,
+    marginBottom: 6,
+  },
+  caseHeading: {
+    backgroundColor: colors.border,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    fontSize: 10,
+    fontWeight: 700,
+    color: colors.primary,
+    marginBottom: 4,
+  },
+  formStepRow: {
+    flexDirection: "row",
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    paddingVertical: 8,
+  },
+  formStepRowAlt: {
+    backgroundColor: "#f6f6f8",
+  },
+  formCell: {
+    paddingHorizontal: 6,
+    fontSize: 9,
+    color: colors.primary,
+  },
+  formBlankArea: {
+    paddingHorizontal: 6,
+  },
+  formRuledLine: {
+    borderBottomWidth: 0.75,
+    borderBottomColor: colors.muted,
+    height: 13,
+  },
+  formFieldLabel: {
+    fontSize: 7,
+    color: colors.muted,
+    marginBottom: 2,
+  },
+  formCheckboxRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 6,
+    gap: 4,
+  },
+  formCheckbox: {
+    width: 9,
+    height: 9,
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  formCheckboxLabel: {
+    fontSize: 8,
+    marginRight: 6,
+  },
+  pageNumber: {
+    position: "absolute",
+    bottom: 14,
+    right: 40,
+    fontSize: 8,
+    color: colors.muted,
+  },
 });
+
+type ExecFormStep = { id: number; step_number: string; instruction: string; expected_result: string | null };
+type ExecFormTestCase = { case_number: string; title: string; steps?: ExecFormStep[] };
+type ExecFormUseCase = { code: string; name: string; testCases?: ExecFormTestCase[] };
+
+const FORM_COL = {
+  step: "6%",
+  desc: "21%",
+  expected: "19%",
+  actual: "19%",
+  defect: "19%",
+  passFail: "16%",
+} as const;
+
+function ExecFormHeaderRow() {
+  return (
+    <View style={[styles.tableRow, styles.tableHeader]}>
+      <Text style={[styles.tableHeaderCell, { width: FORM_COL.step }]}>Step #</Text>
+      <Text style={[styles.tableHeaderCell, { width: FORM_COL.desc }]}>Description</Text>
+      <Text style={[styles.tableHeaderCell, { width: FORM_COL.expected }]}>Expected Result</Text>
+      <Text style={[styles.tableHeaderCell, { width: FORM_COL.actual }]}>Actual Result</Text>
+      <Text style={[styles.tableHeaderCell, { width: FORM_COL.defect }]}>Defect Notes / ID</Text>
+      <Text style={[styles.tableHeaderCell, { width: FORM_COL.passFail }]}>Result</Text>
+    </View>
+  );
+}
+
+function ExecFormStepRow({ step, index }: { step: ExecFormStep; index: number }) {
+  return (
+    <View
+      style={[styles.formStepRow, index % 2 === 1 ? styles.formStepRowAlt : {}]}
+      wrap={false}
+    >
+      <Text style={[styles.formCell, { width: FORM_COL.step }]}>{step.step_number}</Text>
+      <Text style={[styles.formCell, { width: FORM_COL.desc }]}>{step.instruction}</Text>
+      <Text style={[styles.formCell, { width: FORM_COL.expected }]}>{step.expected_result || "—"}</Text>
+      <View style={[styles.formBlankArea, { width: FORM_COL.actual }]}>
+        <View style={styles.formRuledLine} />
+        <View style={[styles.formRuledLine, { marginTop: 6 }]} />
+      </View>
+      <View style={[styles.formBlankArea, { width: FORM_COL.defect }]}>
+        <View style={styles.formRuledLine} />
+        <View style={[styles.formRuledLine, { marginTop: 6 }]} />
+      </View>
+      <View style={[{ width: FORM_COL.passFail }]}>
+        <View style={styles.formCheckboxRow}>
+          <View style={styles.formCheckbox} />
+          <Text style={styles.formCheckboxLabel}>PASS</Text>
+        </View>
+        <View style={[styles.formCheckboxRow, { marginTop: 4 }]}>
+          <View style={styles.formCheckbox} />
+          <Text style={styles.formCheckboxLabel}>FAIL</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
 
 export function TestRunExecutionFormPDF({
   projectName,
   testRunName,
   testRunId,
-  steps,
+  useCases,
 }: {
   projectName: string;
   testRunName: string;
   testRunId: number;
-  steps: { id: number; step_number: string; instruction: string; expected_result: string | null }[];
+  useCases: ExecFormUseCase[];
 }) {
   return (
     <Document>
-      <Page size="A4" style={styles.page}>
-        <View style={styles.header}>
+      <Page size="A4" style={styles.page} wrap>
+        <View style={styles.header} fixed>
           <Text style={styles.title}>TestCaseHub UAT Execution Form</Text>
           <Text style={styles.subtitle}>{projectName} — {testRunName}</Text>
           <Text style={styles.subtitle}>Execution ID: #{testRunId}</Text>
-        </View>
-
-        <View style={styles.table}>
-          <View style={[styles.tableRow, styles.tableHeader]}>
-            <Text style={[styles.tableHeaderCell, { width: "8%" }]}>Step #</Text>
-            <Text style={[styles.tableHeaderCell, { width: "27%" }]}>Description</Text>
-            <Text style={[styles.tableHeaderCell, { width: "25%" }]}>Expected Result</Text>
-            <Text style={[styles.tableHeaderCell, { width: "25%" }]}>Actual Result</Text>
-            <Text style={[styles.tableHeaderCell, { width: "15%" }]}>Pass/Fail</Text>
-          </View>
-
-          {steps.map((step) => (
-            <View key={step.id} style={styles.tableRow} wrap={false}>
-              <Text style={[styles.tableCell, { width: "8%" }]}>{step.step_number}</Text>
-              <Text style={[styles.tableCell, { width: "27%" }]}>{step.instruction}</Text>
-              <Text style={[styles.tableCell, { width: "25%" }]}>{step.expected_result ?? ""}</Text>
-              <View style={[{ width: "25%", padding: 6 }]}>
-                <View style={styles.blankLine} />
-                <View style={styles.blankLine} />
-              </View>
-              <View style={[styles.passFailCell, { width: "15%" }]}>
-                <View style={styles.checkbox} />
-                <Text>Pass</Text>
-                <View style={[styles.checkbox, { marginLeft: 4 }]} />
-                <Text>Fail</Text>
-              </View>
+          <View style={{ flexDirection: "row", gap: 24, marginTop: 8 }}>
+            <View style={[styles.formHeaderField, { flex: 1 }]}>
+              <Text style={styles.formHeaderLabel}>Tester Name:</Text>
+              <View style={styles.formHeaderBlank} />
             </View>
-          ))}
+            <View style={[styles.formHeaderField, { flex: 1 }]}>
+              <Text style={styles.formHeaderLabel}>Date:</Text>
+              <View style={styles.formHeaderBlank} />
+            </View>
+          </View>
         </View>
 
-        <View style={styles.signatureLine}>
+        {(useCases ?? []).map((uc) => (
+          <View key={uc.code} minPresenceAhead={60}>
+            <Text style={styles.scenarioHeading}>Test Scenario: {uc.code} — {uc.name}</Text>
+
+            {(uc.testCases ?? []).map((tc) => (
+              <View key={tc.case_number} minPresenceAhead={60}>
+                <Text style={styles.caseHeading}>Test Case: [{tc.case_number}] {tc.title}</Text>
+
+                <View style={styles.table}>
+                  <ExecFormHeaderRow />
+                  {(tc.steps ?? []).length > 0 ? (
+                    (tc.steps ?? []).map((step, i) => (
+                      <ExecFormStepRow key={step.id} step={step} index={i} />
+                    ))
+                  ) : (
+                    <View style={styles.formStepRow}>
+                      <Text style={[styles.formCell, { width: "100%", fontStyle: "italic", color: colors.muted }]}>
+                        No steps defined for this test case.
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+            ))}
+          </View>
+        ))}
+
+        <View style={styles.signatureLine} wrap={false}>
           <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 9, marginBottom: 4 }}>Tested By:</Text>
+            <Text style={{ fontSize: 9, marginBottom: 4 }}>Tested By (Signature):</Text>
             <View style={styles.signatureField} />
           </View>
           <View style={{ flex: 1 }}>
@@ -284,7 +438,12 @@ export function TestRunExecutionFormPDF({
           </View>
         </View>
 
-        <Text style={styles.footer}>TestCaseHub — UAT Execution Form — Generated {new Date().toLocaleDateString()}</Text>
+        <Text style={styles.footer} fixed>TestCaseHub — UAT Execution Form — Generated {new Date().toLocaleDateString()}</Text>
+        <Text
+          style={styles.pageNumber}
+          fixed
+          render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`}
+        />
       </Page>
     </Document>
   );
@@ -422,19 +581,45 @@ export function SignOffCertificatePDF({
           <View style={styles.certSignatureBlock}>
             <View style={styles.certSignatureField}>
               <Text style={{ fontSize: 9, fontWeight: 700, marginBottom: 6 }}>Business Owner</Text>
-              <View style={styles.certSignatureLine} />
+              <View style={styles.certSignatureLine}>
+                {boSigned && boName ? (
+                  <Text style={{ fontSize: 11, fontFamily: "Helvetica-Oblique" }}>{boName}</Text>
+                ) : null}
+              </View>
               <Text style={{ fontSize: 8, color: colors.muted }}>Signature</Text>
-              <View style={styles.certDateLine} />
+              <View style={styles.certDateLine}>
+                {boSigned && boDate ? (
+                  <Text style={{ fontSize: 9 }}>{new Date(boDate).toLocaleDateString()}</Text>
+                ) : null}
+              </View>
               <Text style={{ fontSize: 8, color: colors.muted }}>Date</Text>
+              {!boSigned && (
+                <Text style={{ fontSize: 7, color: colors.muted, marginTop: 4 }}>Awaiting signature</Text>
+              )}
             </View>
             <View style={styles.certSignatureField}>
               <Text style={{ fontSize: 9, fontWeight: 700, marginBottom: 6 }}>QA Lead</Text>
-              <View style={styles.certSignatureLine} />
+              <View style={styles.certSignatureLine}>
+                {tlSigned && tlName ? (
+                  <Text style={{ fontSize: 11, fontFamily: "Helvetica-Oblique" }}>{tlName}</Text>
+                ) : null}
+              </View>
               <Text style={{ fontSize: 8, color: colors.muted }}>Signature</Text>
-              <View style={styles.certDateLine} />
+              <View style={styles.certDateLine}>
+                {tlSigned && tlDate ? (
+                  <Text style={{ fontSize: 9 }}>{new Date(tlDate).toLocaleDateString()}</Text>
+                ) : null}
+              </View>
               <Text style={{ fontSize: 8, color: colors.muted }}>Date</Text>
+              {!tlSigned && (
+                <Text style={{ fontSize: 7, color: colors.muted, marginTop: 4 }}>Awaiting signature</Text>
+              )}
             </View>
           </View>
+
+          <Text style={{ fontSize: 9, fontWeight: 700, textAlign: "center", marginTop: 16, color: isFullySigned ? "#15803d" : colors.muted }}>
+            {isFullySigned ? "STATUS: FULLY SIGNED OFF" : "STATUS: AWAITING SIGNATURES"}
+          </Text>
         </View>
 
         <Text style={[styles.footer, { position: "absolute", bottom: 30, left: 50, right: 50 }]}>

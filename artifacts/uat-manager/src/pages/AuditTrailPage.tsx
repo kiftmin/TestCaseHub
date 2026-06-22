@@ -1,10 +1,11 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { useRoute } from "wouter";
 import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { customFetch, API_ORIGIN } from "../lib/api-client";
 import { getToken, getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
-import { downloadAuditExcel } from "../lib/csv-utils";
+import { triggerDownload } from "../lib/csv-utils";
 import { Badge } from "../components/ui/badge";
 import { isMacroEvent, isEscalation, isAdminUndo } from "../lib/audit-filters";
 import type { StatusAuditLog, User } from "../types/api";
@@ -134,20 +135,24 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
     ? Object.entries(grouped).sort(([a], [b]) => b.localeCompare(a))
     : [];
 
-  const handleDownloadExcel = useCallback(async () => {
+  const handleDownloadCsv = useCallback(async () => {
     try {
       const token = getToken();
-      const res = await fetch(`${API_ORIGIN}/api/projects/${projectId}/audit-log?limit=100000`, {
+      const query = entityType ? `?entityType=${entityType}` : "";
+      const res = await fetch(`${API_ORIGIN}/api/projects/${projectId}/audit-log/csv${query}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (!res.ok) throw new Error("Download failed");
-      const logs: AuditLogEntry[] = await res.json();
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
       const date = new Date().toISOString().slice(0, 10);
-      downloadAuditExcel(`audit-ledger-${date}.xlsx`, logs);
+      triggerDownload(url, `audit-ledger-${date}.csv`);
+      URL.revokeObjectURL(url);
     } catch (e) {
-      console.error("Excel download failed", e);
+      console.error("CSV download failed", e);
+      toast.error("Failed to download audit ledger.");
     }
-  }, [projectId]);
+  }, [projectId, entityType]);
 
   return (
     <div className="max-w-3xl mx-auto px-gutter py-xl">
@@ -156,11 +161,11 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
           Audit Trail
         </h1>
         <button
-          onClick={handleDownloadExcel}
+          onClick={handleDownloadCsv}
           className="flex items-center gap-sm bg-secondary text-on-secondary px-lg py-sm rounded-lg font-label-md hover:brightness-110 transition-all"
         >
           <span className="material-symbols-outlined text-sm">file_download</span>
-          Download Audit Ledger (.xlsx)
+          Download Audit Ledger (.csv)
         </button>
       </div>
 

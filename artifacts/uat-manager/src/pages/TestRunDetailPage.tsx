@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { PDFDownloadLink } from "@react-pdf/renderer";
+import { pdf } from "@react-pdf/renderer";
 import { customFetch, API_ORIGIN } from "../lib/api-client";
+import { triggerDownload } from "../lib/csv-utils";
 import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
 import { TeamDiscussionModal } from "../components/TeamDiscussionModal";
@@ -163,6 +164,60 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
   const [deleting, setDeleting] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [editName, setEditName] = useState("");
+
+  const myUserIdForPdf = getStoredUser()?.userId;
+  const execFormUseCases = useMemo(() => {
+    const allUcs = (testRun as (TestRun & { useCases?: TestRunUseCase[] }) | undefined)?.useCases ?? [];
+    const visibleUcs = canViewAll
+      ? allUcs
+      : allUcs.filter((uc) => uc.assigned_tester_id === myUserIdForPdf);
+    return visibleUcs.map((truc) => {
+      const uc = truc.useCase as (UseCase & { testCases?: (TestCase & { steps?: TestStep[] })[] }) | undefined;
+      return {
+        code: uc?.code ?? "",
+        name: uc?.name ?? "",
+        testCases: (uc?.testCases ?? []).map((tc) => ({
+          case_number: tc.case_number,
+          title: tc.title,
+          steps: (tc.steps ?? []).map((s) => ({
+            id: s.id,
+            step_number: s.step_number,
+            instruction: s.instruction,
+            expected_result: s.expected_result,
+          })),
+        })),
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only regenerate when the run's use-case data or visibility actually changes
+  }, [testRun, canViewAll, myUserIdForPdf]);
+
+  const execFormDocument = useMemo(
+    () => (
+      <TestRunExecutionFormPDF
+        projectName={testRun?.project?.name ?? `Project #${testRun?.project_id ?? ""}`}
+        testRunName={testRun?.name ?? ""}
+        testRunId={testRunId}
+        useCases={execFormUseCases}
+      />
+    ),
+    [testRun?.project?.name, testRun?.project_id, testRun?.name, testRunId, execFormUseCases]
+  );
+
+  const [execFormPdfGenerating, setExecFormPdfGenerating] = useState(false);
+  const handleDownloadExecFormPdf = useCallback(async () => {
+    setExecFormPdfGenerating(true);
+    try {
+      const blob = await pdf(execFormDocument).toBlob();
+      const url = URL.createObjectURL(blob);
+      triggerDownload(url, `execution-form-${testRunId}.pdf`);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Execution form PDF generation failed:", e);
+      toast.error("Failed to generate the execution form PDF.");
+    } finally {
+      setExecFormPdfGenerating(false);
+    }
+  }, [execFormDocument, testRunId]);
 
   if (isLoading) {
     return (
@@ -325,35 +380,14 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
                 Share with Testers
               </button>
             )}
-            <PDFDownloadLink
-              document={
-                <TestRunExecutionFormPDF
-                  projectName={testRun.project?.name ?? `Project #${testRun.project_id}`}
-                  testRunName={testRun.name}
-                  testRunId={testRunId}
-                  steps={(() => {
-                    const allSteps = filteredUseCases.flatMap((truc) =>
-                      (truc.useCase as UseCase & { testCases?: (TestCase & { steps?: TestStep[] })[] })?.testCases?.flatMap((tc) => tc.steps ?? []) ?? []
-                    );
-                    return allSteps.map((s) => ({
-                      id: s.id,
-                      step_number: s.step_number,
-                      instruction: s.instruction,
-                      expected_result: s.expected_result,
-                    }));
-                  })()}
-                />
-              }
-              fileName={`execution-form-${testRunId}.pdf`}
-              className="flex items-center gap-sm px-md py-sm border border-outline text-on-surface rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
+            <button
+              onClick={handleDownloadExecFormPdf}
+              disabled={execFormPdfGenerating}
+              className="flex items-center gap-sm px-md py-sm border border-outline text-on-surface rounded-lg font-label-md hover:bg-surface-container-high transition-colors disabled:opacity-60 disabled:cursor-wait"
             >
-              {({ loading }) => (
-                <>
-                  <span className="material-symbols-outlined text-sm">file_download</span>
-                  {loading ? "Preparing..." : "Download PDF"}
-                </>
-              )}
-            </PDFDownloadLink>
+              <span className="material-symbols-outlined text-sm">file_download</span>
+              {execFormPdfGenerating ? "Preparing..." : "Download PDF"}
+            </button>
             {canManage && (
               <button
                 onClick={() => { setEditingName(true); setEditName(testRun.name); }}

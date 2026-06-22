@@ -7,7 +7,7 @@ import { useProjectRole } from "../hooks/useProjectRole";
 import { Stepper, type Step } from "../components/ui/stepper";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { DEFECT_VIEWS } from "../lib/defect-views";
-import { downloadDefectsExcel } from "../lib/csv-utils";
+import { downloadDefectsExcel, downloadCsv } from "../lib/csv-utils";
 import type { Defect, DefectNote, TestRun, ProjectAssignment } from "../types/api";
 
 const statusBadge: Record<string, string> = {
@@ -439,8 +439,25 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     })));
   }, [sorted]);
 
+  const handleExportCsv = useCallback(() => {
+    const date = new Date().toISOString().slice(0, 10);
+    downloadCsv(
+      `defects-log-${date}.csv`,
+      ["ID", "Title", "Severity", "State", "Assignee", "Target Release"],
+      sorted.map((d) => [
+        `DEF-${d.id}`,
+        d.testCase?.title ?? "",
+        d.severity ?? "",
+        statusDisplay[d.status] ?? d.status,
+        d.execution?.tester?.name ?? "",
+        "",
+      ])
+    );
+  }, [sorted]);
+
   return (
-    <div className="space-y-lg">
+    <>
+    <div className="space-y-lg print:hidden">
       <header className="flex items-start justify-between gap-md">
         <div className="flex items-start gap-md">
           <div className="shrink-0 w-11 h-11 rounded-xl bg-secondary-container text-on-secondary-container flex items-center justify-center">
@@ -477,11 +494,25 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
           </TabsList>
           <div className="flex items-center gap-sm">
             <button
+              onClick={handleExportCsv}
+              className="flex items-center gap-sm px-md py-sm border border-outline text-on-surface rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
+            >
+              <span className="material-symbols-outlined text-sm">file_download</span>
+              Export CSV
+            </button>
+            <button
               onClick={handleExportExcel}
               className="flex items-center gap-sm px-md py-sm border border-outline text-on-surface rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
             >
               <span className="material-symbols-outlined text-sm">file_download</span>
               Export Excel
+            </button>
+            <button
+              onClick={() => window.print()}
+              className="flex items-center gap-sm px-md py-sm border border-outline text-on-surface rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
+            >
+              <span className="material-symbols-outlined text-sm">print</span>
+              Print Log
             </button>
           </div>
         </div>
@@ -612,6 +643,45 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
         </TabsContent>
       </Tabs>
     </div>
+
+    {/* Print-only compact landscape table for physical defect triage meetings */}
+    <div className="hidden print:block defects-print-log">
+      <h1 className="text-lg font-bold mb-sm">Defect Log</h1>
+      <p className="text-xs text-on-surface-variant mb-md">Generated {new Date().toLocaleString()} — {sorted.length} defects</p>
+      <table className="w-full text-xs border-collapse">
+        <thead>
+          <tr className="border-b-2 border-black">
+            <th className="text-left p-xs">ID</th>
+            <th className="text-left p-xs">Title</th>
+            <th className="text-left p-xs">Severity</th>
+            <th className="text-left p-xs">State</th>
+            <th className="text-left p-xs">Assignee</th>
+            <th className="text-left p-xs">Target Release</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((d) => (
+            <tr key={d.id} className="border-b border-outline-variant defect-print-row">
+              <td className="p-xs font-bold">DEF-{d.id}</td>
+              <td className="p-xs">{d.testCase?.title ?? ""}</td>
+              <td className="p-xs">{d.severity ?? "—"}</td>
+              <td className="p-xs">{statusDisplay[d.status] ?? d.status}</td>
+              <td className="p-xs">{d.execution?.tester?.name ?? "—"}</td>
+              <td className="p-xs">—</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+
+    <style>{`
+      @media print {
+        @page { size: landscape; }
+        .defects-print-log { color: black; background: white; }
+        .defect-print-row { break-inside: avoid; }
+      }
+    `}</style>
+    </>
   );
 }
 

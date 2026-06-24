@@ -29,41 +29,28 @@ WHERE status = 'PENDING_DEPLOYMENT_APPROVAL';
 --> statement-breakpoint
 
 -- 5. Recreate the enum type without BLOCKED, IN_VERIFICATION, or PENDING_DEPLOYMENT_APPROVAL
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'defect_status_old') THEN
-    DROP TYPE defect_status_old;
-  END IF;
-END $$;
+--    Uses rename-create-alter-drop pattern so this is safe whether the type already
+--    exists (with old values) or is being created fresh.
+ALTER TYPE "public"."defect_status" RENAME TO "defect_status_old";
 --> statement-breakpoint
 
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'defect_status') THEN
-    CREATE TYPE "public"."defect_status" AS ENUM(
-      'NEW', 'TRIAGED', 'ASSIGNED', 'IN_PROGRESS',
-      'RESOLVED_DEV', 'READY_FOR_VERIFICATION', 'REGRESSED', 'CLOSED',
-      'PENDING_BIZ_ACCEPTANCE', 'PASSED_BY_AGREEMENT'
-    );
-  END IF;
-END $$;
+CREATE TYPE "public"."defect_status" AS ENUM(
+  'NEW', 'TRIAGED', 'ASSIGNED', 'IN_PROGRESS',
+  'RESOLVED_DEV', 'READY_FOR_VERIFICATION', 'REGRESSED', 'CLOSED',
+  'PENDING_BIZ_ACCEPTANCE', 'PASSED_BY_AGREEMENT'
+);
 --> statement-breakpoint
 
--- 6. Drop default, alter column type, then set new default
+-- 6. Drop default, alter column type, restore default, then drop old type
 ALTER TABLE "defects" ALTER COLUMN "status" DROP DEFAULT;
 --> statement-breakpoint
 
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'defect_status') THEN
-    ALTER TABLE "defects" ALTER COLUMN "status" SET DATA TYPE defect_status USING status::text::defect_status;
-  END IF;
-END $$;
+ALTER TABLE "defects"
+  ALTER COLUMN "status" SET DATA TYPE "public"."defect_status"
+  USING status::text::"public"."defect_status";
 --> statement-breakpoint
 
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'defect_status') THEN
-    ALTER TABLE "defects" ALTER COLUMN "status" SET DEFAULT 'NEW';
-  END IF;
-END $$;
+ALTER TABLE "defects" ALTER COLUMN "status" SET DEFAULT 'NEW';
+--> statement-breakpoint
+
+DROP TYPE "public"."defect_status_old";

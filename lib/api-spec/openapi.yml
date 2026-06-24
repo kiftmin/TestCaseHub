@@ -200,7 +200,7 @@ components:
         test_case_id: { type: integer }
         execution_id: { type: integer, nullable: true }
         ticket_type: { type: string, enum: [SOFTWARE_BUG, ENVIRONMENT_ISSUE, DATA_ISSUE, REQUIREMENTS_GAP] }
-        status: { type: string, enum: [NEW, TRIAGED, ASSIGNED, IN_PROGRESS, BLOCKED, RESOLVED_DEV, READY_FOR_VERIFICATION, REGRESSED, CLOSED, PASSED_BY_AGREEMENT] }
+        status: { type: string, enum: [NEW, TRIAGED, ASSIGNED, IN_PROGRESS, RESOLVED_DEV, READY_FOR_VERIFICATION, REGRESSED, CLOSED, PENDING_BIZ_ACCEPTANCE, PASSED_BY_AGREEMENT] }
         severity: { type: string, nullable: true }
         priority: { type: string, nullable: true }
         assigned_to_user_id: { type: integer, nullable: true }
@@ -1523,7 +1523,7 @@ paths:
 
   /defects/{defectId}/block:
     patch:
-      summary: Developer blocks defect (→ BLOCKED)
+      summary: Set is_blocked flag on defect (status unchanged)
       tags: [Defects]
       parameters:
         - in: path
@@ -1545,7 +1545,7 @@ paths:
 
   /defects/{defectId}/unblock:
     patch:
-      summary: Unblock defect (BLOCKED → IN_PROGRESS)
+      summary: Clear is_blocked flag on defect (status unchanged)
       tags: [Defects]
       parameters:
         - in: path

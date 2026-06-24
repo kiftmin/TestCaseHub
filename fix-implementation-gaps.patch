@@ -1,0 +1,117 @@
+diff --git a/artifacts/uat-manager/src/pages/DashboardPage.tsx b/artifacts/uat-manager/src/pages/DashboardPage.tsx
+index 08d012e..9327954 100644
+--- a/artifacts/uat-manager/src/pages/DashboardPage.tsx
++++ b/artifacts/uat-manager/src/pages/DashboardPage.tsx
+@@ -18,7 +18,6 @@ const defectStatusColors: Record<string, string> = {
+   TRIAGED: "bg-amber-100 text-amber-700",
+   ASSIGNED: "bg-amber-100 text-amber-700",
+   IN_PROGRESS: "bg-blue-100 text-blue-700",
+-  BLOCKED: "bg-red-100 text-red-700",
+   RESOLVED_DEV: "bg-green-100 text-green-700",
+   READY_FOR_VERIFICATION: "bg-purple-100 text-purple-700",
+   REGRESSED: "bg-red-100 text-red-700",
+diff --git a/artifacts/uat-manager/src/pages/UatSummaryPage.tsx b/artifacts/uat-manager/src/pages/UatSummaryPage.tsx
+index e84e862..e18ba0c 100644
+--- a/artifacts/uat-manager/src/pages/UatSummaryPage.tsx
++++ b/artifacts/uat-manager/src/pages/UatSummaryPage.tsx
+@@ -26,7 +26,6 @@ const DEFECT_STATUS_COLORS: Record<string, string> = {
+   TRIAGED: "#f59e0b",
+   ASSIGNED: "#f59e0b",
+   IN_PROGRESS: "#3b82f6",
+-  BLOCKED: "#dc2626",
+   RESOLVED_DEV: "#22c55e",
+   READY_FOR_VERIFICATION: "#a855f7",
+   REGRESSED: "#ef4444",
+diff --git a/lib/api-spec/openapi.yml b/lib/api-spec/openapi.yml
+index bb67bc8..8de275e 100644
+--- a/lib/api-spec/openapi.yml
++++ b/lib/api-spec/openapi.yml
+@@ -200,7 +200,7 @@ components:
+         test_case_id: { type: integer }
+         execution_id: { type: integer, nullable: true }
+         ticket_type: { type: string, enum: [SOFTWARE_BUG, ENVIRONMENT_ISSUE, DATA_ISSUE, REQUIREMENTS_GAP] }
+-        status: { type: string, enum: [NEW, TRIAGED, ASSIGNED, IN_PROGRESS, BLOCKED, RESOLVED_DEV, READY_FOR_VERIFICATION, REGRESSED, CLOSED, PASSED_BY_AGREEMENT] }
++        status: { type: string, enum: [NEW, TRIAGED, ASSIGNED, IN_PROGRESS, RESOLVED_DEV, READY_FOR_VERIFICATION, REGRESSED, CLOSED, PENDING_BIZ_ACCEPTANCE, PASSED_BY_AGREEMENT] }
+         severity: { type: string, nullable: true }
+         priority: { type: string, nullable: true }
+         assigned_to_user_id: { type: integer, nullable: true }
+@@ -1523,7 +1523,7 @@ paths:
+ 
+   /defects/{defectId}/block:
+     patch:
+-      summary: Developer blocks defect (→ BLOCKED)
++      summary: Set is_blocked flag on defect (status unchanged)
+       tags: [Defects]
+       parameters:
+         - in: path
+@@ -1545,7 +1545,7 @@ paths:
+ 
+   /defects/{defectId}/unblock:
+     patch:
+-      summary: Unblock defect (BLOCKED → IN_PROGRESS)
++      summary: Clear is_blocked flag on defect (status unchanged)
+       tags: [Defects]
+       parameters:
+         - in: path
+diff --git a/lib/db/drizzle/0014_simplify_defect_status.sql b/lib/db/drizzle/0014_simplify_defect_status.sql
+index b6ecb7d..7bedfb0 100644
+--- a/lib/db/drizzle/0014_simplify_defect_status.sql
++++ b/lib/db/drizzle/0014_simplify_defect_status.sql
+@@ -29,41 +29,28 @@ WHERE status = 'PENDING_DEPLOYMENT_APPROVAL';
+ --> statement-breakpoint
+ 
+ -- 5. Recreate the enum type without BLOCKED, IN_VERIFICATION, or PENDING_DEPLOYMENT_APPROVAL
+-DO $$
+-BEGIN
+-  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'defect_status_old') THEN
+-    DROP TYPE defect_status_old;
+-  END IF;
+-END $$;
++--    Uses rename-create-alter-drop pattern so this is safe whether the type already
++--    exists (with old values) or is being created fresh.
++ALTER TYPE "public"."defect_status" RENAME TO "defect_status_old";
+ --> statement-breakpoint
+ 
+-DO $$
+-BEGIN
+-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'defect_status') THEN
+-    CREATE TYPE "public"."defect_status" AS ENUM(
+-      'NEW', 'TRIAGED', 'ASSIGNED', 'IN_PROGRESS',
+-      'RESOLVED_DEV', 'READY_FOR_VERIFICATION', 'REGRESSED', 'CLOSED',
+-      'PENDING_BIZ_ACCEPTANCE', 'PASSED_BY_AGREEMENT'
+-    );
+-  END IF;
+-END $$;
++CREATE TYPE "public"."defect_status" AS ENUM(
++  'NEW', 'TRIAGED', 'ASSIGNED', 'IN_PROGRESS',
++  'RESOLVED_DEV', 'READY_FOR_VERIFICATION', 'REGRESSED', 'CLOSED',
++  'PENDING_BIZ_ACCEPTANCE', 'PASSED_BY_AGREEMENT'
++);
+ --> statement-breakpoint
+ 
+--- 6. Drop default, alter column type, then set new default
++-- 6. Drop default, alter column type, restore default, then drop old type
+ ALTER TABLE "defects" ALTER COLUMN "status" DROP DEFAULT;
+ --> statement-breakpoint
+ 
+-DO $$
+-BEGIN
+-  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'defect_status') THEN
+-    ALTER TABLE "defects" ALTER COLUMN "status" SET DATA TYPE defect_status USING status::text::defect_status;
+-  END IF;
+-END $$;
++ALTER TABLE "defects"
++  ALTER COLUMN "status" SET DATA TYPE "public"."defect_status"
++  USING status::text::"public"."defect_status";
+ --> statement-breakpoint
+ 
+-DO $$
+-BEGIN
+-  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'defect_status') THEN
+-    ALTER TABLE "defects" ALTER COLUMN "status" SET DEFAULT 'NEW';
+-  END IF;
+-END $$;
++ALTER TABLE "defects" ALTER COLUMN "status" SET DEFAULT 'NEW';
++--> statement-breakpoint
++
++DROP TYPE "public"."defect_status_old";

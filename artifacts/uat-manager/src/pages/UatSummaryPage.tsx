@@ -26,7 +26,6 @@ const DEFECT_STATUS_COLORS: Record<string, string> = {
   TRIAGED: "#f59e0b",
   ASSIGNED: "#f59e0b",
   IN_PROGRESS: "#3b82f6",
-  BLOCKED: "#dc2626",
   RESOLVED_DEV: "#22c55e",
   READY_FOR_VERIFICATION: "#a855f7",
   REGRESSED: "#ef4444",

@@ -395,38 +395,17 @@ router.get("/:projectId/audit-log", async (req: AuthenticatedRequest, res, next)
     const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
     if (!project) { res.status(404).json({ message: "Project not found" }); return; }
 
-    const limit = Number(req.query.limit) || 200;
+    const limit = Number(req.query.limit) || 100;
     const offset = Number(req.query.offset) || 0;
     const entityType = req.query.entityType as string | undefined;
     const entityId = req.query.entityId ? Number(req.query.entityId) : undefined;
 
-    // Resolve the set of entity IDs that belong to this project.
-    // Defects are linked to a project via their test execution → test run → project.
-    // We first collect all defect IDs for this project, then query audit logs for those.
-    const defectRows = await db.query.defects.findMany({
-      where: eq(schema.defects.project_id, projectId),
-      columns: { id: true },
-    });
-    const projectDefectIds = defectRows.map((d) => d.id);
-
     const conditions: any[] = [];
-
+    if (entityType) conditions.push(eq(schema.statusAuditLog.entity_type, entityType));
     if (entityId) {
-      // Specific entity requested — trust the caller
       conditions.push(eq(schema.statusAuditLog.entity_id, entityId));
-    } else if (projectDefectIds.length > 0) {
-      // Filter to logs whose entity_id is one of this project's defects
-      conditions.push(
-        sql`${schema.statusAuditLog.entity_id} IN (${sql.join(projectDefectIds.map((id) => sql`${id}`), sql`, `)})`
-      );
     } else {
-      // Project has no defects yet — return empty
-      res.json([]);
-      return;
-    }
-
-    if (entityType) {
-      conditions.push(eq(schema.statusAuditLog.entity_type, entityType));
+      conditions.push(eq(schema.statusAuditLog.entity_id, projectId));
     }
 
     const logs = await db.query.statusAuditLog.findMany({

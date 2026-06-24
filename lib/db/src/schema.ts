@@ -259,10 +259,9 @@ export const stepResultsRelations = relations(stepResults, ({ one }) => ({
 
 // 13. defects
 export const defectStatusEnum = pgEnum("defect_status", [
-  "NEW", "TRIAGED", "ASSIGNED", "IN_PROGRESS", "BLOCKED",
+  "NEW", "TRIAGED", "ASSIGNED", "IN_PROGRESS",
   "RESOLVED_DEV", "READY_FOR_VERIFICATION", "REGRESSED", "CLOSED",
   "PENDING_BIZ_ACCEPTANCE", "PASSED_BY_AGREEMENT",
-  "PENDING_DEPLOYMENT_APPROVAL", "IN_VERIFICATION",
 ]);
 
 export const defects = pgTable("defects", {
@@ -274,6 +273,8 @@ export const defects = pgTable("defects", {
   execution_id: integer("execution_id").references(() => executions.id, { onDelete: "cascade" }),
   ticket_type: text("ticket_type").notNull().default("SOFTWARE_BUG"),
   status: defectStatusEnum("status").notNull().default("NEW"),
+  is_blocked: boolean("is_blocked").notNull().default(false),
+  blocked_reason: text("blocked_reason"),
   severity: text("severity"),
   priority: text("priority"),
   assigned_to_user_id: integer("assigned_to_user_id").references(() => users.id, { onDelete: "set null" }),
@@ -383,6 +384,7 @@ export const defectNotes = pgTable("defect_notes", {
   added_by_user_id: integer("added_by_user_id").references(() => users.id, { onDelete: "set null" }),
   note: text("note").notNull(),
   is_system_note: boolean("is_system_note").notNull().default(false),
+  is_internal: boolean("is_internal").notNull().default(false),  
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

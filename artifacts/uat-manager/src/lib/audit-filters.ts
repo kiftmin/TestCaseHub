@@ -1,38 +1,66 @@
-import type { StatusAuditLog } from "../types/api";
+/**
+ * audit-filters.ts
+ *
+ * Filters for the AuditTrail "Milestones" view.
+ * A macro/milestone event is a significant state transition worth calling out
+ * in a governance summary — not every intermediate internal step.
+ */
 
-export const MACRO_EVENTS = new Set([
-  "NEW",
+interface AuditEntry {
+  from_status?: string | null;
+  to_status?: string | null;
+  entity_type?: string | null;
+  decision_type?: string | null;
+  notes?: string | null;
+}
+
+/** Statuses that represent meaningful milestones in the UAT lifecycle */
+const MILESTONE_STATUSES = new Set([
   "TRIAGED",
+  "ASSIGNED",
   "READY_FOR_VERIFICATION",
-  "CLOSED",
+  "PENDING_BIZ_ACCEPTANCE",
   "PASSED_BY_AGREEMENT",
+  "CLOSED",
+  "PENDING_RISK_ACCEPTANCE",
   "REGRESSED",
 ]);
 
-export const MICRO_EVENTS = new Set([
-  "ASSIGNED",
-  "IN_PROGRESS",
-  "BLOCKED",
-  "RESOLVED_DEV",
-]);
+/**
+ * Returns true if this audit entry represents a high-level milestone
+ * worth showing in the condensed Milestones view.
+ */
+export function isMacroEvent(entry: AuditEntry): boolean {
+  const to = entry.to_status ?? "";
+  const from = entry.from_status ?? "";
 
-export function isMacroEvent(entry: StatusAuditLog): boolean {
-  return !!entry.to_status && MACRO_EVENTS.has(entry.to_status);
+  // Any transition INTO a milestone status counts
+  if (MILESTONE_STATUSES.has(to)) return true;
+
+  // A transition OUT of CLOSED or PASSED_BY_AGREEMENT (regression / re-open) counts
+  if (MILESTONE_STATUSES.has(from) && to && from !== to) return true;
+
+  return false;
 }
 
-export function isMicroEvent(entry: StatusAuditLog): boolean {
-  return !!entry.to_status && MICRO_EVENTS.has(entry.to_status);
+/**
+ * Returns true if this entry represents an escalation path
+ * (e.g. triage, risk acceptance, business decision).
+ */
+export function isEscalation(entry: AuditEntry): boolean {
+  const to = entry.to_status ?? "";
+  return (
+    to === "PENDING_BIZ_ACCEPTANCE" ||
+    to === "PENDING_RISK_ACCEPTANCE" ||
+    to === "PASSED_BY_AGREEMENT" ||
+    to === "TRIAGED"
+  );
 }
 
-export function isEscalation(entry: StatusAuditLog): boolean {
-  if (entry.to_status === "REGRESSED") return true;
-  return entry.from_status === "READY_FOR_VERIFICATION"
-    && entry.to_status !== "CLOSED"
-    && entry.to_status !== "PASSED_BY_AGREEMENT";
-}
-
-export function isAdminUndo(entry: StatusAuditLog): boolean {
-  return entry.from_status === "BLOCKED"
-    || entry.from_status === "RESOLVED_DEV" && entry.to_status === "IN_PROGRESS"
-    || entry.from_status === "READY_FOR_VERIFICATION" && entry.to_status === "RESOLVED_DEV";
+/**
+ * Returns true if this entry represents an admin undo / override action.
+ */
+export function isAdminUndo(entry: AuditEntry): boolean {
+  const notes = entry.notes ?? "";
+  return notes.toLowerCase().includes("undo") || notes.toLowerCase().includes("override");
 }

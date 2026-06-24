@@ -1,5 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
-import { createPortal } from "react-dom";
+import { useState, useEffect, useMemo, useCallback, createPortal } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
@@ -16,15 +15,12 @@ const statusBadge: Record<string, string> = {
   TRIAGED: "bg-orange-100 text-orange-800 border-orange-200",
   ASSIGNED: "bg-amber-100 text-amber-800 border-amber-200",
   IN_PROGRESS: "bg-cyan-100 text-cyan-800 border-cyan-200",
-  BLOCKED: "bg-red-100 text-red-800 border-red-200",
   RESOLVED_DEV: "bg-indigo-100 text-indigo-800 border-indigo-200",
   READY_FOR_VERIFICATION: "bg-blue-100 text-blue-800 border-blue-200",
   REGRESSED: "bg-red-100 text-red-800 border-red-200",
   CLOSED: "bg-green-100 text-green-800 border-green-200",
   PASSED_BY_AGREEMENT: "bg-purple-100 text-purple-800 border-purple-200",
-  PENDING_DEPLOYMENT_APPROVAL: "bg-teal-100 text-teal-800 border-teal-200",
-
-  IN_VERIFICATION: "bg-sky-100 text-sky-800 border-sky-200",
+  PENDING_BIZ_ACCEPTANCE: "bg-sky-100 text-sky-800 border-sky-200",
 };
 
 const statusDisplay: Record<string, string> = {
@@ -32,19 +28,16 @@ const statusDisplay: Record<string, string> = {
   TRIAGED: "Triaged",
   ASSIGNED: "Assigned",
   IN_PROGRESS: "In Progress",
-  BLOCKED: "Blocked",
   RESOLVED_DEV: "Resolved by Dev",
   READY_FOR_VERIFICATION: "Ready for Verification",
   PENDING_BIZ_ACCEPTANCE: "Pending Business Decision",
   REGRESSED: "Regressed",
   CLOSED: "Closed",
   PASSED_BY_AGREEMENT: "Passed by Agreement",
-  PENDING_DEPLOYMENT_APPROVAL: "Pending Deployment Approval",
-
-  IN_VERIFICATION: "In Verification",
 };
 
-function statusBadgeClass(defect: { status: string; decision_type?: string }): string {
+function statusBadgeClass(defect: { status: string; is_blocked?: boolean; decision_type?: string }): string {
+  if (defect.is_blocked) return "bg-red-100 text-red-800 border-red-200";
   if (defect.status === "PENDING_BIZ_ACCEPTANCE") {
     return defect.decision_type === "risk_waiver"
       ? "bg-amber-100 text-amber-800 border-amber-200"
@@ -69,7 +62,7 @@ const severityDot: Record<string, string> = {
   Cosmetic: "bg-gray-300",
 };
 
-const DEV_INTERNAL_STATUSES = new Set(["ASSIGNED", "IN_PROGRESS", "BLOCKED", "RESOLVED_DEV", "REGRESSED"]);
+const DEV_INTERNAL_STATUSES = new Set(["ASSIGNED", "IN_PROGRESS", "RESOLVED_DEV", "REGRESSED"]);
 
 const MASKED_BADGE = "bg-indigo-100 text-indigo-800 border-indigo-200";
 
@@ -78,16 +71,12 @@ const statusIcon: Record<string, string> = {
   TRIAGED: "content_paste_search",
   ASSIGNED: "assignment_ind",
   IN_PROGRESS: "play_arrow",
-  BLOCKED: "block",
   RESOLVED_DEV: "bug_report",
   READY_FOR_VERIFICATION: "fact_check",
   PENDING_BIZ_ACCEPTANCE: "pending_actions",
   REGRESSED: "warning",
   CLOSED: "check_circle",
   PASSED_BY_AGREEMENT: "approval",
-  PENDING_DEPLOYMENT_APPROVAL: "rocket_launch",
-
-  IN_VERIFICATION: "sync",
 };
 
 // ── Status Distribution Card ──
@@ -325,7 +314,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
   const tabStatuses = useMemo(() => {
     if (activeTab === "full") return new Set(Object.keys(statusBadge));
     if (activeTab === "business") return new Set([...DEFECT_VIEWS.BUSINESS.active, ...DEFECT_VIEWS.BUSINESS.withDev, ...DEFECT_VIEWS.BUSINESS.historical]);
-    if (activeTab === "developer") return new Set([...DEFECT_VIEWS.DEVELOPER.actionable, ...DEFECT_VIEWS.DEVELOPER.blocked, ...DEFECT_VIEWS.DEVELOPER.recentlyResolved]);
+    if (activeTab === "developer") return new Set([...DEFECT_VIEWS.DEVELOPER.actionable, ...DEFECT_VIEWS.DEVELOPER.recentlyResolved]);
     return new Set(Object.keys(statusBadge));
   }, [activeTab]);
 
@@ -340,7 +329,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
       return (allDefects ?? []).filter((d) => valid.has(d.status));
     }
     if (activeTab === "developer") {
-      const valid = new Set([...DEFECT_VIEWS.DEVELOPER.actionable, ...DEFECT_VIEWS.DEVELOPER.blocked, ...DEFECT_VIEWS.DEVELOPER.recentlyResolved]);
+      const valid = new Set([...DEFECT_VIEWS.DEVELOPER.actionable, ...DEFECT_VIEWS.DEVELOPER.recentlyResolved]);
       return (allDefects ?? []).filter((d) => valid.has(d.status));
     }
     return allDefects ?? [];
@@ -351,7 +340,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     for (const d of tabFiltered) map[d.status] = (map[d.status] ?? 0) + 1;
 
     if (activeTab === "business") {
-      const devSum = (["ASSIGNED", "IN_PROGRESS", "BLOCKED", "RESOLVED_DEV", "REGRESSED"] as const)
+      const devSum = (["ASSIGNED", "IN_PROGRESS", "RESOLVED_DEV", "REGRESSED"] as const)
         .reduce((sum, s) => sum + (map[s] ?? 0), 0);
       return [
         { key: "all", label: "All", icon: "bar_chart", count: tabFiltered.length },
@@ -826,6 +815,7 @@ function DefectRow({
   const [rejectBizOpen, setRejectBizOpen] = useState(false);
   const [bizAcceptOpen, setBizAcceptOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
+  const [devNoteFilter, setDevNoteFilter] = useState<"all" | "internal" | "standard">("all");
   const [flagRetestNewOpen, setFlagRetestNewOpen] = useState(false);
   const [flagBlockedNewOpen, setFlagBlockedNewOpen] = useState(false);
   const [showBusinessDecisionDialog, setShowBusinessDecisionDialog] = useState(false);
@@ -837,12 +827,12 @@ function DefectRow({
   const [untriagedAction, setUntriagedAction] = useState<string | null>(null);
   const [pendingAfterClassify, setPendingAfterClassify] = useState<string | null>(null);
   const [activeDetailTab, setActiveDetailTab] = useState<"overview" | "steps" | "activity">("overview");
-  const [deployApprovalOpen, setDeployApprovalOpen] = useState(false);
-  const [quickVerifyOpen, setQuickVerifyOpen] = useState(false);
   const [quickVerifyResultAction, setQuickVerifyResultAction] = useState<"passed" | "failed" | null>(null);
 
   const isNew = defect.status === "NEW";
   const isClassified = !!(defect.severity && defect.priority);
+  // is_blocked is now a flag — the defect retains its underlying status
+  const isBlocked = defect.is_blocked === true;
 
   const handleUntriagedAction = (action: string) => {
     if (isNew && !isClassified) {
@@ -871,19 +861,14 @@ function DefectRow({
   const isTriaged = defect.status === "TRIAGED";
   const isAssigned = defect.status === "ASSIGNED";
   const isInProgress = defect.status === "IN_PROGRESS";
-  const isBlocked = defect.status === "BLOCKED";
   const isResolved = defect.status === "RESOLVED_DEV";
   const isReady = defect.status === "READY_FOR_VERIFICATION";
   const isClosed = defect.status === "CLOSED" || defect.status === "PASSED_BY_AGREEMENT";
   const isPendingBiz = defect.status === "PENDING_BIZ_ACCEPTANCE";
-  const isPendingDeployApproval = defect.status === "PENDING_DEPLOYMENT_APPROVAL";
-  const isInVerification = defect.status === "IN_VERIFICATION";
 
   const canRetestFromAnyState =
     !isClosed &&
-    !isPendingBiz &&
-    !isPendingDeployApproval &&
-    !isInVerification;
+    !isPendingBiz;
 
   const invalidateProject = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["project-defects"] });
@@ -892,7 +877,7 @@ function DefectRow({
   }, [queryClient, onMutated]);
 
   const classifyMut = useMutation({
-    mutationFn: (data: { severity: string; priority: string }) =>
+    mutationFn: (data: { severity: string; priority: string; assigned_to_user_id?: number }) =>
       customFetch(`/defects/${defect.id}/classify`, { method: "PATCH", body: JSON.stringify(data) }),
     onError: (e: Error) => toast.error(e.message),
   });
@@ -969,22 +954,10 @@ function DefectRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const requestDeployApprovalMut = useMutation({
-    mutationFn: () => customFetch(`/defects/${defect.id}/request-deployment-approval`, { method: "PATCH" }),
-    onSuccess: () => { invalidateProject(); toast.success("Deployment approval requested"); setDeployApprovalOpen(false); },
-    onError: (e: Error) => toast.error(e.message),
-  });
-
   const quickVerifyMut = useMutation({
-    mutationFn: () => customFetch(`/defects/${defect.id}/quick-verify`, { method: "PATCH" }),
-    onSuccess: () => { invalidateProject(); toast.success("Quick verification started"); setQuickVerifyOpen(false); },
-    onError: (e: Error) => toast.error(e.message),
-  });
-
-  const quickVerifyResultMut = useMutation({
     mutationFn: (data: { result: string; notes?: string }) =>
-      customFetch(`/defects/${defect.id}/quick-verify-result`, { method: "PATCH", body: JSON.stringify(data) }),
-    onSuccess: () => { invalidateProject(); toast.success("Quick verification recorded"); setQuickVerifyResultAction(null); },
+      customFetch(`/defects/${defect.id}/quick-verify`, { method: "PATCH", body: JSON.stringify(data) }),
+    onSuccess: () => { invalidateProject(); toast.success("Verification recorded"); setQuickVerifyResultAction(null); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -1027,7 +1000,8 @@ function DefectRow({
   });
 
   const addNoteMut = useMutation({
-    mutationFn: (note: string) => customFetch(`/defects/${defect.id}/notes`, { method: "POST", body: JSON.stringify({ note }) }),
+    mutationFn: ({ note, is_internal }: { note: string; is_internal: boolean }) =>
+      customFetch(`/defects/${defect.id}/notes`, { method: "POST", body: JSON.stringify({ note, is_internal }) }),
     onSuccess: () => { invalidateProject(); toast.success("Comment added"); setNoteOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -1055,9 +1029,9 @@ function DefectRow({
       ];
       const flow: Record<string, number> = {
         NEW: 0, TRIAGED: 1,
-        ASSIGNED: 2, IN_PROGRESS: 2, BLOCKED: 2, RESOLVED_DEV: 2, REGRESSED: 2,
-        READY_FOR_VERIFICATION: 3, IN_VERIFICATION: 3, PENDING_BIZ_ACCEPTANCE: 3,
-        CLOSED: 4, PASSED_BY_AGREEMENT: 4, PENDING_DEPLOYMENT_APPROVAL: 4,
+        ASSIGNED: 2, IN_PROGRESS: 2, RESOLVED_DEV: 2, REGRESSED: 2,
+        READY_FOR_VERIFICATION: 3, PENDING_BIZ_ACCEPTANCE: 3,
+        CLOSED: 4, PASSED_BY_AGREEMENT: 4,
       };
       return { statusSteps: steps, mainFlow: flow, isRegressed: defect.regression_index > 0 };
     }
@@ -1065,28 +1039,25 @@ function DefectRow({
       const steps: Step[] = [
         { key: "ASSIGNED", label: "Assigned" },
         { key: "IN_PROGRESS", label: "In Progress" },
-        { key: "BLOCKED", label: "Blocked" },
         { key: "RESOLVED_DEV", label: "Resolved" },
       ];
       const flow: Record<string, number> = {
-        ASSIGNED: 0, IN_PROGRESS: 1, BLOCKED: 2, RESOLVED_DEV: 3, REGRESSED: 0,
+        ASSIGNED: 0, IN_PROGRESS: 1, RESOLVED_DEV: 2, REGRESSED: 0,
       };
       return { statusSteps: steps, mainFlow: flow, isRegressed: defect.regression_index > 0 };
     }
+    // Full board — 10 states
     const steps: Step[] = [
       { key: "NEW", label: "New" },
       { key: "TRIAGED", label: "Triaged" },
       { key: "ASSIGNED", label: "Assigned" },
       { key: "IN_PROGRESS", label: "In Progress" },
-      { key: "BLOCKED", label: "Blocked" },
       { key: "RESOLVED_DEV", label: "Resolved" },
       { key: "READY_FOR_VERIFICATION", label: "Verification" },
-      { key: "IN_VERIFICATION", label: "In Verification" },
-      { key: "PENDING_DEPLOYMENT_APPROVAL", label: "Deploy Approval" },
       { key: "PENDING_BIZ_ACCEPTANCE", label: "Pending Biz" },
       { key: "CLOSED", label: "Closed" },
     ];
-    const flow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, BLOCKED:4, RESOLVED_DEV:5, READY_FOR_VERIFICATION:6, IN_VERIFICATION:7, PENDING_DEPLOYMENT_APPROVAL:8, PENDING_BIZ_ACCEPTANCE:9, CLOSED:10, PASSED_BY_AGREEMENT:10, REGRESSED:3 };
+    const flow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, RESOLVED_DEV:4, READY_FOR_VERIFICATION:5, PENDING_BIZ_ACCEPTANCE:6, CLOSED:7, PASSED_BY_AGREEMENT:7, REGRESSED:3 };
     return { statusSteps: steps, mainFlow: flow, isRegressed: defect.regression_index > 0 };
   }, [activeTab, defect.regression_index]);
   const currentStatusIdx = mainFlow[defect.status] ?? 0;
@@ -1155,10 +1126,17 @@ function DefectRow({
           <span className="font-medium">{defect.priority ?? "—"}</span>
         </td>
         <td className="p-md whitespace-nowrap">
-          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadgeClass(defect)}`}>
-            {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? null : <span className="material-symbols-outlined text-[12px]">{statusIcon[defect.status] ?? "circle"}</span>}
-            {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? "With Development" : statusDisplay[defect.status] ?? defect.status}
-          </span>
+          <div className="flex flex-col gap-0.5">
+            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadgeClass(defect)}`}>
+              {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? null : <span className="material-symbols-outlined text-[12px]">{isBlocked ? "block" : (statusIcon[defect.status] ?? "circle")}</span>}
+              {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? "With Development" : isBlocked ? "Blocked" : (statusDisplay[defect.status] ?? defect.status)}
+            </span>
+            {isBlocked && activeTab !== "business" && (
+              <span className="text-[9px] text-red-600 font-medium truncate max-w-[120px]" title={defect.blocked_reason ?? ""}>
+                {defect.blocked_reason ?? "Blocked"}
+              </span>
+            )}
+          </div>
           {defect.regression_index > 0 && (
             <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider bg-orange-100 text-orange-700 border border-orange-200" title="Previously failed verification">
               REJ×{defect.regression_index}
@@ -1171,7 +1149,7 @@ function DefectRow({
         <td className="px-md py-sm text-right" onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-end gap-0.5">
             {/* Classify / Reclassify */}
-            {canManage && !isClosed && !isPendingBiz && !isPendingDeployApproval && !isInVerification && (
+            {canManage && !isClosed && !isPendingBiz && (
               <button
                 onClick={() => isNew ? setClassifyOpen(true) : handleUntriagedAction("classify")}
                 className="action-btn action-btn-secondary"
@@ -1191,7 +1169,7 @@ function DefectRow({
               </button>
             )}
             {/* Developer: Start Work (ASSIGNED → IN_PROGRESS) */}
-            {isDeveloper && isAssigned && (
+            {isDeveloper && isAssigned && !isBlocked && (
               <button
                 onClick={() => startMut.mutate()}
                 className="action-btn action-btn-cyan"
@@ -1201,7 +1179,7 @@ function DefectRow({
               </button>
             )}
             {/* Developer: Resolve (ASSIGNED | IN_PROGRESS → RESOLVED_DEV) */}
-            {isDeveloper && (isAssigned || isInProgress) && (
+            {isDeveloper && (isAssigned || isInProgress) && !isBlocked && (
               <button
                 onClick={() => setResolveOpen(true)}
                 className="action-btn action-btn-blue"
@@ -1210,17 +1188,17 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">bug_report</span>
               </button>
             )}
-            {/* Developer: Block (ASSIGNED | IN_PROGRESS → BLOCKED) */}
-            {isDeveloper && (isAssigned || isInProgress) && (
+            {/* Developer: Block (ASSIGNED | IN_PROGRESS) — toggles is_blocked flag */}
+            {isDeveloper && (isAssigned || isInProgress) && !isBlocked && (
               <button
                 onClick={() => setBlockOpen(true)}
                 className="action-btn action-btn-red"
-                title="Block"
+                title="Flag as Blocked"
               >
                 <span className="material-symbols-outlined text-sm">block</span>
               </button>
             )}
-            {/* Unblock (BLOCKED → prior state) */}
+            {/* Unblock — clears the is_blocked flag */}
             {(isDeveloper || canManage) && isBlocked && (
               <button
                 onClick={() => setUnblockOpen(true)}
@@ -1270,15 +1248,24 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">block</span>
               </button>
             )}
-            {/* Quick Verify (READY_FOR_VERIFICATION → IN_VERIFICATION) */}
+            {/* Quick Verify — immediately prompt pass/fail (READY_FOR_VERIFICATION) */}
             {(isTester || canManage) && isReady && (
-              <button
-                onClick={() => setQuickVerifyOpen(true)}
-                className="action-btn action-btn-sky"
-                title="Quick Verify Defect"
-              >
-                <span className="material-symbols-outlined text-sm">sync</span>
-              </button>
+              <>
+                <button
+                  onClick={() => setQuickVerifyResultAction("passed")}
+                  className="action-btn action-btn-green"
+                  title="Quick Verify — Pass"
+                >
+                  <span className="material-symbols-outlined text-sm">check_circle</span>
+                </button>
+                <button
+                  onClick={() => setQuickVerifyResultAction("failed")}
+                  className="action-btn action-btn-red"
+                  title="Quick Verify — Fail"
+                >
+                  <span className="material-symbols-outlined text-sm">cancel</span>
+                </button>
+              </>
             )}
             {/* Record Retest Result (READY_FOR_VERIFICATION → CLOSED | REGRESSED) */}
             {(isTester || canManage) && isReady && (
@@ -1320,37 +1307,8 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">schedule</span>
               </button>
             )}
-            {/* Quick Verify Pass/Fail (IN_VERIFICATION) */}
-            {(isTester || canManage) && isInVerification && (
-              <>
-                <button
-                  onClick={() => setQuickVerifyResultAction("passed")}
-                  className="action-btn action-btn-green"
-                  title="Quick Verify — Pass"
-                >
-                  <span className="material-symbols-outlined text-sm">check_circle</span>
-                </button>
-                <button
-                  onClick={() => setQuickVerifyResultAction("failed")}
-                  className="action-btn action-btn-red"
-                  title="Quick Verify — Fail"
-                >
-                  <span className="material-symbols-outlined text-sm">cancel</span>
-                </button>
-              </>
-            )}
-            {/* Request Deployment Approval */}
-            {canManage && !isClosed && !isNew && !isPendingDeployApproval && !isInVerification && !isPendingBiz && (isReady || isResolved) && (
-              <button
-                onClick={() => setDeployApprovalOpen(true)}
-                className="action-btn action-btn-teal"
-                title="Request Deployment Approval"
-              >
-                <span className="material-symbols-outlined text-sm">rocket_launch</span>
-              </button>
-            )}
             {/* Submit for Business Decision */}
-            {canManage && !isClosed && !isNew && !isPendingDeployApproval && !isInVerification && !isPendingBiz && (
+            {canManage && !isClosed && !isNew && !isPendingBiz && (
               <button
                 onClick={() => setShowBusinessDecisionDialog(true)}
                 className="action-btn action-btn-purple"
@@ -1401,8 +1359,8 @@ function DefectRow({
                   </h3>
                 </div>
                 <span className={`shrink-0 ml-md inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadgeClass(defect)}`}>
-                  <span className="material-symbols-outlined text-sm">{statusIcon[defect.status] ?? "circle"}</span>
-                  {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? "With Development" : statusDisplay[defect.status] ?? defect.status}
+                  <span className="material-symbols-outlined text-sm">{isBlocked ? "block" : (statusIcon[defect.status] ?? "circle")}</span>
+                  {activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? "With Development" : isBlocked ? "Blocked" : (statusDisplay[defect.status] ?? defect.status)}
                 </span>
               </div>
               <Stepper steps={statusSteps} currentIndex={currentStatusIdx} completedIndices={completedStatusIndices} />
@@ -1613,18 +1571,41 @@ function DefectRow({
 
               {activeDetailTab === "activity" && (
                 <div>
+                  {/* Developer thread filter toggle */}
+                  {isDeveloper && (
+                    <div className="flex items-center gap-xs mb-sm">
+                      {(["all", "internal", "standard"] as const).map((v) => (
+                        <button
+                          key={v}
+                          onClick={() => setDevNoteFilter(v)}
+                          className={`text-[11px] px-sm py-xs rounded-full font-label-sm transition-colors ${devNoteFilter === v ? "bg-secondary text-on-secondary" : "bg-surface-container-high text-on-surface-variant hover:bg-surface-container-highest"}`}
+                        >
+                          {v === "all" ? "Show All" : v === "internal" ? "Internal Only" : "Business Only"}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {defect.notes && defect.notes.length > 0 ? (
                     <div className="space-y-sm max-h-80 overflow-y-auto pr-md">
                       {(() => {
                         const seen = new Set<string>();
                         const shownStatuses = new Set<string>();
-                        const microNoise = new Set(['ASSIGNED', 'IN_PROGRESS', 'BLOCKED', 'RESOLVED_DEV']);
+                        const microNoise = new Set(['ASSIGNED', 'IN_PROGRESS', 'RESOLVED_DEV']);
                         const deduped: DefectNote[] = [];
-                        
+
                         for (const n of defect.notes ?? []) {
                           const key = `${n.id}-${n.note}-${n.created_at}`;
                           if (seen.has(key)) continue;
                           seen.add(key);
+
+                          // Visibility: hide internal notes from non-technical roles
+                          if ((n as any).is_internal && !isDeveloper && !canManage) continue;
+
+                          // Developer filter toggle
+                          if (isDeveloper) {
+                            if (devNoteFilter === "internal" && !(n as any).is_internal) continue;
+                            if (devNoteFilter === "standard" && (n as any).is_internal) continue;
+                          }
 
                           if (activeTab !== "business" || !n.is_system_note) {
                             deduped.push(n);
@@ -1647,7 +1628,7 @@ function DefectRow({
                           }
 
                           const statusMatch = n.note.match(/to\s+['"\[]?([A-Z_]+)['"\]]?/i);
-                          
+
                           if (statusMatch && statusMatch[1]) {
                             const extractedStatus = statusMatch[1].toUpperCase();
 
@@ -1657,10 +1638,9 @@ function DefectRow({
                             }
 
                             if (microNoise.has(extractedStatus)) {
-                              if (['IN_PROGRESS', 'BLOCKED', 'RESOLVED_DEV'].includes(extractedStatus)) {
+                              if (['IN_PROGRESS', 'RESOLVED_DEV'].includes(extractedStatus)) {
                                 continue;
                               }
-                              
                               if (extractedStatus === 'ASSIGNED') {
                                 deduped.push(n);
                               }
@@ -1675,22 +1655,45 @@ function DefectRow({
                           deduped.push(n);
                         }
                         return deduped;
-                      })().map((n) => (
-                        <div key={n.id} className={`rounded-lg px-md py-sm text-sm ${n.is_system_note ? "bg-surface-container-low border border-outline-variant/30" : "bg-surface-container-high"}`}>
-                          <div className="flex items-start gap-2">
-                            {n.is_system_note && (<span className="text-on-surface-variant mt-0.5 flex-shrink-0 material-symbols-outlined text-sm">settings</span>)}
-                            <div className="flex-1 min-w-0">
-                              <p className={`${n.is_system_note ? "italic text-on-surface-variant text-xs" : "text-on-surface"}`}>{n.note}</p>
-                              <div className="flex items-center gap-1 mt-1">
-                                <span className="text-[10px] text-on-surface-variant">{n.addedBy?.name ?? `User #${n.added_by_user_id ?? "system"}`}</span>
-                                <span className="text-[10px] text-on-surface-variant">&middot;</span>
-                                <span className="text-[10px] text-on-surface-variant">{new Date(n.created_at).toLocaleString()}</span>
-                                {n.is_system_note && (<><span className="text-[10px] text-on-surface-variant">&middot;</span><span className="text-[10px] text-on-surface-variant italic">System Note</span></>)}
+                      })().map((n) => {
+                        const isInternalNote = !!(n as any).is_internal;
+                        return (
+                          <div key={n.id} className={`rounded-lg px-md py-sm text-sm ${
+                            isInternalNote
+                              ? "bg-amber-50 border border-amber-200"
+                              : n.is_system_note
+                              ? "bg-surface-container-low border border-outline-variant/30"
+                              : "bg-surface-container-high"
+                          }`}>
+                            <div className="flex items-start gap-2">
+                              {isInternalNote && (
+                                <span className="text-amber-700 mt-0.5 flex-shrink-0 material-symbols-outlined text-sm">lock</span>
+                              )}
+                              {!isInternalNote && n.is_system_note && (
+                                <span className="text-on-surface-variant mt-0.5 flex-shrink-0 material-symbols-outlined text-sm">settings</span>
+                              )}
+                              <div className="flex-1 min-w-0">
+                                <p className={`${isInternalNote ? "text-amber-900" : n.is_system_note ? "italic text-on-surface-variant text-xs" : "text-on-surface"}`}>
+                                  {n.note}
+                                </p>
+                                <div className="flex items-center gap-1 mt-1 flex-wrap">
+                                  <span className="text-[10px] text-on-surface-variant">{n.addedBy?.name ?? `User #${n.added_by_user_id ?? "system"}`}</span>
+                                  <span className="text-[10px] text-on-surface-variant">&middot;</span>
+                                  <span className="text-[10px] text-on-surface-variant">{new Date(n.created_at).toLocaleString()}</span>
+                                  {isInternalNote && (
+                                    <><span className="text-[10px] text-on-surface-variant">&middot;</span>
+                                    <span className="text-[10px] font-bold text-amber-700">Internal Dev Note</span></>
+                                  )}
+                                  {!isInternalNote && n.is_system_note && (
+                                    <><span className="text-[10px] text-on-surface-variant">&middot;</span>
+                                    <span className="text-[10px] text-on-surface-variant italic">System Note</span></>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (<p className="font-body-sm text-body-sm text-on-surface-variant text-center py-lg">No activity recorded.</p>)}
                 </div>
@@ -1700,28 +1703,26 @@ function DefectRow({
         </td>
       </tr>
 
-      {createPortal(<>
       {/* Classify Dialog */}
       {classifyOpen && (
         <Dialog onClose={() => setClassifyOpen(false)} title={isNew ? "Classify Defect" : "Reclassify Defect"}>
           <ClassifyForm
+            projectId={defect.project_id}
             onSave={(data) => {
-      classifyMut.mutate(data, {
-        onSuccess: () => {
-          toast.success("Defect classified");
-          setClassifyOpen(false);
-
-          const next = pendingAfterClassify;
-          setPendingAfterClassify(null);
-
-          invalidateProject();
-
-          if (next) {
-            proceedWithAction(next);
-          }
-        },
-      });
-    }}
+              classifyMut.mutate(data, {
+                onSuccess: () => {
+                  toast.success("Defect classified");
+                  setClassifyOpen(false);
+                  const next = pendingAfterClassify;
+                  setPendingAfterClassify(null);
+                  invalidateProject();
+                  if (next && next !== "assign") {
+                    proceedWithAction(next);
+                  }
+                },
+                onError: (e: Error) => toast.error(e.message),
+              });
+            }}
             loading={classifyMut.isPending}
           />
         </Dialog>
@@ -1855,7 +1856,8 @@ function DefectRow({
       {noteOpen && (
         <Dialog onClose={() => setNoteOpen(false)} title="Add Comment">
           <NoteForm
-            onSave={(note) => addNoteMut.mutate(note)}
+            isDeveloper={isDeveloper}
+            onSave={(note, is_internal) => addNoteMut.mutate({ note, is_internal })}
             loading={addNoteMut.isPending}
           />
         </Dialog>
@@ -1881,33 +1883,6 @@ function DefectRow({
         </Dialog>
       )}
 
-      {/* Request Deployment Approval Dialog */}
-      {deployApprovalOpen && (
-        <Dialog onClose={() => setDeployApprovalOpen(false)} title="Request Deployment Approval">
-          <div className="space-y-md">
-            <p className="font-body-sm text-on-surface-variant">
-              This will route the defect to <strong>Pending Deployment Approval</strong> status.
-              A notification will be sent to Business Owners for review. No justification is required.
-            </p>
-            <div className="flex justify-end gap-md pt-sm">
-              <button
-                onClick={() => setDeployApprovalOpen(false)}
-                className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => requestDeployApprovalMut.mutate()}
-                disabled={requestDeployApprovalMut.isPending}
-                className="px-4 py-sm bg-teal-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all"
-              >
-                {requestDeployApprovalMut.isPending ? "Requesting..." : "Confirm & Request Approval"}
-              </button>
-            </div>
-          </div>
-        </Dialog>
-      )}
-
       {/* Submit for Business Decision Dialog */}
       {showBusinessDecisionDialog && (
         <Dialog onClose={() => setShowBusinessDecisionDialog(false)} title="Submit for Business Decision">
@@ -1918,37 +1893,7 @@ function DefectRow({
         </Dialog>
       )}
 
-      {/* Quick Verify Dialog */}
-      {quickVerifyOpen && (
-        <Dialog onClose={() => setQuickVerifyOpen(false)} title="Quick Verify Defect">
-          <div className="space-y-md">
-            <div className="flex items-start gap-3 bg-sky-50 border border-sky-200 rounded-lg p-md">
-              <span className="material-symbols-outlined text-sky-600 text-xl flex-shrink-0">sync</span>
-              <p className="font-body-sm text-sky-900">
-                This will create a temporary verification run and move the defect to <strong>In Verification</strong>.
-                You will then record a Pass or Fail result.
-              </p>
-            </div>
-            <div className="flex justify-end gap-md pt-sm">
-              <button
-                onClick={() => setQuickVerifyOpen(false)}
-                className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => quickVerifyMut.mutate()}
-                disabled={quickVerifyMut.isPending}
-                className="px-4 py-sm bg-sky-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all"
-              >
-                {quickVerifyMut.isPending ? "Creating..." : "Start Quick Verify"}
-              </button>
-            </div>
-          </div>
-        </Dialog>
-      )}
-
-      {/* Quick Verify Result Dialog */}
+      {/* Quick Verify Result Dialog (direct pass/fail from READY_FOR_VERIFICATION) */}
       {quickVerifyResultAction && (
         <Dialog onClose={() => setQuickVerifyResultAction(null)} title={quickVerifyResultAction === "passed" ? "Quick Verify — Pass" : "Quick Verify — Fail"}>
           <QuickVerifyResultForm
@@ -2027,13 +1972,12 @@ function DefectRow({
           </div>
         </Dialog>
       )}
-    </>, document.body)}
     </>
   );
 }
 
 function Dialog({ children, onClose, title }: { children: React.ReactNode; onClose: () => void; title: string }) {
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[100] flex items-center justify-center" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
       <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-md mx-4 p-lg space-y-md" onClick={(e) => e.stopPropagation()}>
@@ -2045,15 +1989,24 @@ function Dialog({ children, onClose, title }: { children: React.ReactNode; onClo
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
-function ClassifyForm({ onSave, loading }: { onSave: (d: { severity: string; priority: string }) => void; loading: boolean }) {
+function ClassifyForm({ projectId, onSave, loading }: { projectId: number; onSave: (d: { severity: string; priority: string; assigned_to_user_id?: number }) => void; loading: boolean }) {
   const [severity, setSeverity] = useState("Major");
   const [priority, setPriority] = useState("P2");
+  const [assignedId, setAssignedId] = useState<number | null>(null);
+
+  const { data: assignments } = useQuery({
+    queryKey: ["project-users", projectId],
+    queryFn: () => customFetch<ProjectAssignment[]>(`/projects/${projectId}/users`),
+  });
+  const developers = assignments?.filter((a) => a.role === "DEVELOPER") ?? [];
+
   return (
-    <form onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); onSave({ severity, priority }); }} className="space-y-md">
+    <form onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); onSave({ severity, priority, ...(assignedId != null ? { assigned_to_user_id: assignedId } : {}) }); }} className="space-y-md">
       <div className="space-y-sm">
         <label className="font-label-sm text-label-sm">Severity</label>
         <select value={severity} onChange={(e) => setSeverity(e.target.value)} className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm">
@@ -2070,6 +2023,15 @@ function ClassifyForm({ onSave, loading }: { onSave: (d: { severity: string; pri
           <option value="P2">P2</option>
           <option value="P3">P3</option>
           <option value="P4">P4</option>
+        </select>
+      </div>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Assign to Developer (optional)</label>
+        <select value={assignedId ?? ""} onChange={(e) => setAssignedId(e.target.value ? Number(e.target.value) : null)} className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm">
+          <option value="">— Not assigned —</option>
+          {developers.map((d) => (
+            <option key={d.user_id} value={d.user_id}>{d.user.name} ({d.user.username})</option>
+          ))}
         </select>
       </div>
       <button type="submit" disabled={loading} className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
@@ -2146,13 +2108,50 @@ function SortTh({ field, label, sortField, sortDir, onSort }: { field: string; l
   );
 }
 
-function NoteForm({ onSave, loading }: { onSave: (note: string) => void; loading: boolean }) {
+function NoteForm({ onSave, loading, isDeveloper }: { onSave: (note: string, is_internal: boolean) => void; loading: boolean; isDeveloper: boolean }) {
   const [note, setNote] = useState("");
+  const [isInternal, setIsInternal] = useState(false);
   return (
-    <form onSubmit={(e) => { e.preventDefault(); if (note.trim()) onSave(note.trim()); }} className="space-y-md">
-      <textarea value={note} onChange={(e) => setNote(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Enter your comment..." required />
-      <button type="submit" disabled={loading || !note.trim()} className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
-        {loading ? "Saving..." : "Add Comment"}
+    <form onSubmit={(e) => { e.preventDefault(); if (note.trim()) onSave(note.trim(), isInternal); }} className="space-y-md">
+      <textarea
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
+        placeholder={isInternal ? "Internal dev note — not visible to Business Owners or Testers..." : "Enter your comment..."}
+        required
+      />
+      {isDeveloper && (
+        <div className="flex items-center justify-between p-sm rounded-lg border border-outline-variant bg-surface-container-low">
+          <div className="flex items-center gap-sm">
+            <span className="material-symbols-outlined text-sm text-on-surface-variant">lock</span>
+            <div>
+              <p className="text-label-sm font-label-sm text-on-surface">Internal Dev Note</p>
+              <p className="text-[10px] text-on-surface-variant">Hidden from Business Owners &amp; Testers</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={isInternal}
+            onClick={() => setIsInternal(!isInternal)}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${isInternal ? "bg-secondary" : "bg-outline-variant"}`}
+          >
+            <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${isInternal ? "translate-x-[18px]" : "translate-x-[2px]"}`} />
+          </button>
+        </div>
+      )}
+      {isInternal && (
+        <div className="flex items-center gap-xs px-sm py-xs rounded bg-amber-50 border border-amber-200">
+          <span className="material-symbols-outlined text-sm text-amber-700">visibility_off</span>
+          <p className="text-[11px] text-amber-800">This note will only be visible to Developers and Admins.</p>
+        </div>
+      )}
+      <button
+        type="submit"
+        disabled={loading || !note.trim()}
+        className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 disabled:opacity-50"
+      >
+        {loading ? "Saving..." : isInternal ? "Add Internal Note" : "Add Comment"}
       </button>
     </form>
   );

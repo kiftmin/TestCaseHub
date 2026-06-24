@@ -207,6 +207,8 @@ export interface Defect {
   retest_reason: string | null;
   accepted_by_business_note: string | null;
   rejection_log: string | null;
+  is_blocked: boolean;
+  blocked_reason: string | null;
   created_at: string;
   updated_at: string;
   resolved_at: string | null;

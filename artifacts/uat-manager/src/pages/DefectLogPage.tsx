@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo, useCallback, createPortal } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
@@ -866,9 +867,7 @@ function DefectRow({
   const isClosed = defect.status === "CLOSED" || defect.status === "PASSED_BY_AGREEMENT";
   const isPendingBiz = defect.status === "PENDING_BIZ_ACCEPTANCE";
 
-  const canRetestFromAnyState =
-    !isClosed &&
-    !isPendingBiz;
+  const canRetestFromAnyState = false; // Removed: flag-retest is only valid from RESOLVED_DEV, handled by the dedicated Send for Verification button
 
   const invalidateProject = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["project-defects"] });
@@ -1188,8 +1187,8 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">bug_report</span>
               </button>
             )}
-            {/* Developer: Block (ASSIGNED | IN_PROGRESS) — toggles is_blocked flag */}
-            {isDeveloper && (isAssigned || isInProgress) && !isBlocked && (
+            {/* Block (ASSIGNED | IN_PROGRESS) — toggles is_blocked flag */}
+            {(isDeveloper || canManage) && (isAssigned || isInProgress) && !isBlocked && (
               <button
                 onClick={() => setBlockOpen(true)}
                 className="action-btn action-btn-red"
@@ -1267,24 +1266,15 @@ function DefectRow({
                 </button>
               </>
             )}
-            {/* Record Retest Result (READY_FOR_VERIFICATION → CLOSED | REGRESSED) */}
-            {(isTester || canManage) && isReady && (
-              <button
-                onClick={() => setRetestOpen(true)}
-                className="action-btn action-btn-blue"
-                title="Record Retest Result"
-              >
-                <span className="material-symbols-outlined text-sm">fact_check</span>
-              </button>
-            )}
+
             {/* Business Owner: Accept (READY_FOR_VERIFICATION → CLOSED) */}
             {isBusinessOwner && isReady && (
               <button
                 onClick={() => setBizAcceptOpen(true)}
                 className="action-btn action-btn-green"
-                title="Accept"
+                title="Accept (Business)"
               >
-                <span className="material-symbols-outlined text-sm">check_circle</span>
+                <span className="material-symbols-outlined text-sm">approval</span>
               </button>
             )}
             {/* Business Owner | TEST_LEAD: Reject (READY_FOR_VERIFICATION → ASSIGNED) */}
@@ -1292,9 +1282,9 @@ function DefectRow({
               <button
                 onClick={() => setRejectOpen(true)}
                 className="action-btn action-btn-red"
-                title="Reject"
+                title="Reject (Business)"
               >
-                <span className="material-symbols-outlined text-sm">cancel</span>
+                <span className="material-symbols-outlined text-sm">thumb_down</span>
               </button>
             )}
             {/* Reschedule Retest (READY_FOR_VERIFICATION → RESOLVED_DEV) */}
@@ -1898,9 +1888,9 @@ function DefectRow({
         <Dialog onClose={() => setQuickVerifyResultAction(null)} title={quickVerifyResultAction === "passed" ? "Quick Verify — Pass" : "Quick Verify — Fail"}>
           <QuickVerifyResultForm
             result={quickVerifyResultAction}
-            onSave={(data) => quickVerifyResultMut.mutate(data)}
+            onSave={(data) => quickVerifyMut.mutate(data)}
             onCancel={() => setQuickVerifyResultAction(null)}
-            loading={quickVerifyResultMut.isPending}
+            loading={quickVerifyMut.isPending}
           />
         </Dialog>
       )}

@@ -271,8 +271,8 @@ router.patch("/defects/:defectId/flag-blocked", async (req: AuthenticatedRequest
       .where(eq(schema.defects.id, defectId))
       .returning();
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: defect.status, toStatus: defect.status, reason: `Blocked: ${data.reason}` });
-    await logSystemNote(defectId, defect.status, defect.status, req.user!.userId, `Flagged as Blocked: ${data.reason}`);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: defect.status, toStatus: "BLOCKED", reason: `Blocked: ${data.reason}` });
+    await logSystemNote(defectId, defect.status, "BLOCKED", req.user!.userId, `Flagged as Blocked: ${data.reason}`, true);
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -498,7 +498,7 @@ router.patch("/defects/:defectId/start", async (req: AuthenticatedRequest, res, 
   } catch (err) { next(err); }
 });
 
-// PATCH /defects/:defectId/block — DEVELOPER only
+// PATCH /defects/:defectId/block — DEVELOPER or TEST_LEAD
 // Sets is_blocked flag to true on the defect.
 // Requires reason text.
 router.patch("/defects/:defectId/block", async (req: AuthenticatedRequest, res, next) => {
@@ -509,7 +509,7 @@ router.patch("/defects/:defectId/block", async (req: AuthenticatedRequest, res, 
 
     const projectId = await getProjectId(defectId);
     if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
-    const allowed = await checkProjectRole(req, projectId, ["DEVELOPER"]);
+    const allowed = await checkProjectRole(req, projectId, ["DEVELOPER", "TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
@@ -524,8 +524,8 @@ router.patch("/defects/:defectId/block", async (req: AuthenticatedRequest, res, 
       .where(eq(schema.defects.id, defectId))
       .returning();
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: defect.status, toStatus: defect.status, reason: `Blocked: ${data.reason}` });
-    await logSystemNote(defectId, defect.status, defect.status, req.user!.userId, `Blocked: ${data.reason}`);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: defect.status, toStatus: "BLOCKED", reason: `Blocked: ${data.reason}` });
+    await logSystemNote(defectId, defect.status, "BLOCKED", req.user!.userId, `Blocked: ${data.reason}`, true);
     res.json(updated);
   } catch (err) { next(err); }
 });
@@ -573,8 +573,8 @@ router.patch("/defects/:defectId/unblock", async (req: AuthenticatedRequest, res
       .where(eq(schema.defects.id, defectId))
       .returning();
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: defect.status, toStatus: defect.status, reason: `Unblocked: ${data.reason}` });
-    await logSystemNote(defectId, defect.status, defect.status, req.user!.userId, `Unblocked: ${data.reason}`);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: "BLOCKED", toStatus: defect.status, reason: `Unblocked: ${data.reason}` });
+    await logSystemNote(defectId, "BLOCKED", defect.status, req.user!.userId, `Unblocked: ${data.reason}`, true);
     res.json({
       id: updated.id,
       status: updated.status,

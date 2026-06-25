@@ -301,27 +301,36 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
                       }`}>
                         <div className="flex items-start justify-between gap-2">
                           <p className="text-body-sm text-on-surface flex-1">
-                            <span className="font-semibold">
-                              {entry.changedBy?.name ?? "System"}
-                            </span>{" "}
-                            changed{" "}
-                            <span className="font-medium capitalize">
-                              {entry.entity_type}
-                            </span>{" "}
-                            #
-                            {entry.entity_id}{" "}
-                            {entry.from_status && (
+                            {entry.to_status === "BLOCKED" ? (
                               <>
-                                from{" "}
-                                <span className="font-medium">
-                                  '{entry.from_status}'
-                                </span>{" "}
+                                <span className="font-semibold">{entry.changedBy?.name ?? "System"}</span>{" "}
+                                blocked{" "}
+                                <span className="font-medium capitalize">{entry.entity_type}</span>{" "}
+                                #{entry.entity_id}
+                              </>
+                            ) : entry.from_status === "BLOCKED" ? (
+                              <>
+                                <span className="font-semibold">{entry.changedBy?.name ?? "System"}</span>{" "}
+                                unblocked{" "}
+                                <span className="font-medium capitalize">{entry.entity_type}</span>{" "}
+                                #{entry.entity_id}
+                              </>
+                            ) : (
+                              <>
+                                <span className="font-semibold">{entry.changedBy?.name ?? "System"}</span>{" "}
+                                changed{" "}
+                                <span className="font-medium capitalize">{entry.entity_type}</span>{" "}
+                                #{entry.entity_id}{" "}
+                                {entry.from_status && (
+                                  <>
+                                    from{" "}
+                                    <span className="font-medium">'{entry.from_status}'</span>{" "}
+                                  </>
+                                )}
+                                to{" "}
+                                <span className="font-medium">'{entry.to_status}'</span>
                               </>
                             )}
-                            to{" "}
-                            <span className="font-medium">
-                              '{entry.to_status}'
-                            </span>
                           </p>
 
                           {isEscalation(entry) && (

@@ -24,6 +24,7 @@ const MILESTONE_STATUSES = new Set([
   "CLOSED",
   "PENDING_RISK_ACCEPTANCE",
   "REGRESSED",
+  "BLOCKED",
 ]);
 
 /**

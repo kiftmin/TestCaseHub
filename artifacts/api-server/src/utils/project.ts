@@ -34,15 +34,20 @@ export async function logAudit(params: AuditLogParams): Promise<void> {
   });
 }
 
-export async function logSystemNote(defectId: number, fromStatus: string | null | undefined, toStatus: string, changedByUserId: number, reason?: string): Promise<void> {
+export async function logSystemNote(defectId: number, fromStatus: string | null | undefined, toStatus: string, changedByUserId: number, reason?: string, skipPrefix?: boolean): Promise<void> {
   const user = await db.query.users.findFirst({
     where: eq(schema.users.id, changedByUserId),
     columns: { name: true },
   });
   const userName = user?.name ?? `User #${changedByUserId}`;
-  let noteText = `System Note: Defect status changed from '${fromStatus ?? "N/A"}' to '${toStatus}' by ${userName}.`;
-  if (reason) {
-    noteText += ` Reason: ${reason}`;
+  let noteText: string;
+  if (skipPrefix) {
+    noteText = `${reason}`;
+  } else {
+    noteText = `System Note: Defect status changed from '${fromStatus ?? "N/A"}' to '${toStatus}' by ${userName}.`;
+    if (reason) {
+      noteText += ` Reason: ${reason}`;
+    }
   }
   await db.insert(schema.defectNotes).values({
     defect_id: defectId,

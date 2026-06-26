@@ -804,6 +804,71 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
         .where(inArray(schema.testRunUseCases.id, userUseCaseIds));
     }
 
+    // Auto-resolve defects if this is a retest run
+    const testRunFull = await db.query.testRuns.findFirst({
+      where: eq(schema.testRuns.id, testRunId),
+    });
+
+    if (testRunFull?.run_type === "retest") {
+      for (const truc of allUseCases) {
+        const useCaseId = truc.use_case_id;
+
+        // Find the test case IDs in this use case
+        const ucTestCaseIds = truc.useCase?.testCases.map(tc => tc.id) ?? [];
+
+        // Find READY_FOR_VERIFICATION defects for these test cases
+        const linkedDefects = ucTestCaseIds.length > 0
+          ? await db.query.defects.findMany({
+              where: and(
+                eq(schema.defects.project_id, testRunFull.project_id),
+                eq(schema.defects.status, "READY_FOR_VERIFICATION"),
+                inArray(schema.defects.test_case_id, ucTestCaseIds),
+              ),
+            })
+          : [];
+
+        if (linkedDefects.length === 0) continue;
+
+        // Determine result for this use case from executions
+        const ucExecutions = allExecutions.filter(e =>
+          ucTestCaseIds.includes(e.test_case_id),
+        );
+        const anyFailed = ucExecutions.some(e => e.overall_result === "failed");
+        const result: "passed" | "failed" = anyFailed ? "failed" : "passed";
+
+        // Resolve each linked defect
+        for (const defect of linkedDefects) {
+          if (result === "passed") {
+            await db.update(schema.defects)
+              .set({
+                status: "CLOSED",
+                regression_index: 0,
+                updated_at: new Date(),
+                closed_at: new Date(),
+              })
+              .where(eq(schema.defects.id, defect.id));
+          } else {
+            await db.update(schema.defects)
+              .set({
+                status: "ASSIGNED",
+                regression_index: sql`${schema.defects.regression_index} + 1`,
+                updated_at: new Date(),
+              })
+              .where(eq(schema.defects.id, defect.id));
+          }
+
+          await logAudit({
+            entityType: "defect",
+            entityId: defect.id,
+            changedByUserId: req.user!.userId,
+            fromStatus: "READY_FOR_VERIFICATION",
+            toStatus: result === "passed" ? "CLOSED" : "ASSIGNED",
+            reason: `Auto-resolved from retest run ${testRunId} — ${result}`,
+          });
+        }
+      }
+    }
+
     // Check if all use cases in the test run are signed off
     const allRunUseCases = await db.query.testRunUseCases.findMany({
       where: eq(schema.testRunUseCases.test_run_id, testRunId),

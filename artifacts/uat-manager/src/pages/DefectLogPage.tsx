@@ -151,6 +151,7 @@ function TabContent({
   setStatusFilter,
   total,
   sorted,
+  role,
   canManage,
   isBusinessOwner,
   isTester,
@@ -167,6 +168,7 @@ function TabContent({
   setStatusFilter: (v: string) => void;
   total: number;
   sorted: Defect[];
+  role: string | null;
   canManage: boolean;
   isBusinessOwner: boolean;
   isTester: boolean;
@@ -218,6 +220,7 @@ function TabContent({
                   defect={defect}
                   expanded={expandedId === defect.id}
                   onToggle={() => setExpandedId(expandedId === defect.id ? null : defect.id)}
+                  role={role}
                   canManage={canManage}
                   isBusinessOwner={isBusinessOwner}
                   isTester={isTester}
@@ -580,6 +583,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             setStatusFilter={setStatusFilter}
             total={total}
             sorted={sorted}
+            role={role}
             canManage={canManage}
             isBusinessOwner={isBusinessOwner}
             isTester={isTester}
@@ -600,6 +604,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             setStatusFilter={setStatusFilter}
             total={total}
             sorted={sorted}
+            role={role}
             canManage={canManage}
             isBusinessOwner={isBusinessOwner}
             isTester={isTester}
@@ -620,6 +625,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             setStatusFilter={setStatusFilter}
             total={total}
             sorted={sorted}
+            role={role}
             canManage={canManage}
             isBusinessOwner={isBusinessOwner}
             isTester={isTester}
@@ -790,6 +796,7 @@ function DefectRow({
   defect,
   expanded,
   onToggle,
+  role,
   canManage,
   isBusinessOwner,
   isTester,
@@ -800,6 +807,7 @@ function DefectRow({
   defect: Defect;
   expanded: boolean;
   onToggle: () => void;
+  role: string | null;
   canManage: boolean;
   isBusinessOwner: boolean;
   isTester: boolean;
@@ -1104,6 +1112,11 @@ function DefectRow({
             <span className="font-label-md text-label-md text-secondary font-semibold">
               DEF-{defect.id}
             </span>
+            {defect.inActiveRetestRun && (role === "DEVELOPER" || role === "TEST_LEAD" || role === "ADMIN") && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 font-bold uppercase tracking-wider" title="This defect is part of an active retest run">
+                Retest
+              </span>
+            )}
           </div>
         </td>
         <td className="px-md py-sm">
@@ -1282,7 +1295,7 @@ function DefectRow({
               <button
                 onClick={() => setRejectOpen(true)}
                 className="action-btn action-btn-red"
-                title="Reject (Business)"
+                title="Reject — Escalate to ASSIGNED (regression +1, formal rejection, retest traces cleared)"
               >
                 <span className="material-symbols-outlined text-sm">thumb_down</span>
               </button>
@@ -1292,7 +1305,7 @@ function DefectRow({
               <button
                 onClick={() => setRescheduleOpen(true)}
                 className="action-btn action-btn-orange"
-                title="Reschedule Retest"
+                title="Reschedule — Soft return to RESOLVED_DEV (no regression penalty, keeps dev progress)"
               >
                 <span className="material-symbols-outlined text-sm">schedule</span>
               </button>
@@ -1347,6 +1360,11 @@ function DefectRow({
                   <h3 className="font-title-sm text-title-sm text-on-surface truncate">
                     DEF-{defect.id} — {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
                   </h3>
+                  {defect.inActiveRetestRun && (role === "DEVELOPER" || role === "TEST_LEAD" || role === "ADMIN") && (
+                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 font-bold uppercase tracking-wider" title="This defect is part of an active retest run">
+                      Retest
+                    </span>
+                  )}
                 </div>
                 <span className={`shrink-0 ml-md inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider border ${activeTab === "business" && DEV_INTERNAL_STATUSES.has(defect.status) ? MASKED_BADGE : statusBadgeClass(defect)}`}>
                   <span className="material-symbols-outlined text-sm">{isBlocked ? "block" : (statusIcon[defect.status] ?? "circle")}</span>
@@ -1561,8 +1579,8 @@ function DefectRow({
 
               {activeDetailTab === "activity" && (
                 <div>
-                  {/* Developer thread filter toggle */}
-                  {isDeveloper && (
+                  {/* Internal note filter toggle */}
+                  {(role === "DEVELOPER" || role === "TEST_LEAD" || role === "ADMIN") && (
                     <div className="flex items-center gap-xs mb-sm">
                       {(["all", "internal", "standard"] as const).map((v) => (
                         <button
@@ -1589,12 +1607,12 @@ function DefectRow({
                           seen.add(key);
 
                           // Visibility: hide internal notes from non-technical roles
-                          if ((n as any).is_internal && !isDeveloper && !canManage) continue;
+                          if ((n.is_internal ?? false) && role !== "DEVELOPER" && role !== "TEST_LEAD" && role !== "ADMIN") continue;
 
-                          // Developer filter toggle
-                          if (isDeveloper) {
-                            if (devNoteFilter === "internal" && !(n as any).is_internal) continue;
-                            if (devNoteFilter === "standard" && (n as any).is_internal) continue;
+                          // Technical role filter toggle
+                          if (role === "DEVELOPER" || role === "TEST_LEAD" || role === "ADMIN") {
+                            if (devNoteFilter === "internal" && !(n.is_internal ?? false)) continue;
+                            if (devNoteFilter === "standard" && (n.is_internal ?? false)) continue;
                           }
 
                           if (activeTab !== "business" || !n.is_system_note) {
@@ -1646,7 +1664,7 @@ function DefectRow({
                         }
                         return deduped;
                       })().map((n) => {
-                        const isInternalNote = !!(n as any).is_internal;
+                        const isInternalNote = n.is_internal ?? false;
                         return (
                           <div key={n.id} className={`rounded-lg px-md py-sm text-sm ${
                             isInternalNote
@@ -1742,6 +1760,13 @@ function DefectRow({
       {/* Reschedule Retest Dialog */}
       {rescheduleOpen && (
         <Dialog onClose={() => setRescheduleOpen(false)} title="Reschedule Retest">
+          <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-lg p-md mb-sm">
+            <span className="material-symbols-outlined text-orange-700 text-xl flex-shrink-0">schedule</span>
+            <p className="font-body-sm text-orange-900">
+              Level 1 rollback — sends the defect back to <strong>RESOLVED_DEV</strong> without a regression penalty.
+              The developer can make adjustments and re-submit. Use this when the fix mostly works but needs minor changes.
+            </p>
+          </div>
           <SimpleReasonForm
             label="Reason"
             placeholder="Explain why the retest needs to be rescheduled..."
@@ -1846,7 +1871,8 @@ function DefectRow({
       {noteOpen && (
         <Dialog onClose={() => setNoteOpen(false)} title="Add Comment">
           <NoteForm
-            isDeveloper={isDeveloper}
+            canMakeInternal={isDeveloper || canManage}
+            defectStatus={defect.status}
             onSave={(note, is_internal) => addNoteMut.mutate({ note, is_internal })}
             loading={addNoteMut.isPending}
           />
@@ -2098,24 +2124,26 @@ function SortTh({ field, label, sortField, sortDir, onSort }: { field: string; l
   );
 }
 
-function NoteForm({ onSave, loading, isDeveloper }: { onSave: (note: string, is_internal: boolean) => void; loading: boolean; isDeveloper: boolean }) {
+function NoteForm({ onSave, loading, canMakeInternal, defectStatus }: { onSave: (note: string, is_internal: boolean) => void; loading: boolean; canMakeInternal: boolean; defectStatus: string }) {
   const [note, setNote] = useState("");
-  const [isInternal, setIsInternal] = useState(false);
+  const [isInternal, setIsInternal] = useState(
+    canMakeInternal && ["ASSIGNED", "IN_PROGRESS", "RESOLVED_DEV"].includes(defectStatus),
+  );
   return (
     <form onSubmit={(e) => { e.preventDefault(); if (note.trim()) onSave(note.trim(), isInternal); }} className="space-y-md">
       <textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}
         className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
-        placeholder={isInternal ? "Internal dev note — not visible to Business Owners or Testers..." : "Enter your comment..."}
+        placeholder={isInternal ? "Internal note — not visible to Business Owners or Testers..." : "Enter your comment..."}
         required
       />
-      {isDeveloper && (
+      {canMakeInternal && (
         <div className="flex items-center justify-between p-sm rounded-lg border border-outline-variant bg-surface-container-low">
           <div className="flex items-center gap-sm">
             <span className="material-symbols-outlined text-sm text-on-surface-variant">lock</span>
             <div>
-              <p className="text-label-sm font-label-sm text-on-surface">Internal Dev Note</p>
+              <p className="text-label-sm font-label-sm text-on-surface">Internal Note</p>
               <p className="text-[10px] text-on-surface-variant">Hidden from Business Owners &amp; Testers</p>
             </div>
           </div>
@@ -2133,7 +2161,7 @@ function NoteForm({ onSave, loading, isDeveloper }: { onSave: (note: string, is_
       {isInternal && (
         <div className="flex items-center gap-xs px-sm py-xs rounded bg-amber-50 border border-amber-200">
           <span className="material-symbols-outlined text-sm text-amber-700">visibility_off</span>
-          <p className="text-[11px] text-amber-800">This note will only be visible to Developers and Admins.</p>
+          <p className="text-[11px] text-amber-800">This note will only be visible to Developers, Test Leads and Admins.</p>
         </div>
       )}
       <button

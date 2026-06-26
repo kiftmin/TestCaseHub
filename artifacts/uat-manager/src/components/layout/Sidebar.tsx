@@ -99,8 +99,7 @@ export function Sidebar({
                 handleNav(item.href);
               }}
               href={item.href}
-              title={collapsed ? item.label : undefined}
-              className={`flex items-center ${collapsed ? "justify-center" : "gap-md"} px-md py-sm rounded-lg transition-colors duration-200 ease-in-out font-label-md text-label-md cursor-pointer whitespace-nowrap ${
+              className={`relative flex items-center ${collapsed ? "justify-center" : "gap-md"} px-md py-sm rounded-lg transition-colors duration-200 ease-in-out font-label-md text-label-md cursor-pointer whitespace-nowrap group ${
                 active
                   ? "bg-secondary-container text-on-secondary-container"
                   : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
@@ -110,6 +109,11 @@ export function Sidebar({
                 {item.icon}
               </span>
               {!collapsed && item.label}
+              {collapsed && (
+                <div className="absolute left-full ml-2 px-2 py-1 bg-gray-900 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-lg">
+                  {item.label}
+                </div>
+              )}
             </a>
           );
         })}
@@ -134,8 +138,7 @@ export function Sidebar({
                     handleNav(href);
                   }}
                   href={href}
-                  title={collapsed ? sub.label : undefined}
-                  className={`flex items-center ${collapsed ? "justify-center" : "gap-md"} px-md py-sm rounded-lg transition-colors duration-200 ease-in-out font-label-md text-label-md cursor-pointer whitespace-nowrap ${
+                  className={`relative flex items-center ${collapsed ? "justify-center" : "gap-md"} px-md py-sm rounded-lg transition-colors duration-200 ease-in-out font-label-md text-label-md cursor-pointer whitespace-nowrap group ${
                     active
                       ? "bg-secondary-container text-on-secondary-container"
                       : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
@@ -145,6 +148,11 @@ export function Sidebar({
                     {sub.icon}
                   </span>
                   {!collapsed && sub.label}
+                  {collapsed && (
+                    <div className="absolute left-full ml-2 px-2 py-1 bg-gray-900 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-lg">
+                      {sub.label}
+                    </div>
+                  )}
                 </a>
               );
             })}
@@ -156,13 +164,17 @@ export function Sidebar({
       <div className={`px-sm pb-sm border-t border-outline-variant pt-sm mt-sm ${collapsed ? "flex justify-center" : ""}`}>
         <button
           onClick={() => setCollapsed((c) => !c)}
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className="flex items-center justify-center w-full px-md py-sm rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-label-md cursor-pointer"
+          className="relative flex items-center justify-center w-full px-md py-sm rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-label-md cursor-pointer group"
         >
           <span className="material-symbols-outlined text-[20px]">
             {collapsed ? "chevron_right" : "chevron_left"}
           </span>
           {!collapsed && <span className="ml-md text-label-sm">Collapse</span>}
+          {collapsed && (
+            <div className="absolute left-full ml-2 px-2 py-1 bg-gray-900 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-lg">
+              Expand sidebar
+            </div>
+          )}
         </button>
       </div>
     </aside>

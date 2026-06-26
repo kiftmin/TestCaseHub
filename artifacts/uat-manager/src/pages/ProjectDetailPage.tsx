@@ -513,6 +513,7 @@ function TestRunsTab({ projectId }: { projectId: number }) {
   const role = useProjectRole(projectId);
   const canCreate = role === "TEST_LEAD" || role === "ADMIN";
   const [newDialog, setNewDialog] = useState(false);
+  const [retestDialog, setRetestDialog] = useState(false);
 
   const { data: runs, isLoading } = useQuery({
     queryKey: ["project-test-runs", projectId],
@@ -548,6 +549,20 @@ function TestRunsTab({ projectId }: { projectId: number }) {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const createRetestMutation = useMutation({
+    mutationFn: (d: { name: string; scheduled_at?: string }) =>
+      customFetch(`/projects/${projectId}/test-runs/retest`, {
+        method: "POST",
+        body: JSON.stringify(d),
+      }),
+    onSuccess: () => {
+      invalidate();
+      setRetestDialog(false);
+      toast.success("Retest run created");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const statusColors: Record<string, string> = {
     completed: "bg-outline-variant/30 text-on-surface-variant",
     in_progress: "bg-secondary-container text-on-secondary-container",
@@ -572,12 +587,20 @@ function TestRunsTab({ projectId }: { projectId: number }) {
       <div className="flex items-center justify-between">
         <h3 className="font-title-sm text-title-sm">Test Runs</h3>
         {canCreate && (
-          <button
-            onClick={() => setNewDialog(true)}
-            className="bg-secondary text-on-secondary font-label-sm text-label-sm px-md py-1 rounded-lg hover:brightness-110 transition-all"
-          >
-            New Test Run
-          </button>
+          <div className="flex items-center gap-sm">
+            <button
+              onClick={() => setRetestDialog(true)}
+              className="border border-outline-variant font-label-sm text-label-sm px-md py-1 rounded-lg hover:bg-surface-container-low transition-all"
+            >
+              Create Retest Run
+            </button>
+            <button
+              onClick={() => setNewDialog(true)}
+              className="bg-secondary text-on-secondary font-label-sm text-label-sm px-md py-1 rounded-lg hover:brightness-110 transition-all"
+            >
+              New Test Run
+            </button>
+          </div>
         )}
       </div>
 
@@ -588,7 +611,14 @@ function TestRunsTab({ projectId }: { projectId: number }) {
           className="border border-outline-variant rounded-lg p-md hover:border-secondary transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between mb-xs">
-            <h4 className="font-label-md text-label-md">{r.name}</h4>
+            <div className="flex items-center gap-sm">
+              <h4 className="font-label-md text-label-md">{r.name}</h4>
+              {r.run_type === "retest" && (
+                <span className="text-[10px] px-sm py-0.5 rounded bg-amber-100 text-amber-700 font-bold uppercase">
+                  Retest
+                </span>
+              )}
+            </div>
             <span
               className={`text-[10px] px-sm py-1 rounded font-bold uppercase ${statusColors[r.status] ?? ""}`}
             >
@@ -609,6 +639,15 @@ function TestRunsTab({ projectId }: { projectId: number }) {
       ))}
       {(!runs || runs.length === 0) && (
         <p className="text-on-surface-variant font-body-sm">No test runs yet.</p>
+      )}
+
+      {/* Retest Run Dialog */}
+      {retestDialog && (
+        <RetestRunDialog
+          onSave={(d) => createRetestMutation.mutate(d)}
+          onClose={() => setRetestDialog(false)}
+          saving={createRetestMutation.isPending}
+        />
       )}
 
       {/* New Test Run Dialog */}
@@ -721,6 +760,71 @@ function NewTestRunDialog({
             className="px-lg py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 transition-all disabled:opacity-50"
           >
             {saving ? "Creating..." : "Create Run"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ───────────── Retest Run Dialog ───────────── */
+
+function RetestRunDialog({
+  onSave,
+  onClose,
+  saving,
+}: {
+  onSave: (d: { name: string; scheduled_at?: string }) => void;
+  onClose: () => void;
+  saving: boolean;
+}) {
+  const [name, setName] = useState("Retest Run");
+  const [scheduledAt, setScheduledAt] = useState("");
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      <div
+        className="absolute inset-0"
+        style={{ backgroundColor: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)" }}
+        onClick={onClose}
+      />
+      <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-md mx-4 p-lg space-y-lg">
+        <h3 className="font-headline-md text-headline-md text-primary">Create Retest Run</h3>
+        <p className="font-body-sm text-on-surface-variant">
+          Automatically creates a test run containing the scenarios linked to all
+          defects currently at <strong>Ready for Verification</strong>. Business
+          testers will see this run in their dashboard.
+        </p>
+        <div className="space-y-sm">
+          <label className="block font-label-md text-on-surface">Run Name</label>
+          <input
+            className="w-full bg-white border border-outline-variant rounded-lg px-md py-sm font-body-base focus:ring-2 focus:ring-secondary outline-none"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <div className="space-y-sm">
+          <label className="block font-label-md text-on-surface">Scheduled At (optional)</label>
+          <input
+            className="w-full bg-white border border-outline-variant rounded-lg px-md py-sm font-body-base focus:ring-2 focus:ring-secondary outline-none"
+            type="datetime-local"
+            value={scheduledAt}
+            onChange={(e) => setScheduledAt(e.target.value)}
+          />
+        </div>
+        <div className="flex gap-md justify-end">
+          <button
+            onClick={onClose}
+            className="px-lg py-sm border border-outline-variant rounded-lg font-label-md hover:bg-surface-container-low transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            disabled={!name || saving}
+            onClick={() => onSave({ name, scheduled_at: scheduledAt || undefined })}
+            className="px-lg py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 transition-all disabled:opacity-50"
+          >
+            {saving ? "Creating\u2026" : "Create Retest Run"}
           </button>
         </div>
       </div>

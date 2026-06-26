@@ -1,5 +1,5 @@
 import express from "express";
-import { eq, asc, desc, and, sql } from "drizzle-orm";
+import { eq, asc, desc, and, sql, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
@@ -32,7 +32,8 @@ export async function syncUseCaseStatus(testRunId: number, useCaseId: number): P
 
   const useCase = await db.query.useCases.findFirst({
     where: eq(schema.useCases.id, useCaseId),
-    with: { testCases: true },
+    columns: { id: true },
+    with: { testCases: { columns: { id: true } } },
   });
   if (!useCase) return;
 
@@ -44,7 +45,6 @@ export async function syncUseCaseStatus(testRunId: number, useCaseId: number): P
         ? sql`${schema.executions.test_case_id} IN (${sql.join(testCaseIds, sql`,`)})`
         : sql`1=0`,
     ),
-    with: { stepResults: true },
   });
 
   // A scenario is only terminal when EVERY test case has a terminal execution.
@@ -60,10 +60,20 @@ export async function syncUseCaseStatus(testRunId: number, useCaseId: number): P
   if (executions.length > 0) {
     const failed = executions.some((e) => e.overall_result === "failed");
     const hasPassedByAgreement = executions.some((e) => e.overall_result === "passed_by_agreement");
-    const hasStepResults = executions.some((e) =>
-      (e.stepResults ?? []).length > 0 && (e.stepResults ?? []).some(r => r.passed != null)
-    );
     const execInProgress = executions.some((e) => e.status === "in_progress");
+
+    // Lightweight check — stop at the first step result with a pass/fail
+    const execIds = executions.map(e => e.id);
+    const stepResultRow = execIds.length > 0
+      ? await db.select({ id: schema.stepResults.id })
+          .from(schema.stepResults)
+          .where(and(
+            inArray(schema.stepResults.execution_id, execIds),
+            sql`${schema.stepResults.passed} IS NOT NULL`,
+          ))
+          .limit(1)
+      : [];
+    const hasStepResults = stepResultRow.length > 0;
 
     if (failed && allTestCasesHaveTerminalExec) {
       // Only mark failed when all cases are done (no remaining Not Started)

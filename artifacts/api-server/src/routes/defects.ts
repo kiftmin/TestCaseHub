@@ -1,5 +1,5 @@
 import express from "express";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, desc, and, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
@@ -44,6 +44,24 @@ router.get("/projects/:projectId/defects", async (req: AuthenticatedRequest, res
       },
     });
     result = await Promise.all(result.map(enrichDecisionType));
+
+    // Flag defects that are part of a non-completed retest run
+    const activeRetestRuns = await db.query.testRuns.findMany({
+      where: and(
+        eq(schema.testRuns.project_id, projectId),
+        eq(schema.testRuns.run_type, "retest"),
+        ne(schema.testRuns.status, "completed"),
+      ),
+      with: { useCases: { columns: { use_case_id: true } } },
+    });
+    const activeRetestUseCaseIds = new Set<number>(
+      activeRetestRuns.flatMap((r) => r.useCases.map((uc) => uc.use_case_id)),
+    );
+    result = result.map((d) => ({
+      ...d,
+      inActiveRetestRun: activeRetestUseCaseIds.has(d.testCase?.useCase?.id),
+    }));
+
     res.json(result);
   } catch (err) { next(err); }
 });
@@ -343,7 +361,7 @@ router.patch("/defects/:defectId/submit-for-business-decision", async (req: Auth
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
 
-    const validFromStates = ["TRIAGED", "ASSIGNED", "IN_PROGRESS", "RESOLVED_DEV", "READY_FOR_VERIFICATION"];
+    const validFromStates = ["NEW", "TRIAGED", "ASSIGNED", "IN_PROGRESS", "RESOLVED_DEV", "READY_FOR_VERIFICATION"];
     if (!validFromStates.includes(defect.status)) {
       res.status(400).json({
         message: `Defect must be in one of these states to submit for business decision: ${validFromStates.join(", ")}. Current status: ${defect.status}`
@@ -1256,7 +1274,24 @@ router.post("/defects/:defectId/notes", async (req: AuthenticatedRequest, res, n
     }
 
     // Only technical roles may create internal dev notes
-    const isTechnicalRole = projectRole === "DEVELOPER" || projectRole === "TEST_LEAD" || req.user!.role === "ADMIN";
+    let isTechnicalRole = req.user!.role === "ADMIN";
+    if (!isTechnicalRole) {
+      const assignment = await db.query.projectAssignments.findFirst({
+        where: and(
+          eq(schema.projectAssignments.project_id, testRun.project_id),
+          eq(schema.projectAssignments.user_id, req.user!.userId),
+        ),
+        columns: { role: true },
+      });
+      isTechnicalRole = assignment?.role === "DEVELOPER" || assignment?.role === "TEST_LEAD";
+      if (!isTechnicalRole) {
+        const project = await db.query.projects.findFirst({
+          where: eq(schema.projects.id, testRun.project_id),
+          columns: { test_lead_id: true },
+        });
+        isTechnicalRole = project?.test_lead_id === req.user!.userId;
+      }
+    }
     const isInternal = data.is_internal && isTechnicalRole;
 
     const [note] = await db.insert(schema.defectNotes)

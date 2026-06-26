@@ -123,6 +123,7 @@ export interface TestRun {
   status: "scheduled" | "in_progress" | "completed";
   scheduled_at: string | null;
   passed: boolean | null;
+  run_type: "standard" | "retest";
   entry_confirmed: boolean;
   entry_confirmed_by_user_id: number | null;
   created_at: string;
@@ -219,6 +220,7 @@ export interface Defect {
   notes?: DefectNote[];
   project?: Project;
   decision_type?: "risk_waiver" | "business_review";
+  inActiveRetestRun?: boolean;
 }
 
 export interface DefectRetest {
@@ -276,6 +278,7 @@ export interface DefectNote {
   added_by_user_id: number | null;
   note: string;
   is_system_note: boolean;
+  is_internal: boolean;
   created_at: string;
   addedBy?: User;
 }

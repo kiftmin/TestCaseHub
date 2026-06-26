@@ -161,6 +161,7 @@ export const testRuns = pgTable("test_runs", {
   scheduled_at: timestamp("scheduled_at", { withTimezone: true }),
   passed: boolean("passed"),
   source_test_run_id: integer("source_test_run_id").references(() => testRuns.id, { onDelete: "set null" }),
+  run_type: text("run_type", { enum: ["standard", "retest"] }).notNull().default("standard"),
   entry_confirmed: boolean("entry_confirmed").notNull().default(false),
   entry_confirmed_by_user_id: integer("entry_confirmed_by_user_id").references(() => users.id, { onDelete: "set null" }),
   entry_confirmed_at: timestamp("entry_confirmed_at", { withTimezone: true }),

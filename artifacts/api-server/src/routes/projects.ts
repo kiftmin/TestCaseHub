@@ -132,6 +132,107 @@ router.get("/:projectId/test-runs", async (req: AuthenticatedRequest, res, next)
   } catch (err) { next(err); }
 });
 
+// POST /api/projects/:projectId/test-runs/retest — TEST_LEAD / ADMIN only
+router.post("/:projectId/test-runs/retest", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const projectId = Number(req.params.projectId);
+    if (!projectId) {
+      res.status(400).json({ message: "projectId is required" });
+      return;
+    }
+
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    if (!allowed && req.user!.role !== "ADMIN") {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
+
+    const parsed = z.object({
+      name: z.string(),
+      scheduled_at: z.string().optional(),
+    }).parse(req.body);
+
+    // 1. Find all READY_FOR_VERIFICATION defects for this project
+    const defects = await db.query.defects.findMany({
+      where: and(
+        eq(schema.defects.project_id, projectId),
+        eq(schema.defects.status, "READY_FOR_VERIFICATION"),
+      ),
+      with: {
+        testCase: true,
+      },
+    });
+
+    if (defects.length === 0) {
+      res.status(400).json({
+        message: "No defects are currently at READY_FOR_VERIFICATION",
+      });
+      return;
+    }
+
+    // 2. Extract unique use case IDs
+    const useCaseIdSet = new Set<number>();
+    for (const defect of defects) {
+      if (defect.testCase?.use_case_id) {
+        useCaseIdSet.add(defect.testCase.use_case_id);
+      }
+    }
+    const useCaseIds = Array.from(useCaseIdSet);
+
+    if (useCaseIds.length === 0) {
+      res.status(400).json({
+        message: "Could not resolve use case IDs from the linked defects",
+      });
+      return;
+    }
+
+    // 3. Create the retest run
+    const [newRun] = await db.insert(schema.testRuns).values({
+      project_id: projectId,
+      name: parsed.name,
+      scheduled_at: parsed.scheduled_at ? new Date(parsed.scheduled_at) : null,
+      run_type: "retest",
+    }).returning();
+
+    // 4. Insert test_run_use_cases
+    for (const useCaseId of useCaseIds) {
+      await db.insert(schema.testRunUseCases).values({
+        test_run_id: newRun.id,
+        use_case_id: useCaseId,
+      });
+    }
+
+    // 5. Seed standard entry checklist
+    const defaultItems = [
+      "Fixes have been deployed to the test environment",
+      "Test data has been refreshed as required",
+      "All testers have been notified of the retest scope",
+      "Defects to be retested have been communicated to the team",
+      "Test environment is accessible to all assigned testers",
+    ];
+    await db.insert(schema.testRunChecklistItems).values(
+      defaultItems.map((item_text, sort_order) => ({
+        test_run_id: newRun.id,
+        item_text,
+        sort_order: sort_order + 1,
+      })),
+    );
+
+    await logAudit({
+      entityType: "test_run",
+      entityId: newRun.id,
+      changedByUserId: req.user!.userId,
+      toStatus: "created_retest",
+    });
+
+    res.status(201).json({
+      ...newRun,
+      defect_count: defects.length,
+      use_case_count: useCaseIds.length,
+    });
+  } catch (err) { next(err); }
+});
+
 // PUT /api/projects/:projectId - Update project (with Zod validation — no mass assignment)
 router.put("/:projectId", async (req: AuthenticatedRequest, res, next) => {
   try {

@@ -1261,7 +1261,8 @@ function DefectRow({
               </button>
             )}
             {/* Quick Verify — immediately prompt pass/fail (READY_FOR_VERIFICATION) */}
-            {(isTester || canManage) && isReady && (
+            {/* Hidden when the defect is enrolled in an active retest run — execution results will auto-resolve it */}
+            {(isTester || canManage) && isReady && !defect.inActiveRetestRun && (
               <>
                 <button
                   onClick={() => setQuickVerifyResultAction("passed")}

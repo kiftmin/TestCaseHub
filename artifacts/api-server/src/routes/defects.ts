@@ -414,11 +414,39 @@ router.patch("/defects/:defectId/quick-verify", async (req: AuthenticatedRequest
     const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD", "TESTER"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.id, defectId),
+      with: { testCase: { with: { useCase: true } } },
+    });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
     if (defect.status !== "READY_FOR_VERIFICATION") {
       res.status(400).json({ message: "Defect must be READY_FOR_VERIFICATION to verify." });
       return;
+    }
+
+    // Block Quick Verify when the defect is enrolled in an active retest run.
+    // In that case the retest run's execution results will auto-resolve the defect
+    // using test-case-level attribution, which is more accurate than a manual verdict.
+    const useCaseId = defect.testCase?.useCase?.id;
+    if (useCaseId) {
+      const activeRetestRun = await db.query.testRuns.findFirst({
+        where: and(
+          eq(schema.testRuns.project_id, projectId),
+          eq(schema.testRuns.run_type, "retest"),
+          ne(schema.testRuns.status, "completed"),
+        ),
+        with: { useCases: { columns: { use_case_id: true } } },
+      });
+      const enrolledInActiveRun = activeRetestRun?.useCases.some(
+        (uc) => uc.use_case_id === useCaseId,
+      );
+      if (enrolledInActiveRun) {
+        res.status(409).json({
+          message:
+            "This defect is part of an active retest run and will be resolved automatically when testers complete that run. Quick Verify is disabled to prevent a conflicting manual verdict.",
+        });
+        return;
+      }
     }
 
     const oldStatus = defect.status;

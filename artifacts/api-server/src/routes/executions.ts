@@ -829,15 +829,27 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
 
         if (linkedDefects.length === 0) continue;
 
-        // Determine result for this use case from executions
-        const ucExecutions = allExecutions.filter(e =>
-          ucTestCaseIds.includes(e.test_case_id),
-        );
-        const anyFailed = ucExecutions.some(e => e.overall_result === "failed");
-        const result: "passed" | "failed" = anyFailed ? "failed" : "passed";
+        // Build a lookup of test_case_id → execution result for this use case.
+        // Each defect is resolved based on its OWN test case's result — not the
+        // scenario-level overall — so that a failure in test case B does not
+        // incorrectly penalise a READY_FOR_VERIFICATION defect linked to test case A
+        // (whose fix may be correct) or bump the regression_index of a defect that
+        // is still being fixed on an unrelated test case in the same scenario.
+        const executionResultByTestCaseId = new Map<number, "passed" | "failed">();
+        for (const e of allExecutions) {
+          if (ucTestCaseIds.includes(e.test_case_id)) {
+            executionResultByTestCaseId.set(
+              e.test_case_id,
+              e.overall_result === "failed" ? "failed" : "passed",
+            );
+          }
+        }
 
-        // Resolve each linked defect
+        // Resolve each READY_FOR_VERIFICATION defect using only its own test case result.
         for (const defect of linkedDefects) {
+          const result: "passed" | "failed" =
+            executionResultByTestCaseId.get(defect.test_case_id) ?? "passed";
+
           if (result === "passed") {
             await db.update(schema.defects)
               .set({
@@ -863,7 +875,7 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
             changedByUserId: req.user!.userId,
             fromStatus: "READY_FOR_VERIFICATION",
             toStatus: result === "passed" ? "CLOSED" : "ASSIGNED",
-            reason: `Auto-resolved from retest run ${testRunId} — ${result}`,
+            reason: `Auto-resolved from retest run ${testRunId} — test case ${defect.test_case_id} ${result}`,
           });
         }
       }

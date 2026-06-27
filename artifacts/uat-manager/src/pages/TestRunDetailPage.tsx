@@ -8,7 +8,8 @@ import { triggerDownload } from "../lib/csv-utils";
 import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
 import { TeamDiscussionModal } from "../components/TeamDiscussionModal";
-import { TestRunExecutionFormPDF } from "../lib/pdf-documents";
+import { TestRunExecutionFormPDF, TestRunResultReportPDF } from "../lib/pdf-documents";
+import type { RptUseCase, RptExecution, RptDefect } from "../lib/pdf-documents";
 import type {
   TestRun,
   TestRunUseCase,
@@ -219,6 +220,50 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
     }
   }, [execFormDocument, testRunId]);
 
+  // ── Completed results report ────────────────────────────────────────────
+  const { data: runDefects } = useQuery({
+    queryKey: ["test-run-defects", testRunId],
+    queryFn: () =>
+      customFetch<{ defects?: RptDefect[] }>(`/test-runs/${testRunId}/full-report`)
+        .then((r) => r.defects ?? []),
+    enabled: isCompleted,
+  });
+
+  const storedUser = getStoredUser();
+  const resultReportDocument = useMemo(() => {
+    const allUcs   = (testRun as (TestRun & { useCases?: RptUseCase[] }) | undefined)?.useCases ?? [];
+    const allExecs = (testRun as (TestRun & { executions?: RptExecution[] }) | undefined)?.executions ?? [];
+    return (
+      <TestRunResultReportPDF
+        projectName={testRun?.project?.name ?? `Project #${testRun?.project_id ?? ""}`}
+        testRunName={testRun?.name ?? ""}
+        testRunId={testRunId}
+        scheduledAt={testRun?.scheduled_at ?? null}
+        completedAt={testRun?.created_at ?? null}
+        preparedBy={storedUser?.name ?? null}
+        useCases={allUcs}
+        executions={allExecs}
+        defects={runDefects ?? []}
+      />
+    );
+  }, [testRun, testRunId, runDefects, storedUser?.name]);
+
+  const [resultReportGenerating, setResultReportGenerating] = useState(false);
+  const handleDownloadResultReport = useCallback(async () => {
+    setResultReportGenerating(true);
+    try {
+      const blob = await pdf(resultReportDocument).toBlob();
+      const url = URL.createObjectURL(blob);
+      triggerDownload(url, `test-run-${testRunId}-results-report.pdf`);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Result report PDF generation failed:", e);
+      toast.error("Failed to generate the results report.");
+    } finally {
+      setResultReportGenerating(false);
+    }
+  }, [resultReportDocument, testRunId]);
+
   if (isLoading) {
     return (
       <div className="space-y-lg animate-pulse">
@@ -388,6 +433,16 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
               <span className="material-symbols-outlined text-sm">file_download</span>
               {execFormPdfGenerating ? "Preparing..." : "Download PDF"}
             </button>
+            {isCompleted && (
+              <button
+                onClick={handleDownloadResultReport}
+                disabled={resultReportGenerating}
+                className="flex items-center gap-sm px-md py-sm border border-secondary text-secondary rounded-lg font-label-md hover:bg-secondary/10 transition-colors disabled:opacity-60 disabled:cursor-wait"
+              >
+                <span className="material-symbols-outlined text-sm">summarize</span>
+                {resultReportGenerating ? "Preparing..." : "Download Results Report"}
+              </button>
+            )}
             {canManage && (
               <button
                 onClick={() => { setEditingName(true); setEditName(testRun.name); }}

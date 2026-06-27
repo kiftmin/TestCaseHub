@@ -1107,10 +1107,17 @@ export function TestRunResultReportPDF({
                           <Text style={[rpt.stepHeaderCell, { width: STEP_COL.result }]}>Result</Text>
                         </View>
                         {(tc.steps ?? []).map((step, i) => {
-                          const sr       = exec?.stepResults?.find(r => r.step_id === step.id);
-                          const stepBadge = sr?.passed === true  ? { color: "#15803d", label: "✓" }
-                                          : sr?.passed === false ? { color: "#b91c1c", label: "✗" }
-                                          : { color: "#45464d", label: "—" };
+                          const sr = exec?.stepResults?.find(r => r.step_id === step.id);
+                          // Infer when passed is null (runs recorded before the onResult fix):
+                          // passed TC → all steps pass; failed TC + step has actual_result → that step failed.
+                          const inferredPassed =
+                            sr?.passed !== null && sr?.passed !== undefined ? sr.passed :
+                            exec?.overall_result === "passed" ? true :
+                            sr?.actual_result ? false : null;
+                          const stepBadge =
+                            inferredPassed === true  ? { color: "#15803d", label: "✓" } :
+                            inferredPassed === false ? { color: "#b91c1c", label: "✗" } :
+                                                       { color: "#45464d", label: "—" };
                           return (
                             <View key={step.id} style={[rpt.stepRow, i % 2 === 1 ? rpt.stepRowAlt : {}]}>
                               <Text style={[rpt.stepCell, { width: STEP_COL.num }]}>{step.step_number}</Text>

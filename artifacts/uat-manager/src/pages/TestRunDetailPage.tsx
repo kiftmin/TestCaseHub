@@ -221,18 +221,22 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
   }, [execFormDocument, testRunId]);
 
   // ── Completed results report ────────────────────────────────────────────
-  const { data: runDefects } = useQuery({
-    queryKey: ["test-run-defects", testRunId],
+  // Use /full-report as the single source so stepResults are guaranteed
+  // populated on every execution — the main query cache may not include them.
+  const { data: fullReport } = useQuery({
+    queryKey: ["test-run-full-report", testRunId],
     queryFn: () =>
-      customFetch<{ defects?: RptDefect[] }>(`/test-runs/${testRunId}/full-report`)
-        .then((r) => r.defects ?? []),
+      customFetch<{ defects?: RptDefect[]; executions?: RptExecution[]; useCases?: RptUseCase[] }>(
+        `/test-runs/${testRunId}/full-report`,
+      ),
     enabled: isCompleted,
   });
 
   const storedUser = getStoredUser();
   const resultReportDocument = useMemo(() => {
-    const allUcs   = (testRun as (TestRun & { useCases?: RptUseCase[] }) | undefined)?.useCases ?? [];
-    const allExecs = (testRun as (TestRun & { executions?: RptExecution[] }) | undefined)?.executions ?? [];
+    const allUcs   = fullReport?.useCases   ?? (testRun as (TestRun & { useCases?: RptUseCase[] }) | undefined)?.useCases ?? [];
+    const allExecs = fullReport?.executions ?? [];
+    const allDefs  = fullReport?.defects    ?? [];
     return (
       <TestRunResultReportPDF
         projectName={testRun?.project?.name ?? `Project #${testRun?.project_id ?? ""}`}
@@ -243,10 +247,10 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
         preparedBy={storedUser?.name ?? null}
         useCases={allUcs}
         executions={allExecs}
-        defects={runDefects ?? []}
+        defects={allDefs}
       />
     );
-  }, [testRun, testRunId, runDefects, storedUser?.name]);
+  }, [testRun, testRunId, fullReport, storedUser?.name]);
 
   const [resultReportGenerating, setResultReportGenerating] = useState(false);
   const handleDownloadResultReport = useCallback(async () => {
@@ -1103,6 +1107,24 @@ function ExecutionModal({
 
     setSubmitting(true);
 
+    // Flush any step results that have a definitive passed value but may not
+    // have been persisted yet (e.g. tester filled actual_result after clicking
+    // Pass/Fail without the onChange triggering another API call).
+    try {
+      await Promise.all(
+        stepList
+          .filter((step) => results[step.id]?.passed !== null && results[step.id]?.passed !== undefined)
+          .map((step) =>
+            submitStepResult(
+              step.id,
+              results[step.id].passed!,
+              results[step.id].actual_result ?? "",
+              results[step.id].comments ?? "",
+            ),
+          ),
+      );
+    } catch { /* non-fatal — best effort flush */ }
+
     const result = overallResult || (Object.values(results).every((r) => r.passed === true) ? "passed" : "failed");
 
     try {
@@ -1325,8 +1347,24 @@ function ConfirmDialog({
                   results={results}
                   readOnly={readOnly}
                   onResult={(stepId, r) => {
-                    setResults((prev) => ({ ...prev, [stepId]: { ...prev[stepId], ...r } }));
-                    submitStepResult(stepId, r.passed ?? false, r.actual_result ?? "", r.comments ?? "");
+                    // Always merge the partial update into local state first
+                    setResults((prev) => {
+                      const merged = { ...prev[stepId], ...r };
+                      // Only call the API when passed is explicitly being set —
+                      // not on every textarea keystroke. This prevents spurious
+                      // passed=false writes when the tester is just typing an
+                      // actual result, and ensures actual_result is always sent
+                      // alongside the pass/fail value (not separately).
+                      if (r.passed !== undefined && r.passed !== null) {
+                        submitStepResult(
+                          stepId,
+                          r.passed,
+                          merged.actual_result ?? "",
+                          merged.comments ?? "",
+                        );
+                      }
+                      return { ...prev, [stepId]: merged };
+                    });
                   }}
                   overallResult={overallResult}
                   onOverallResult={readOnly ? undefined : setOverallResult}

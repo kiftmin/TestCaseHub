@@ -1379,7 +1379,18 @@ function ConfirmDialog({
 
         {/* Guided mode footer */}
         {mode === "guided" && !readOnly && (
-          <div className="px-lg py-md border-t border-outline-variant flex items-center justify-between bg-surface-container-low">
+          <div className="border-t border-outline-variant bg-surface-container-low">
+            <div className="px-lg pt-md pb-sm">
+              <label className="font-label-sm text-label-sm text-on-surface-variant">Execution Notes</label>
+              <textarea
+                className="w-full mt-xs bg-surface border border-outline-variant rounded-lg px-md py-sm font-body-sm text-body-sm resize-none"
+                rows={2}
+                placeholder="General observations about this test case execution..."
+                value={testerNotes}
+                onChange={(e) => setTesterNotes(e.target.value)}
+              />
+            </div>
+            <div className="px-lg py-md flex items-center justify-between">
             <button
               disabled={currentStep === 0}
               onClick={() => {
@@ -1432,6 +1443,7 @@ function ConfirmDialog({
                   {submitting ? "Completing..." : "Complete"}
                 </button>
               )}
+            </div>
             </div>
           </div>
         )}
@@ -1757,25 +1769,17 @@ function QuickMode({
       <div className="border-t border-outline-variant pt-md space-y-sm">
         <div>
           <label className="font-label-md text-label-md text-on-surface">Overall Result</label>
-          {readOnly ? (
-            <p className="mt-xs bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm font-body-base">
-              {overallResult || <span className="text-on-surface-variant italic">Not set</span>}
-            </p>
-          ) : (
-            <select
-              className="w-full mt-xs bg-surface border border-outline-variant rounded-lg px-md py-sm font-body-base"
-              value={overallResult}
-              onChange={(e) => onOverallResult?.(e.target.value)}
-            >
-              <option value="">Select result...</option>
-              <option value="passed">Passed</option>
-              <option value="failed">Failed</option>
-              <option value="passed_by_agreement">Passed by Agreement</option>
-            </select>
-          )}
+          <p className="mt-xs bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm font-body-base">
+            {overallResult
+              ? <span className={overallResult === "passed" ? "text-green-700 font-semibold" : overallResult === "failed" ? "text-red-700 font-semibold" : "text-purple-700 font-semibold"}>
+                  {overallResult === "passed" ? "Passed" : overallResult === "failed" ? "Failed" : "Passed by Agreement"}
+                </span>
+              : <span className="text-on-surface-variant italic">Calculated from step results on completion</span>
+            }
+          </p>
         </div>
         <div>
-          <label className="font-label-md text-label-md text-on-surface">Notes</label>
+          <label className="font-label-md text-label-md text-on-surface">Execution Notes</label>
           {readOnly ? (
             <p className="w-full mt-xs bg-surface-container-low border border-outline-variant rounded-lg p-md font-body-sm text-body-sm">
               {testerNotes || <span className="text-on-surface-variant italic">No notes</span>}
@@ -1784,7 +1788,7 @@ function QuickMode({
             <textarea
               className="w-full mt-xs bg-surface border border-outline-variant rounded-lg p-md font-body-sm text-body-sm resize-none"
               rows={3}
-              placeholder="Execution notes..."
+              placeholder="General observations about this test case execution..."
               value={testerNotes}
               onChange={(e) => onTesterNotes?.(e.target.value)}
             />

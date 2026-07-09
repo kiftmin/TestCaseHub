@@ -919,7 +919,7 @@ const rpt = StyleSheet.create({
   pageFooterPageNum: { fontSize: 7, color: "#4648d4", fontFamily: "Helvetica-Bold" },
 });
 
-const STEP_COL = { num: "6%", instruction: "24%", expected: "22%", actual: "22%", notes: "18%", result: "8%" } as const;
+const STEP_COL = { num: "6%", instruction: "24%", expected: "22%", actual: "22%", notes: "15%", result: "11%" } as const;
 const DEF_COL  = { id: "10%", tc: "22%", severity: "11%", status: "13%", regression: "11%", notes: "33%" } as const;
 
 function resultBadge(result: string | null) {
@@ -1107,7 +1107,11 @@ export function TestRunResultReportPDF({
                           <Text style={[rpt.stepHeaderCell, { width: STEP_COL.result }]}>Result</Text>
                         </View>
                         {(tc.steps ?? []).map((step, i) => {
-                          const sr = exec?.stepResults?.find(r => r.step_id === step.id);
+                          // Take highest-ID result per step — matches execution engine deduplication
+                          const matchingSrs = exec?.stepResults?.filter(r => r.step_id === step.id) ?? [];
+                          const sr = matchingSrs.length > 0
+                            ? matchingSrs.reduce((best, r) => (r.step_id > best.step_id ? r : best), matchingSrs[0])
+                            : undefined;
                           // Infer when passed is null (runs recorded before the onResult fix):
                           // passed TC → all steps pass; failed TC + step has actual_result → that step failed.
                           const inferredPassed =
@@ -1115,8 +1119,8 @@ export function TestRunResultReportPDF({
                             exec?.overall_result === "passed" ? true :
                             sr?.actual_result ? false : null;
                           const stepBadge =
-                            inferredPassed === true  ? { color: "#15803d", label: "✓" } :
-                            inferredPassed === false ? { color: "#b91c1c", label: "✗" } :
+                            inferredPassed === true  ? { color: "#15803d", label: "PASS" } :
+                            inferredPassed === false ? { color: "#b91c1c", label: "FAIL" } :
                                                        { color: "#45464d", label: "—" };
                           return (
                             <View key={step.id} style={[rpt.stepRow, i % 2 === 1 ? rpt.stepRowAlt : {}]}>

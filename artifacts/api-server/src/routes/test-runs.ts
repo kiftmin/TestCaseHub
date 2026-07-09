@@ -132,7 +132,7 @@ router.get("/:testRunId", async (req: AuthenticatedRequest, res, next) => {
       where: eq(schema.testRuns.id, testRunId),
       with: {
         checklistItems: { orderBy: [asc(schema.testRunChecklistItems.sort_order)] },
-        executions: { with: { stepResults: { orderBy: [desc(schema.stepResults.recorded_at)] } } },
+        executions: { with: { stepResults: { orderBy: [asc(schema.stepResults.id)] } } },
         useCases: {
           with: {
             useCase: {

@@ -577,6 +577,14 @@ router.patch("/defects/:defectId/block", async (req: AuthenticatedRequest, res, 
       res.status(409).json({ message: `Cannot block defect in status ${defect.status}. Only TRIAGED, ASSIGNED, IN_PROGRESS, or REGRESSED defects can be blocked.` });
       return;
     }
+    // DEVELOPER can only block their own defect; TEST_LEAD can block any
+    if (defect.assigned_to_user_id !== req.user!.userId) {
+      const isTestLead = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+      if (!isTestLead) {
+        res.status(403).json({ message: "You can only block defects assigned to you." });
+        return;
+      }
+    }
 
     const [updated] = await db.update(schema.defects)
       .set({ is_blocked: true, blocked_reason: data.reason, updated_at: new Date() })

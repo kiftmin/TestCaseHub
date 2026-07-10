@@ -1268,8 +1268,8 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">bug_report</span>
               </button>
             )}
-            {/* Block (TRIAGED | ASSIGNED | IN_PROGRESS | REGRESSED) — sets is_blocked flag */}
-            {(isDeveloper || canManage) && (isTriaged || isAssigned || isInProgress) && !isBlocked && (
+            {/* Block (TRIAGED | ASSIGNED | IN_PROGRESS | REGRESSED) — assigned dev or manager */}
+            {(isDeveloper || canManage) && (isTriaged || isAssigned || isInProgress) && !isBlocked && (canManage || defect.assigned_to_user_id === user?.userId) && (
               <button
                 onClick={() => setBlockOpen(true)}
                 className="action-btn action-btn-red"

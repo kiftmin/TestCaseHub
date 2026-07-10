@@ -863,6 +863,7 @@ function DefectRow({
   onMutated: () => void;
   activeTab: string;
 }) {
+  const user = getStoredUser();
   const queryClient = useQueryClient();
   const [classifyOpen, setClassifyOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);

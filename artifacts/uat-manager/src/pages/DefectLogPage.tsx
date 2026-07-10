@@ -1300,8 +1300,8 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">block</span>
               </button>
             )}
-            {/* Unblock — clears the is_blocked flag */}
-            {(isDeveloper || canManage) && isBlocked && (
+            {/* Unblock — assigned dev or manager */}
+            {(isDeveloper || canManage) && isBlocked && (canManage || defect.assigned_to_user_id === user?.userId) && (
               <button
                 onClick={() => setUnblockOpen(true)}
                 className="action-btn action-btn-green"

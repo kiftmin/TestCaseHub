@@ -1,9 +1,9 @@
 import express from "express";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
 
 const router = express.Router();
 
@@ -32,6 +32,19 @@ router.post("/projects/:projectId/users", async (req: AuthenticatedRequest, res,
       isQa: z.boolean().optional().default(false),
     });
     const data = bodySchema.parse(req.body);
+
+    // Enforce single role per user on a project
+    const existing = await db.query.projectAssignments.findFirst({
+      where: and(
+        eq(schema.projectAssignments.project_id, projectId),
+        eq(schema.projectAssignments.user_id, data.userId),
+      ),
+      columns: { id: true, role: true },
+    });
+    if (existing) {
+      res.status(409).json({ message: `User already has the role "${existing.role}" on this project. Use the role update (PATCH) to change it.` });
+      return;
+    }
 
     // is_qa is only meaningful on DEVELOPER assignments — force it to false otherwise.
     const isQa = data.role === "DEVELOPER" ? (data.isQa ?? false) : false;
@@ -96,6 +109,54 @@ router.delete("/projects/:projectId/users/:userId", async (req: AuthenticatedReq
 
     if (req.user!.userId === userId) {
       res.status(400).json({ message: "Cannot remove yourself" });
+      return;
+    }
+
+    // Find the assignment to check the user's role
+    const assignment = await db.query.projectAssignments.findFirst({
+      where: and(
+        eq(schema.projectAssignments.project_id, projectId),
+        eq(schema.projectAssignments.user_id, userId),
+      ),
+      columns: { role: true },
+    });
+    if (!assignment) { res.status(404).json({ message: "Assignment not found" }); return; }
+
+    // Prevent removing a TEST_LEAD
+    if (assignment.role === "TEST_LEAD") {
+      res.status(400).json({ message: "Cannot remove a test lead. Reassign the test lead role first." });
+      return;
+    }
+
+    // Check active defects assigned to this user
+    const activeDefect = await db.query.defects.findFirst({
+      where: and(
+        eq(schema.defects.project_id, projectId),
+        eq(schema.defects.assigned_to_user_id, userId),
+        notInArray(schema.defects.status, ["CLOSED", "PASSED_BY_AGREEMENT"]),
+      ),
+      columns: { id: true },
+    });
+    if (activeDefect) {
+      res.status(409).json({ message: "Cannot remove a user with active defects. Reassign or close their defects first." });
+      return;
+    }
+
+    // Check test run use cases assigned to this user in this project
+    const projectTestRunIds = db.select({ id: schema.testRuns.id })
+      .from(schema.testRuns)
+      .where(eq(schema.testRuns.project_id, projectId));
+
+    const activeTestRunAssignment = await db.query.testRunUseCases.findFirst({
+      where: and(
+        eq(schema.testRunUseCases.assigned_tester_id, userId),
+        inArray(schema.testRunUseCases.test_run_id, projectTestRunIds),
+        notInArray(schema.testRunUseCases.status, ["passed", "passed_by_agreement", "failed"]),
+      ),
+      columns: { id: true },
+    });
+    if (activeTestRunAssignment) {
+      res.status(409).json({ message: "Cannot remove a user with active test run assignments. Reassign or complete their test runs first." });
       return;
     }
 

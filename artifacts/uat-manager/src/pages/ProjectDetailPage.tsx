@@ -427,6 +427,7 @@ function TeamTab({ projectId }: { projectId: number }) {
       {/* Add Member Dialog */}
       {addOpen && (
           <AddMemberDialog
+            existingUserIds={assignments?.map((a) => a.user_id) ?? []}
             onSave={(d) => addMutation.mutate({ userId: d.userId, role: d.role, isQa: d.isQa })}
             onClose={() => setAddOpen(false)}
             saving={addMutation.isPending}
@@ -452,10 +453,12 @@ function TeamTab({ projectId }: { projectId: number }) {
 /* ───────────── Add Member Dialog ───────────── */
 
 function AddMemberDialog({
+  existingUserIds,
   onSave,
   onClose,
   saving,
 }: {
+  existingUserIds: number[];
   onSave: (d: { userId: number; role: string; isQa?: boolean }) => void;
   onClose: () => void;
   saving: boolean;
@@ -488,12 +491,15 @@ function AddMemberDialog({
               Select a user...
             </option>
             {users
-              ?.filter((u) => u.is_active)
+              ?.filter((u) => u.is_active && !existingUserIds.includes(u.id))
               .map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.name} ({u.username})
                 </option>
               ))}
+          {users?.filter((u) => u.is_active && !existingUserIds.includes(u.id)).length === 0 && (
+            <option value="" disabled>All users are already members</option>
+          )}
           </select>
         </div>
         <div className="space-y-sm">

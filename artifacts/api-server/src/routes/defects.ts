@@ -717,6 +717,12 @@ router.patch("/defects/:defectId/qa-review", async (req: AuthenticatedRequest, r
       return;
     }
 
+    // A developer cannot QA review their own defect
+    if (defect.assigned_to_user_id === req.user!.userId) {
+      res.status(400).json({ message: "A developer cannot QA review a defect assigned to themselves." });
+      return;
+    }
+
     const oldStatus = defect.status;
     const regressionIndex = defect.regression_index ?? 0;
 

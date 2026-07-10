@@ -47,6 +47,8 @@ export async function logSystemNote(defectId: number, fromStatus: string | null 
     noteText = `System Note: Defect status changed from '${fromStatus ?? "N/A"}' to '${toStatus}' by ${userName}.`;
     if (reason) {
       noteText += ` Reason: ${reason}`;
+    } else {
+      noteText += ` No reason provided.`;
     }
   }
   await db.insert(schema.defectNotes).values({

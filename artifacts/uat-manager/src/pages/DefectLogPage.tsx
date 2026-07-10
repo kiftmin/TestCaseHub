@@ -296,6 +296,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
   const [severityFilter, setSeverityFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [developerFilter, setDeveloperFilter] = useState("all");
+  const [blockedFilter, setBlockedFilter] = useState("all");
 
   const { data: projectUsers } = useQuery({
     queryKey: ["project-users", projectId],
@@ -336,7 +337,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
   const tabStatuses = useMemo(() => {
     if (activeTab === "full" || activeTab === "my") return new Set(Object.keys(statusBadge));
     if (activeTab === "business") return new Set([...DEFECT_VIEWS.BUSINESS.active, ...DEFECT_VIEWS.BUSINESS.withDev, ...DEFECT_VIEWS.BUSINESS.historical]);
-    if (activeTab === "developer") return new Set([...DEFECT_VIEWS.DEVELOPER.actionable, ...DEFECT_VIEWS.DEVELOPER.recentlyResolved]);
+    if (activeTab === "developer") return new Set([...DEFECT_VIEWS.DEVELOPER.actionable, ...DEFECT_VIEWS.DEVELOPER.recentlyResolved, ...DEFECT_VIEWS.DEVELOPER.awaitingHandoff]);
     return new Set(Object.keys(statusBadge));
   }, [activeTab]);
 
@@ -394,6 +395,8 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
       } else if (statusFilter !== "all" && d.status !== statusFilter) return false;
       if (severityFilter !== "all" && d.severity !== severityFilter) return false;
       if (activeTab !== "my" && developerFilter !== "all" && d.assigned_to_user_id !== Number(developerFilter)) return false;
+      if (blockedFilter === "blocked" && !d.is_blocked) return false;
+      if (blockedFilter === "not-blocked" && d.is_blocked) return false;
       if (search) {
         const q = search.toLowerCase();
         const match =
@@ -404,7 +407,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
       }
       return true;
     });
-  }, [tabFiltered, runFilter, statusFilter, severityFilter, developerFilter, search, activeTab]);
+  }, [tabFiltered, runFilter, statusFilter, severityFilter, developerFilter, blockedFilter, search, activeTab]);
 
   const handleSort = (field: string) => {
     if (sortField === field) {
@@ -596,6 +599,18 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
               </div>
             )}
             <div className="space-y-1">
+              <label className="text-[10px] font-bold text-outline uppercase tracking-wider">Blocked</label>
+              <select
+                value={blockedFilter}
+                onChange={(e) => setBlockedFilter(e.target.value)}
+                className="w-full bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm text-sm focus:outline-none focus:ring-2 focus:ring-secondary/30 focus:border-secondary transition-all"
+              >
+                <option value="all">All</option>
+                <option value="blocked">Blocked</option>
+                <option value="not-blocked">Not Blocked</option>
+              </select>
+            </div>
+            <div className="space-y-1">
               <label className="text-[10px] font-bold text-outline uppercase tracking-wider">Search</label>
               <input
                 type="text"
@@ -607,7 +622,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             </div>
             <div className="flex items-end">
               <button
-                onClick={() => { setRunFilter("all"); setStatusFilter("all"); setSeverityFilter("all"); setDeveloperFilter("all"); setSearch(""); }}
+                onClick={() => { setRunFilter("all"); setStatusFilter("all"); setSeverityFilter("all"); setDeveloperFilter("all"); setBlockedFilter("all"); setSearch(""); }}
                 className="w-full bg-surface-container-high text-on-surface font-label-md text-label-md py-sm rounded-lg hover:bg-outline-variant transition-colors flex items-center justify-center gap-2"
               >
                 <span className="material-symbols-outlined text-sm">filter_list</span>

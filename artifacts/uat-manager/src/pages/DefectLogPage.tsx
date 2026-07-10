@@ -1320,8 +1320,8 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">undo</span>
               </button>
             )}
-            {/* QA Review (RESOLVED_DEV → QA_PASSED | IN_PROGRESS) — QA-flagged developers only */}
-            {isQa && defect.status === "RESOLVED_DEV" && (
+            {/* QA Review (RESOLVED_DEV → QA_PASSED | IN_PROGRESS) — QA-flagged devs only, not on own defect */}
+            {isQa && defect.status === "RESOLVED_DEV" && defect.assigned_to_user_id !== user?.userId && (
               <>
                 <button
                   onClick={() => setQaReviewOpen(true)}

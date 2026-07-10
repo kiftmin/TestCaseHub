@@ -393,7 +393,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
         if (!DEV_INTERNAL_STATUSES.has(d.status)) return false;
       } else if (statusFilter !== "all" && d.status !== statusFilter) return false;
       if (severityFilter !== "all" && d.severity !== severityFilter) return false;
-      if (developerFilter !== "all" && d.assigned_to_user_id !== Number(developerFilter)) return false;
+      if (activeTab !== "my" && developerFilter !== "all" && d.assigned_to_user_id !== Number(developerFilter)) return false;
       if (search) {
         const q = search.toLowerCase();
         const match =
@@ -404,7 +404,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
       }
       return true;
     });
-  }, [tabFiltered, runFilter, statusFilter, severityFilter, developerFilter, search]);
+  }, [tabFiltered, runFilter, statusFilter, severityFilter, developerFilter, search, activeTab]);
 
   const handleSort = (field: string) => {
     if (sortField === field) {
@@ -505,10 +505,12 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
                 Full Board
               </TabsTrigger>
             )}
-            <TabsTrigger value="my">
-              <span className="material-symbols-outlined text-sm">person</span>
-              My Defects
-            </TabsTrigger>
+            {role === "DEVELOPER" && (
+              <TabsTrigger value="my">
+                <span className="material-symbols-outlined text-sm">person</span>
+                My Defects
+              </TabsTrigger>
+            )}
           </TabsList>
           <div className="flex items-center gap-sm">
             <button
@@ -578,19 +580,21 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
                 <option value="Cosmetic">Cosmetic</option>
               </select>
             </div>
-            <div className="space-y-1">
-              <label className="text-[10px] font-bold text-outline uppercase tracking-wider">Developer</label>
-              <select
-                value={developerFilter}
-                onChange={(e) => setDeveloperFilter(e.target.value)}
-                className="w-full bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm text-sm focus:outline-none focus:ring-2 focus:ring-secondary/30 focus:border-secondary transition-all"
-              >
-                <option value="all">All Developers</option>
-                {developers.map((d) => (
-                  <option key={d.user_id} value={d.user_id}>{d.user.name}</option>
-                ))}
-              </select>
-            </div>
+            {activeTab !== "my" && (
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-outline uppercase tracking-wider">Developer</label>
+                <select
+                  value={developerFilter}
+                  onChange={(e) => setDeveloperFilter(e.target.value)}
+                  className="w-full bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm text-sm focus:outline-none focus:ring-2 focus:ring-secondary/30 focus:border-secondary transition-all"
+                >
+                  <option value="all">All Developers</option>
+                  {developers.map((d) => (
+                    <option key={d.user_id} value={d.user_id}>{d.user.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-outline uppercase tracking-wider">Search</label>
               <input

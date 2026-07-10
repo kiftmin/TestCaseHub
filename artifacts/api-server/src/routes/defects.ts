@@ -189,7 +189,11 @@ router.patch("/defects/:defectId/classify", async (req: AuthenticatedRequest, re
 
     if (data.assigned_to_user_id !== undefined) {
       updateData.assigned_to_user_id = data.assigned_to_user_id;
-      if (oldStatus === "NEW" || oldStatus === "TRIAGED") {
+      if (oldStatus === "NEW") {
+        // Log intermediate TRIAGED step so the stepper tracks it as visited
+        await logSystemNote(defectId, "NEW", "TRIAGED", req.user!.userId);
+        targetStatus = "ASSIGNED";
+      } else if (oldStatus === "TRIAGED") {
         targetStatus = "ASSIGNED";
       }
     } else if (oldStatus === "NEW") {
@@ -212,6 +216,9 @@ router.patch("/defects/:defectId/classify", async (req: AuthenticatedRequest, re
     if (targetStatus !== oldStatus) {
       await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: targetStatus });
       await logSystemNote(defectId, oldStatus, targetStatus, req.user!.userId, assignedUserText || undefined);
+    } else {
+      // Reclassification without status change — log a system note for the severity/priority update
+      await logSystemNote(defectId, oldStatus, oldStatus, req.user!.userId, `Reclassified: severity=${data.severity}, priority=${data.priority}`);
     }
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: oldStatus, reason: `Reclassified: severity=${data.severity}, priority=${data.priority}` });
     res.json(updated);
@@ -562,8 +569,8 @@ router.patch("/defects/:defectId/block", async (req: AuthenticatedRequest, res, 
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    if (defect.status !== "ASSIGNED" && defect.status !== "IN_PROGRESS" && defect.status !== "REGRESSED") {
-      res.status(409).json({ message: `Cannot block defect in status ${defect.status}. Only ASSIGNED, IN_PROGRESS, or REGRESSED defects can be blocked.` });
+    if (defect.status !== "TRIAGED" && defect.status !== "ASSIGNED" && defect.status !== "IN_PROGRESS" && defect.status !== "REGRESSED") {
+      res.status(409).json({ message: `Cannot block defect in status ${defect.status}. Only TRIAGED, ASSIGNED, IN_PROGRESS, or REGRESSED defects can be blocked.` });
       return;
     }
 

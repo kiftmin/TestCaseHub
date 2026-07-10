@@ -1209,8 +1209,8 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">category</span>
               </button>
             )}
-            {/* Assign (NEW → skip; TRIAGED → ASSIGNED) */}
-            {canManage && (isNew || isTriaged) && (
+            {/* Assign (TRIAGED → ASSIGNED; NEW only when not blocked) */}
+            {canManage && (isTriaged || (isNew && !isBlocked)) && (
               <button
                 onClick={() => handleUntriagedAction("assign")}
                 className="action-btn action-btn-amber"
@@ -1239,8 +1239,8 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">bug_report</span>
               </button>
             )}
-            {/* Block (ASSIGNED | IN_PROGRESS) — toggles is_blocked flag */}
-            {(isDeveloper || canManage) && (isAssigned || isInProgress) && !isBlocked && (
+            {/* Block (TRIAGED | ASSIGNED | IN_PROGRESS | REGRESSED) — sets is_blocked flag */}
+            {(isDeveloper || canManage) && (isTriaged || isAssigned || isInProgress) && !isBlocked && (
               <button
                 onClick={() => setBlockOpen(true)}
                 className="action-btn action-btn-red"
@@ -1311,8 +1311,8 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">fact_check</span>
               </button>
             )}
-            {/* Flag Blocked from NEW */}
-            {canManage && isNew && (
+            {/* Flag Blocked from NEW — hidden when already blocked */}
+            {canManage && isNew && !isBlocked && (
               <button
                 onClick={() => handleUntriagedAction("block")}
                 className="action-btn action-btn-red"
@@ -1786,7 +1786,12 @@ function DefectRow({
                   const next = pendingAfterClassify;
                   setPendingAfterClassify(null);
                   invalidateProject();
-                  if (next && next !== "assign") {
+                  if (data.blockReason) {
+                    flagBlockedNewMut.mutate(data.blockReason);
+                  }
+                  if (next === "assign" && data.assigned_to_user_id === undefined) {
+                    proceedWithAction("assign");
+                  } else if (next && next !== "assign") {
                     proceedWithAction(next);
                   }
                 },
@@ -1794,6 +1799,8 @@ function DefectRow({
               });
             }}
             loading={classifyMut.isPending}
+            isBlocked={isBlocked}
+            showAssignOption={isNew}
           />
         </Dialog>
       )}
@@ -2046,8 +2053,9 @@ function DefectRow({
               <div>
                 <p className="font-label-md text-label-md text-amber-900 mb-xs">No severity or priority assigned</p>
                 <p className="font-body-sm text-body-sm text-amber-800">
-                  This defect is still in NEW status without a Severity or Priority classification. 
+                  This defect is still in NEW status without a Severity or Priority classification.
                   It is strongly recommended to triage the defect first so downstream teams have the full picture.
+                  {untriagedAction === "assign" && " Assignment requires the defect to be triaged first."}
                 </p>
               </div>
             </div>
@@ -2058,12 +2066,14 @@ function DefectRow({
               >
                 Triage First
               </button>
-              <button
-                onClick={() => proceedWithAction(untriagedAction)}
-                className="flex-1 py-sm bg-surface-container-high text-on-surface rounded-lg font-label-md hover:bg-outline-variant transition-colors"
-              >
-                Proceed Anyway
-              </button>
+              {untriagedAction !== "assign" && (
+                <button
+                  onClick={() => proceedWithAction(untriagedAction)}
+                  className="flex-1 py-sm bg-surface-container-high text-on-surface rounded-lg font-label-md hover:bg-outline-variant transition-colors"
+                >
+                  Proceed Anyway
+                </button>
+              )}
               <button
                 onClick={() => setUntriagedAction(null)}
                 className="py-sm px-md bg-surface text-on-surface-variant rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
@@ -2096,10 +2106,12 @@ function Dialog({ children, onClose, title }: { children: React.ReactNode; onClo
   );
 }
 
-function ClassifyForm({ projectId, onSave, loading }: { projectId: number; onSave: (d: { severity: string; priority: string; assigned_to_user_id?: number }) => void; loading: boolean }) {
+function ClassifyForm({ projectId, onSave, loading, isBlocked, showAssignOption }: { projectId: number; onSave: (d: { severity: string; priority: string; assigned_to_user_id?: number; blockReason?: string }) => void; loading: boolean; isBlocked?: boolean; showAssignOption?: boolean }) {
   const [severity, setSeverity] = useState("Major");
   const [priority, setPriority] = useState("P2");
   const [assignedId, setAssignedId] = useState<number | null>(null);
+  const [flagBlocked, setFlagBlocked] = useState(false);
+  const [blockReason, setBlockReason] = useState("");
 
   const { data: assignments } = useQuery({
     queryKey: ["project-users", projectId],
@@ -2108,7 +2120,7 @@ function ClassifyForm({ projectId, onSave, loading }: { projectId: number; onSav
   const developers = assignments?.filter((a) => a.role === "DEVELOPER") ?? [];
 
   return (
-    <form onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); onSave({ severity, priority, ...(assignedId != null ? { assigned_to_user_id: assignedId } : {}) }); }} className="space-y-md">
+    <form onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); onSave({ severity, priority, ...(assignedId != null ? { assigned_to_user_id: assignedId } : {}), ...(flagBlocked && blockReason.trim() ? { blockReason: blockReason.trim() } : {}) }); }} className="space-y-md">
       <div className="space-y-sm">
         <label className="font-label-sm text-label-sm">Severity</label>
         <select value={severity} onChange={(e) => setSeverity(e.target.value)} className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm">
@@ -2127,16 +2139,32 @@ function ClassifyForm({ projectId, onSave, loading }: { projectId: number; onSav
           <option value="P4">P4</option>
         </select>
       </div>
-      <div className="space-y-sm">
-        <label className="font-label-sm text-label-sm">Assign to Developer (optional)</label>
-        <select value={assignedId ?? ""} onChange={(e) => setAssignedId(e.target.value ? Number(e.target.value) : null)} className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm">
-          <option value="">— Not assigned —</option>
-          {developers.map((d) => (
-            <option key={d.user_id} value={d.user_id}>{d.user.name} ({d.user.username})</option>
-          ))}
-        </select>
-      </div>
-      <button type="submit" disabled={loading} className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
+      {showAssignOption && (
+        <div className="space-y-sm">
+          <label className="font-label-sm text-label-sm">Assign to Developer (optional)</label>
+          <select value={assignedId ?? ""} onChange={(e) => setAssignedId(e.target.value ? Number(e.target.value) : null)} className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm">
+            <option value="">— Not assigned —</option>
+            {developers.map((d) => (
+              <option key={d.user_id} value={d.user_id}>{d.user.name} ({d.user.username})</option>
+            ))}
+          </select>
+        </div>
+      )}
+      {!isBlocked && (
+        <div className="border-t border-outline-variant/40 pt-md">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={flagBlocked} onChange={(e) => { setFlagBlocked(e.target.checked); if (!e.target.checked) setBlockReason(""); }} className="w-4 h-4 rounded border-outline-variant text-red-600 focus:ring-red-500" />
+            <span className="font-label-sm text-label-sm">Flag as Blocked</span>
+          </label>
+          {flagBlocked && (
+            <div className="space-y-sm mt-sm">
+              <label className="font-label-sm text-label-sm">Block Reason *</label>
+              <textarea value={blockReason} onChange={(e) => setBlockReason(e.target.value)} className="w-full h-24 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Describe the environmental crash, third-party failure, or missing requirement..." required />
+            </div>
+          )}
+        </div>
+      )}
+      <button type="submit" disabled={loading || (flagBlocked && !blockReason.trim())} className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
         {loading ? "Saving..." : "Classify"}
       </button>
     </form>

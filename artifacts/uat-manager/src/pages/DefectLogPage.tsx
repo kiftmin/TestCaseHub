@@ -295,6 +295,13 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
   const [statusFilter, setStatusFilter] = useState("all");
   const [severityFilter, setSeverityFilter] = useState("all");
   const [search, setSearch] = useState("");
+  const [developerFilter, setDeveloperFilter] = useState("all");
+
+  const { data: projectUsers } = useQuery({
+    queryKey: ["project-users", projectId],
+    queryFn: () => customFetch<ProjectAssignment[]>(`/projects/${projectId}/users`),
+  });
+  const developers = projectUsers?.filter((a) => a.role === "DEVELOPER") ?? [];
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [sortField, setSortField] = useState<string>("id");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -312,6 +319,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     setStatusFilter("all");
     setSeverityFilter("all");
     setSearch("");
+    setDeveloperFilter("all");
   }, [activeTab]);
 
   const { data: testRuns } = useQuery({
@@ -385,6 +393,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
         if (!DEV_INTERNAL_STATUSES.has(d.status)) return false;
       } else if (statusFilter !== "all" && d.status !== statusFilter) return false;
       if (severityFilter !== "all" && d.severity !== severityFilter) return false;
+      if (developerFilter !== "all" && d.assigned_to_user_id !== Number(developerFilter)) return false;
       if (search) {
         const q = search.toLowerCase();
         const match =
@@ -395,7 +404,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
       }
       return true;
     });
-  }, [tabFiltered, runFilter, statusFilter, severityFilter, search]);
+  }, [tabFiltered, runFilter, statusFilter, severityFilter, developerFilter, search]);
 
   const handleSort = (field: string) => {
     if (sortField === field) {
@@ -528,7 +537,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
 
         {/* Filter Bar */}
         <section className="bg-surface border border-outline-variant rounded-xl p-md shadow-sm">
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-md">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-md">
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-outline uppercase tracking-wider">Test Run</label>
               <select
@@ -570,6 +579,19 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
               </select>
             </div>
             <div className="space-y-1">
+              <label className="text-[10px] font-bold text-outline uppercase tracking-wider">Developer</label>
+              <select
+                value={developerFilter}
+                onChange={(e) => setDeveloperFilter(e.target.value)}
+                className="w-full bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm text-sm focus:outline-none focus:ring-2 focus:ring-secondary/30 focus:border-secondary transition-all"
+              >
+                <option value="all">All Developers</option>
+                {developers.map((d) => (
+                  <option key={d.user_id} value={d.user_id}>{d.user.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
               <label className="text-[10px] font-bold text-outline uppercase tracking-wider">Search</label>
               <input
                 type="text"
@@ -581,7 +603,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             </div>
             <div className="flex items-end">
               <button
-                onClick={() => { setRunFilter("all"); setStatusFilter("all"); setSeverityFilter("all"); setSearch(""); }}
+                onClick={() => { setRunFilter("all"); setStatusFilter("all"); setSeverityFilter("all"); setDeveloperFilter("all"); setSearch(""); }}
                 className="w-full bg-surface-container-high text-on-surface font-label-md text-label-md py-sm rounded-lg hover:bg-outline-variant transition-colors flex items-center justify-center gap-2"
               >
                 <span className="material-symbols-outlined text-sm">filter_list</span>

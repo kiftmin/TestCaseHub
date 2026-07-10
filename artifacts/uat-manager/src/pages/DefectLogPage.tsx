@@ -326,7 +326,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
   });
 
   const tabStatuses = useMemo(() => {
-    if (activeTab === "full") return new Set(Object.keys(statusBadge));
+    if (activeTab === "full" || activeTab === "my") return new Set(Object.keys(statusBadge));
     if (activeTab === "business") return new Set([...DEFECT_VIEWS.BUSINESS.active, ...DEFECT_VIEWS.BUSINESS.withDev, ...DEFECT_VIEWS.BUSINESS.historical]);
     if (activeTab === "developer") return new Set([...DEFECT_VIEWS.DEVELOPER.actionable, ...DEFECT_VIEWS.DEVELOPER.recentlyResolved]);
     return new Set(Object.keys(statusBadge));
@@ -338,6 +338,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
 
   const tabFiltered = useMemo(() => {
     if (activeTab === "full") return allDefects ?? [];
+    if (activeTab === "my") return (allDefects ?? []).filter((d) => d.assigned_to_user_id === user?.userId);
     if (activeTab === "business") {
       const valid = new Set([...DEFECT_VIEWS.BUSINESS.active, ...DEFECT_VIEWS.BUSINESS.withDev, ...DEFECT_VIEWS.BUSINESS.historical]);
       return (allDefects ?? []).filter((d) => valid.has(d.status));
@@ -347,7 +348,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
       return (allDefects ?? []).filter((d) => valid.has(d.status));
     }
     return allDefects ?? [];
-  }, [allDefects, activeTab]);
+  }, [allDefects, activeTab, user?.userId]);
 
   const statusDist = useMemo(() => {
     const map: Record<string, number> = {};
@@ -495,6 +496,10 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
                 Full Board
               </TabsTrigger>
             )}
+            <TabsTrigger value="my">
+              <span className="material-symbols-outlined text-sm">person</span>
+              My Defects
+            </TabsTrigger>
           </TabsList>
           <div className="flex items-center gap-sm">
             <button
@@ -633,6 +638,29 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
         </TabsContent>
 
         <TabsContent value="full">
+          <TabContent
+            statusDist={statusDist}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            total={total}
+            sorted={sorted}
+            role={role}
+            canManage={canManage}
+            isBusinessOwner={isBusinessOwner}
+            isTester={isTester}
+            isDeveloper={isDeveloper}
+            isQa={isQa}
+            projectId={projectId}
+            expandedId={expandedId}
+            setExpandedId={setExpandedId}
+            sortField={sortField}
+            sortDir={sortDir}
+            handleSort={handleSort}
+            activeTab={activeTab}
+          />
+        </TabsContent>
+
+        <TabsContent value="my">
           <TabContent
             statusDist={statusDist}
             statusFilter={statusFilter}

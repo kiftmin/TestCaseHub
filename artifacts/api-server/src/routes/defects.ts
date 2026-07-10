@@ -540,6 +540,10 @@ router.patch("/defects/:defectId/start", async (req: AuthenticatedRequest, res, 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
     if (defect.status !== "ASSIGNED") { res.status(409).json({ message: `Cannot start defect in status ${defect.status}. Only ASSIGNED defects can be started.` }); return; }
+    if (defect.assigned_to_user_id !== req.user!.userId) {
+      res.status(403).json({ message: "You can only start work on defects assigned to you." });
+      return;
+    }
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
@@ -663,6 +667,10 @@ router.patch("/defects/:defectId/resolve", async (req: AuthenticatedRequest, res
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    if (defect.assigned_to_user_id !== req.user!.userId) {
+      res.status(403).json({ message: "You can only resolve defects assigned to you." });
+      return;
+    }
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)

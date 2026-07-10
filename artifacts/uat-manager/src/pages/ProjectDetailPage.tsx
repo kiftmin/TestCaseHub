@@ -293,7 +293,7 @@ function TeamTab({ projectId }: { projectId: number }) {
   }, [queryClient, projectId]);
 
   const addMutation = useMutation({
-    mutationFn: (d: { userId: number; role: string }) =>
+    mutationFn: (d: { userId: number; role: string; isQa?: boolean }) =>
       customFetch(`/projects/${projectId}/users`, {
         method: "POST",
         body: JSON.stringify(d),
@@ -302,6 +302,19 @@ function TeamTab({ projectId }: { projectId: number }) {
       invalidate();
       setAddOpen(false);
       toast.success("Member added");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const patchMutation = useMutation({
+    mutationFn: (d: { userId: number; isQa: boolean }) =>
+      customFetch(`/projects/${projectId}/users/${d.userId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ isQa: d.isQa }),
+      }),
+    onSuccess: () => {
+      invalidate();
+      toast.success("QA flag updated");
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -369,15 +382,33 @@ function TeamTab({ projectId }: { projectId: number }) {
               </div>
               <div>
                 <p className="font-label-md text-label-md">{a.user?.name ?? "Unknown"}</p>
-                <p
-                  className={`text-[10px] font-bold uppercase tracking-tighter ${
-                    roleColors[a.role] ?? "text-on-surface-variant"
-                  }`}
-                >
-                  {a.role}
-                </p>
+                <div className="flex items-center gap-1.5">
+                  <p
+                    className={`text-[10px] font-bold uppercase tracking-tighter ${
+                      roleColors[a.role] ?? "text-on-surface-variant"
+                    }`}
+                  >
+                    {a.role}
+                  </p>
+                  {a.role === "DEVELOPER" && a.is_qa && (
+                    <span className="text-[9px] font-bold uppercase tracking-tighter bg-teal-100 text-teal-700 px-1 rounded">
+                      QA
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
+            {canManage && a.role === "DEVELOPER" && (
+              <button
+                onClick={() => patchMutation.mutate({ userId: a.user_id, isQa: !a.is_qa })}
+                className={`text-[10px] font-bold uppercase tracking-tighter px-1.5 py-0.5 rounded border ${
+                  a.is_qa ? "bg-teal-100 text-teal-700 border-teal-200" : "bg-surface border-outline-variant text-on-surface-variant hover:bg-surface-container-high"
+                }`}
+                title="Toggle QA review capability"
+              >
+                {a.is_qa ? "QA ✓" : "Set QA"}
+              </button>
+            )}
             {canManage && (
               <button
                 onClick={() => setRemoveTarget(a)}
@@ -396,10 +427,10 @@ function TeamTab({ projectId }: { projectId: number }) {
       {/* Add Member Dialog */}
       {addOpen && (
           <AddMemberDialog
-            onSave={(d) => addMutation.mutate({ userId: d.userId, role: d.role })}
-          onClose={() => setAddOpen(false)}
-          saving={addMutation.isPending}
-        />
+            onSave={(d) => addMutation.mutate({ userId: d.userId, role: d.role, isQa: d.isQa })}
+            onClose={() => setAddOpen(false)}
+            saving={addMutation.isPending}
+          />
       )}
 
       {/* Remove Confirm */}
@@ -425,7 +456,7 @@ function AddMemberDialog({
   onClose,
   saving,
 }: {
-  onSave: (d: { userId: number; role: string }) => void;
+  onSave: (d: { userId: number; role: string; isQa?: boolean }) => void;
   onClose: () => void;
   saving: boolean;
 }) {
@@ -435,6 +466,7 @@ function AddMemberDialog({
   });
   const [userId, setUserId] = useState<number | null>(null);
   const [role, setRole] = useState("TESTER");
+  const [isQa, setIsQa] = useState(false);
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
@@ -469,7 +501,7 @@ function AddMemberDialog({
           <select
             className="w-full bg-white border border-outline-variant rounded-lg px-md py-sm font-body-base focus:ring-2 focus:ring-secondary focus:border-secondary outline-none"
             value={role}
-            onChange={(e) => setRole(e.target.value)}
+            onChange={(e) => { setRole(e.target.value); if (e.target.value !== "DEVELOPER") setIsQa(false); }}
           >
             {[
               "TEST_LEAD",
@@ -485,6 +517,17 @@ function AddMemberDialog({
             ))}
           </select>
         </div>
+        {role === "DEVELOPER" && (
+          <label className="flex items-center gap-2 text-on-surface font-label-sm">
+            <input
+              type="checkbox"
+              checked={isQa}
+              onChange={(e) => setIsQa(e.target.checked)}
+              className="w-4 h-4"
+            />
+            Is QA? (developer with QA review capability)
+          </label>
+        )}
         <div className="flex gap-md justify-end">
           <button
             onClick={onClose}
@@ -494,7 +537,7 @@ function AddMemberDialog({
           </button>
           <button
             disabled={!userId || saving}
-          onClick={() => userId && onSave({ userId, role })}
+          onClick={() => userId && onSave({ userId, role, isQa: role === "DEVELOPER" ? isQa : false })}
             className="px-lg py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 transition-all disabled:opacity-50"
           >
             {saving ? "Adding..." : "Add Member"}

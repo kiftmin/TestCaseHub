@@ -78,6 +78,7 @@ export const projectAssignments = pgTable("project_assignments", {
   role: text("role", {
     enum: ["TEST_LEAD", "TEST_AUTHOR", "BUSINESS_OWNER", "TESTER", "DEVELOPER", "UAT_COORDINATOR"],
   }).notNull(),
+  is_qa: boolean("is_qa").notNull().default(false),
   assigned_at: timestamp("assigned_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -261,7 +262,7 @@ export const stepResultsRelations = relations(stepResults, ({ one }) => ({
 // 13. defects
 export const defectStatusEnum = pgEnum("defect_status", [
   "NEW", "TRIAGED", "ASSIGNED", "IN_PROGRESS",
-  "RESOLVED_DEV", "READY_FOR_VERIFICATION", "REGRESSED", "CLOSED",
+  "RESOLVED_DEV", "QA_PASSED", "READY_FOR_VERIFICATION", "REGRESSED", "CLOSED",
   "PENDING_BIZ_ACCEPTANCE", "PASSED_BY_AGREEMENT",
 ]);
 
@@ -282,6 +283,8 @@ export const defects = pgTable("defects", {
   support_ticket_number: text("support_ticket_number"),
   root_cause_category: text("root_cause_category"), // 'Requirements Gap' | 'Design Defect' | 'Coding Error' | 'Environment Issue' | 'Test Data Issue' | 'Configuration Error' | 'Third-Party Integration' | 'Other'
   regression_index: integer("regression_index").notNull().default(0),
+  qa_reviewed_by_user_id: integer("qa_reviewed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  qa_reviewed_at: timestamp("qa_reviewed_at", { withTimezone: true }),
   tester_notes: text("tester_notes"),
   retest_reason: text("retest_reason"),
   accepted_by_business_note: text("accepted_by_business_note"),

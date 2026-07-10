@@ -29,14 +29,60 @@ router.post("/projects/:projectId/users", async (req: AuthenticatedRequest, res,
     const bodySchema = z.object({
       userId: z.number(),
       role: z.enum(["TEST_LEAD", "TEST_AUTHOR", "BUSINESS_OWNER", "TESTER", "DEVELOPER", "UAT_COORDINATOR"]),
+      isQa: z.boolean().optional().default(false),
     });
     const data = bodySchema.parse(req.body);
 
+    // is_qa is only meaningful on DEVELOPER assignments — force it to false otherwise.
+    const isQa = data.role === "DEVELOPER" ? (data.isQa ?? false) : false;
+
     const [assignment] = await db.insert(schema.projectAssignments)
-      .values({ project_id: projectId, user_id: data.userId, role: data.role })
+      .values({ project_id: projectId, user_id: data.userId, role: data.role, is_qa: isQa })
       .returning();
 
     res.status(201).json(assignment);
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/projects/:projectId/users/:userId — TEST_LEAD only
+// Update role and/or QA flag on an existing assignment without a remove+re-add round trip.
+// is_qa is forced to false unless the resulting role is DEVELOPER.
+router.patch("/projects/:projectId/users/:userId", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const projectId = Number(req.params.projectId);
+    const userId = Number(req.params.userId);
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const bodySchema = z.object({
+      role: z.enum(["TEST_LEAD", "TEST_AUTHOR", "BUSINESS_OWNER", "TESTER", "DEVELOPER", "UAT_COORDINATOR"]).optional(),
+      isQa: z.boolean().optional(),
+    });
+    const data = bodySchema.parse(req.body);
+
+    const existing = await db.query.projectAssignments.findFirst({
+      where: and(
+        eq(schema.projectAssignments.project_id, projectId),
+        eq(schema.projectAssignments.user_id, userId),
+      ),
+    });
+    if (!existing) { res.status(404).json({ message: "Assignment not found" }); return; }
+
+    const resultingRole = data.role ?? existing.role;
+    const isQa = resultingRole === "DEVELOPER" ? (data.isQa ?? existing.is_qa ?? false) : false;
+
+    const updateValues: Record<string, unknown> = { is_qa: isQa };
+    if (data.role !== undefined) updateValues.role = data.role;
+
+    const [updated] = await db.update(schema.projectAssignments)
+      .set(updateValues)
+      .where(and(
+        eq(schema.projectAssignments.project_id, projectId),
+        eq(schema.projectAssignments.user_id, userId),
+      ))
+      .returning();
+
+    res.json(updated);
   } catch (err) { next(err); }
 });
 
@@ -105,11 +151,12 @@ router.get("/projects/:projectId/my-role", async (req: AuthenticatedRequest, res
         eq(schema.projectAssignments.project_id, projectId),
         eq(schema.projectAssignments.user_id, req.user!.userId),
       ),
-      columns: { role: true },
+      columns: { role: true, is_qa: true },
     });
 
     if (assignment) {
-      res.json({ role: assignment.role });
+      const isQa = assignment.role === "DEVELOPER" && assignment.is_qa === true;
+      res.json({ role: assignment.role, isQa });
       return;
     }
 
@@ -120,11 +167,11 @@ router.get("/projects/:projectId/my-role", async (req: AuthenticatedRequest, res
     });
 
     if (project?.test_lead_id === req.user!.userId) {
-      res.json({ role: "TEST_LEAD" });
+      res.json({ role: "TEST_LEAD", isQa: false });
       return;
     }
 
-    res.json({ role: null });
+    res.json({ role: null, isQa: false });
   } catch (err) { next(err); }
 });
 

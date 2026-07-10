@@ -56,6 +56,7 @@ components:
         project_id: { type: integer }
         user_id: { type: integer }
         role: { type: string, enum: [TEST_LEAD, TEST_AUTHOR, BUSINESS_OWNER, TESTER, DEVELOPER, UAT_COORDINATOR] }
+        is_qa: { type: boolean }
         assigned_at: { type: string, format: date-time }
 
     UseCase:
@@ -200,7 +201,7 @@ components:
         test_case_id: { type: integer }
         execution_id: { type: integer, nullable: true }
         ticket_type: { type: string, enum: [SOFTWARE_BUG, ENVIRONMENT_ISSUE, DATA_ISSUE, REQUIREMENTS_GAP] }
-        status: { type: string, enum: [NEW, TRIAGED, ASSIGNED, IN_PROGRESS, RESOLVED_DEV, READY_FOR_VERIFICATION, REGRESSED, CLOSED, PENDING_BIZ_ACCEPTANCE, PASSED_BY_AGREEMENT] }
+        status: { type: string, enum: [NEW, TRIAGED, ASSIGNED, IN_PROGRESS, RESOLVED_DEV, QA_PASSED, READY_FOR_VERIFICATION, REGRESSED, CLOSED, PENDING_BIZ_ACCEPTANCE, PASSED_BY_AGREEMENT] }
         severity: { type: string, nullable: true }
         priority: { type: string, nullable: true }
         assigned_to_user_id: { type: integer, nullable: true }
@@ -568,6 +569,7 @@ paths:
               properties:
                 userId: { type: integer }
                 role: { type: string }
+                isQa: { type: boolean }
       responses:
         "201":
           description: Created
@@ -590,6 +592,36 @@ paths:
       responses:
         "204":
           description: No Content
+    patch:
+      summary: Update a project assignment (role / QA flag)
+      tags: [ProjectAssignments]
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { type: string }
+                isQa: { type: boolean }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAssignment"
 
   /users/{userId}/projects:
     get:
@@ -1579,6 +1611,58 @@ paths:
         "200":
           description: OK
 
+  /defects/{defectId}/qa-review:
+    patch:
+      summary: QA review of a resolved defect (→ QA_PASSED | IN_PROGRESS)
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                result: { type: string, enum: [passed, failed] }
+                notes: { type: string }
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Defect is not RESOLVED_DEV
+
+  /defects/{defectId}/reassign:
+    patch:
+      summary: Reassign an active defect to another developer (status unchanged)
+      tags: [Defects]
+      parameters:
+        - in: path
+          name: defectId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                newDeveloperId: { type: integer }
+                reason: { type: string }
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Defect is not ASSIGNED or IN_PROGRESS
+        "422":
+          description: newDeveloperId is not a DEVELOPER on this project
+
   /defects/{defectId}/accept:
     patch:
       summary: Business owner accepts defect (→ CLOSED)
@@ -2000,6 +2084,7 @@ paths:
                 type: object
                 properties:
                   role: { type: string, nullable: true, enum: [TEST_LEAD, TEST_AUTHOR, BUSINESS_OWNER, TESTER, DEVELOPER, UAT_COORDINATOR] }
+                  isQa: { type: boolean }
 
   /projects/{projectId}/defect-aging-matrix:
     get:

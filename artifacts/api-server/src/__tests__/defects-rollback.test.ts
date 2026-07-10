@@ -15,7 +15,7 @@
 
 import { describe, it, beforeAll, expect } from "./test-runner.js";
 import { db } from "../db.js";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import * as schema from "@workspace/db";
 import jwt from "jsonwebtoken";
 import { createServer, Server } from "http";
@@ -523,3 +523,333 @@ describe("Audit trail for rollbacks", () => {
     expect(Array.isArray(rejectLogs)).toBe(true);
   });
 });
+
+// ── Helpers for QA gate & reassign tests ─────────────────────────────────────
+
+async function getDeveloperOnProject(projectId: number): Promise<{ userId: number } | null> {
+  const assignment = await db.query.projectAssignments.findFirst({
+    where: and(eq(schema.projectAssignments.project_id, projectId), eq(schema.projectAssignments.role, "DEVELOPER")),
+  });
+  return assignment ? { userId: assignment.user_id } : null;
+}
+
+async function ensureQaDeveloper(projectId: number): Promise<{ userId: number } | null> {
+  const assignment = await db.query.projectAssignments.findFirst({
+    where: and(eq(schema.projectAssignments.project_id, projectId), eq(schema.projectAssignments.role, "DEVELOPER")),
+  });
+  if (!assignment) return null;
+  await db.update(schema.projectAssignments).set({ is_qa: true }).where(eq(schema.projectAssignments.id, assignment.id));
+  return { userId: assignment.user_id };
+}
+
+// ── qa-review: RESOLVED_DEV → QA_PASSED (pass) | IN_PROGRESS (fail) ──────────
+
+describe("PATCH /defects/:defectId/qa-review", () => {
+  it("should transition RESOLVED_DEV → QA_PASSED and set qa review fields (pass)", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "RESOLVED_DEV"),
+      columns: { id: true, project_id: true, regression_index: true },
+    });
+    if (!defect) return;
+    const qa = await ensureQaDeveloper(defect.project_id);
+    if (!qa) return;
+
+    const qaToken = makeToken({ userId: qa.userId, username: "qa", role: "DEVELOPER" });
+    const origRegression = defect.regression_index ?? 0;
+
+    const { status, body } = await fetchApiAs(qaToken, `/defects/${defect.id}/qa-review`, {
+      method: "PATCH",
+      body: JSON.stringify({ result: "passed", notes: "Looks good" }),
+    });
+
+    expect(status).toBe(200);
+    expect(body?.status).toBe("QA_PASSED");
+    expect(body?.qa_reviewed_by_user_id).toBe(qa.userId);
+    expect(body?.qa_reviewed_at).not.toBeNull();
+
+    const after = await getDefect(defect.id);
+    expect(after?.status).toBe("QA_PASSED");
+    expect(after?.regression_index ?? 0).toBe(origRegression);
+  });
+
+  it("should transition RESOLVED_DEV → IN_PROGRESS, clear qa fields, keep regression (fail)", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "RESOLVED_DEV"),
+      columns: { id: true, project_id: true, regression_index: true },
+    });
+    if (!defect) return;
+    const qa = await ensureQaDeveloper(defect.project_id);
+    if (!qa) return;
+
+    const qaToken = makeToken({ userId: qa.userId, username: "qa", role: "DEVELOPER" });
+    const origRegression = defect.regression_index ?? 0;
+
+    const { status, body } = await fetchApiAs(qaToken, `/defects/${defect.id}/qa-review`, {
+      method: "PATCH",
+      body: JSON.stringify({ result: "failed", notes: "UI glitch on save" }),
+    });
+
+    expect(status).toBe(200);
+    expect(body?.status).toBe("IN_PROGRESS");
+    expect(body?.qa_reviewed_by_user_id).toBeNull();
+
+    const after = await getDefect(defect.id);
+    expect(after?.status).toBe("IN_PROGRESS");
+    expect(after?.regression_index ?? 0).toBe(origRegression); // regression unchanged
+  });
+
+  it("should require a failure reason (min 3 chars) on fail", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "RESOLVED_DEV"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+    const qa = await ensureQaDeveloper(defect.project_id);
+    if (!qa) return;
+
+    const qaToken = makeToken({ userId: qa.userId, username: "qa", role: "DEVELOPER" });
+    const { status } = await fetchApiAs(qaToken, `/defects/${defect.id}/qa-review`, {
+      method: "PATCH",
+      body: JSON.stringify({ result: "failed", notes: "no" }),
+    });
+    expect(status).toBe(400);
+  });
+
+  it("should 409 when not RESOLVED_DEV", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "IN_PROGRESS"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+    const qa = await ensureQaDeveloper(defect.project_id);
+    if (!qa) return;
+
+    const qaToken = makeToken({ userId: qa.userId, username: "qa", role: "DEVELOPER" });
+    const { status } = await fetchApiAs(qaToken, `/defects/${defect.id}/qa-review`, {
+      method: "PATCH",
+      body: JSON.stringify({ result: "passed" }),
+    });
+    expect(status).toBe(409);
+  });
+
+  it("should 403 for a non-QA developer", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "RESOLVED_DEV"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+    const dev = await getDeveloperOnProject(defect.project_id);
+    if (!dev) return;
+    // Ensure this developer is NOT QA-flagged
+    await db.update(schema.projectAssignments).set({ is_qa: false })
+      .where(and(eq(schema.projectAssignments.project_id, defect.project_id), eq(schema.projectAssignments.user_id, dev.userId)));
+
+    const devToken = makeToken({ userId: dev.userId, username: "dev", role: "DEVELOPER" });
+    const { status } = await fetchApiAs(devToken, `/defects/${defect.id}/qa-review`, {
+      method: "PATCH",
+      body: JSON.stringify({ result: "passed" }),
+    });
+    expect(status).toBe(403);
+  });
+});
+
+// ── flag-retest gate (must be QA_PASSED) ─────────────────────────────────────
+
+describe("PATCH /defects/:defectId/flag-retest (QA gate)", () => {
+  it("should 409 when called on RESOLVED_DEV (not yet QA passed)", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "RESOLVED_DEV"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status } = await fetchApiAs(leadToken, `/defects/${defect.id}/flag-retest`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason: "Send to verification", targetVerificationRunId: defect.project_id }),
+    });
+    expect(status).toBe(409);
+  });
+
+  it("should succeed from QA_PASSED", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "QA_PASSED"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status } = await fetchApiAs(leadToken, `/defects/${defect.id}/flag-retest`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason: "Send to verification", targetVerificationRunId: defect.project_id }),
+    });
+    expect(status).toBe(200);
+  });
+});
+
+// ── flag-retest-from-new gate (RESOLVED_DEV blocked) ─────────────────────────
+
+describe("PATCH /defects/:defectId/flag-retest-from-new (QA gate)", () => {
+  it("should 409 when called on RESOLVED_DEV", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "RESOLVED_DEV"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status } = await fetchApiAs(leadToken, `/defects/${defect.id}/flag-retest-from-new`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason: "Retest" }),
+    });
+    expect(status).toBe(409);
+  });
+
+  it("should still succeed from NEW", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "NEW"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status } = await fetchApiAs(leadToken, `/defects/${defect.id}/flag-retest-from-new`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason: "Retest from new" }),
+    });
+    expect(status).toBe(200);
+  });
+});
+
+// ── reassign: lateral handoff within ASSIGNED | IN_PROGRESS ──────────────────
+
+describe("PATCH /defects/:defectId/reassign", () => {
+  async function findTwoDevelopers(projectId: number): Promise<{ a: number; b: number } | null> {
+    const assignments = await db.query.projectAssignments.findMany({
+      where: and(eq(schema.projectAssignments.project_id, projectId), eq(schema.projectAssignments.role, "DEVELOPER")),
+    });
+    const ids = assignments.map((a) => a.user_id);
+    if (ids.length < 2) return null;
+    return { a: ids[0], b: ids[1] };
+  }
+
+  it("should reassign from ASSIGNED/IN_PROGRESS and keep status", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "ASSIGNED"),
+      columns: { id: true, project_id: true, assigned_to_user_id: true, status: true },
+    });
+    if (!defect || !defect.assigned_to_user_id) return;
+    const devs = await findTwoDevelopers(defect.project_id);
+    if (!devs) return;
+    const target = devs.a === defect.assigned_to_user_id ? devs.b : devs.a;
+
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+
+    const { status, body } = await fetchApiAs(leadToken, `/defects/${defect.id}/reassign`, {
+      method: "PATCH",
+      body: JSON.stringify({ newDeveloperId: target, reason: "Better fit for this area" }),
+    });
+
+    expect(status).toBe(200);
+    expect(body?.status).toBe(defect.status);
+    expect(body?.assigned_to_user_id).toBe(target);
+
+    const after = await getDefect(defect.id);
+    expect(after?.assigned_to_user_id).toBe(target);
+    expect(after?.status).toBe(defect.status);
+  });
+
+  it("should 409 from a non-ASSIGNED/IN_PROGRESS status (e.g. RESOLVED_DEV)", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "RESOLVED_DEV"),
+      columns: { id: true, project_id: true, assigned_to_user_id: true },
+    });
+    if (!defect) return;
+    const devs = await findTwoDevelopers(defect.project_id);
+    if (!devs) return;
+    const target = devs.a === (defect.assigned_to_user_id ?? -1) ? devs.b : devs.a;
+
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status } = await fetchApiAs(leadToken, `/defects/${defect.id}/reassign`, {
+      method: "PATCH",
+      body: JSON.stringify({ newDeveloperId: target, reason: "reassign" }),
+    });
+    expect(status).toBe(409);
+  });
+
+  it("should 409 from REGRESSED with pointer to retry-after-regression", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "REGRESSED"),
+      columns: { id: true, project_id: true, assigned_to_user_id: true },
+    });
+    if (!defect) return;
+    const devs = await findTwoDevelopers(defect.project_id);
+    if (!devs) return;
+    const target = devs.a === (defect.assigned_to_user_id ?? -1) ? devs.b : devs.a;
+
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status, body } = await fetchApiAs(leadToken, `/defects/${defect.id}/reassign`, {
+      method: "PATCH",
+      body: JSON.stringify({ newDeveloperId: target, reason: "reassign" }),
+    });
+    expect(status).toBe(409);
+    expect(body?.message ?? "").toMatch(/Retry After Regression/i);
+  });
+
+  it("should 422 when newDeveloperId is not a DEVELOPER on the project", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "ASSIGNED"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status } = await fetchApiAs(leadToken, `/defects/${defect.id}/reassign`, {
+      method: "PATCH",
+      body: JSON.stringify({ newDeveloperId: 999999, reason: "reassign" }),
+    });
+    expect(status).toBe(422);
+  });
+
+  it("should 400 when reassigning to the same developer", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "ASSIGNED"),
+      columns: { id: true, project_id: true, assigned_to_user_id: true },
+    });
+    if (!defect || !defect.assigned_to_user_id) return;
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status } = await fetchApiAs(leadToken, `/defects/${defect.id}/reassign`, {
+      method: "PATCH",
+      body: JSON.stringify({ newDeveloperId: defect.assigned_to_user_id, reason: "reassign" }),
+    });
+    expect(status).toBe(400);
+  });
+
+  it("should 403 for a non-TEST_LEAD caller", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "ASSIGNED"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+    const testerToken = makeToken({ userId: 2, username: "tester", role: "TESTER" });
+    const { status } = await fetchApiAs(testerToken, `/defects/${defect.id}/reassign`, {
+      method: "PATCH",
+      body: JSON.stringify({ newDeveloperId: 3, reason: "reassign" }),
+    });
+    expect(status).toBe(403);
+  });
+});
+

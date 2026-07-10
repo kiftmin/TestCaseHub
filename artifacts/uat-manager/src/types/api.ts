@@ -13,6 +13,7 @@ export interface ProjectAssignment {
   project_id: number;
   user_id: number;
   role: string;
+  is_qa?: boolean;
   assigned_at: string;
   user: {
     id: number;

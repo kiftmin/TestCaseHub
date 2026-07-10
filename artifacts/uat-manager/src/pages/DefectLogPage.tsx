@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
-import { useProjectRole } from "../hooks/useProjectRole";
+import { useProjectRole, useIsProjectQa } from "../hooks/useProjectRole";
 import { Stepper, type Step } from "../components/ui/stepper";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { DEFECT_VIEWS } from "../lib/defect-views";
@@ -17,6 +17,7 @@ const statusBadge: Record<string, string> = {
   ASSIGNED: "bg-amber-100 text-amber-800 border-amber-200",
   IN_PROGRESS: "bg-cyan-100 text-cyan-800 border-cyan-200",
   RESOLVED_DEV: "bg-indigo-100 text-indigo-800 border-indigo-200",
+  QA_PASSED: "bg-teal-100 text-teal-800 border-teal-200",
   READY_FOR_VERIFICATION: "bg-blue-100 text-blue-800 border-blue-200",
   REGRESSED: "bg-red-100 text-red-800 border-red-200",
   CLOSED: "bg-green-100 text-green-800 border-green-200",
@@ -30,6 +31,7 @@ const statusDisplay: Record<string, string> = {
   ASSIGNED: "Assigned",
   IN_PROGRESS: "In Progress",
   RESOLVED_DEV: "Resolved by Dev",
+  QA_PASSED: "QA Passed",
   READY_FOR_VERIFICATION: "Ready for Verification",
   PENDING_BIZ_ACCEPTANCE: "Pending Business Decision",
   REGRESSED: "Regressed",
@@ -73,6 +75,7 @@ const statusIcon: Record<string, string> = {
   ASSIGNED: "assignment_ind",
   IN_PROGRESS: "play_arrow",
   RESOLVED_DEV: "bug_report",
+  QA_PASSED: "verified",
   READY_FOR_VERIFICATION: "fact_check",
   PENDING_BIZ_ACCEPTANCE: "pending_actions",
   REGRESSED: "warning",
@@ -156,6 +159,8 @@ function TabContent({
   isBusinessOwner,
   isTester,
   isDeveloper,
+  isQa,
+  projectId,
   expandedId,
   setExpandedId,
   sortField,
@@ -173,6 +178,8 @@ function TabContent({
   isBusinessOwner: boolean;
   isTester: boolean;
   isDeveloper: boolean;
+  isQa: boolean;
+  projectId: number;
   expandedId: number | null;
   setExpandedId: (v: number | null) => void;
   sortField: string;
@@ -215,7 +222,7 @@ function TabContent({
             </thead>
             <tbody className="divide-y divide-outline-variant/60">
               {sorted.map((defect) => (
-                <DefectRow
+                 <DefectRow
                   key={defect.id}
                   defect={defect}
                   expanded={expandedId === defect.id}
@@ -225,6 +232,8 @@ function TabContent({
                   isBusinessOwner={isBusinessOwner}
                   isTester={isTester}
                   isDeveloper={isDeveloper}
+                  isQa={isQa}
+                  projectId={projectId}
                   onMutated={() => {}}
                   activeTab={activeTab}
                 />
@@ -294,6 +303,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
   const isBusinessOwner = role === "BUSINESS_OWNER" || user?.role === "ADMIN";
   const isTester = role === "TESTER" || user?.role === "ADMIN";
   const isDeveloper = role === "DEVELOPER" || user?.role === "ADMIN";
+  const isQa = useIsProjectQa(projectId);
 
   const defaultTab = role === "DEVELOPER" ? "developer" : (role === "ADMIN" || role === "TEST_LEAD") ? "full" : "business";
   const [activeTab, setActiveTab] = useState(defaultTab);
@@ -588,6 +598,8 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             isBusinessOwner={isBusinessOwner}
             isTester={isTester}
             isDeveloper={isDeveloper}
+            isQa={isQa}
+            projectId={projectId}
             expandedId={expandedId}
             setExpandedId={setExpandedId}
             sortField={sortField}
@@ -609,6 +621,8 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             isBusinessOwner={isBusinessOwner}
             isTester={isTester}
             isDeveloper={isDeveloper}
+            isQa={isQa}
+            projectId={projectId}
             expandedId={expandedId}
             setExpandedId={setExpandedId}
             sortField={sortField}
@@ -630,6 +644,8 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             isBusinessOwner={isBusinessOwner}
             isTester={isTester}
             isDeveloper={isDeveloper}
+            isQa={isQa}
+            projectId={projectId}
             expandedId={expandedId}
             setExpandedId={setExpandedId}
             sortField={sortField}
@@ -801,6 +817,8 @@ function DefectRow({
   isBusinessOwner,
   isTester,
   isDeveloper,
+  isQa,
+  projectId,
   onMutated,
   activeTab,
 }: {
@@ -812,6 +830,8 @@ function DefectRow({
   isBusinessOwner: boolean;
   isTester: boolean;
   isDeveloper: boolean;
+  isQa: boolean;
+  projectId: number;
   onMutated: () => void;
   activeTab: string;
 }) {
@@ -830,6 +850,8 @@ function DefectRow({
   const [showBusinessDecisionDialog, setShowBusinessDecisionDialog] = useState(false);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
   const [resolveOpen, setResolveOpen] = useState(false);
+  const [qaReviewOpen, setQaReviewOpen] = useState(false);
+  const [reassignOpen, setReassignOpen] = useState(false);
   const [resumeWorkOpen, setResumeWorkOpen] = useState(false);
   const [blockOpen, setBlockOpen] = useState(false);
   const [unblockOpen, setUnblockOpen] = useState(false);
@@ -870,7 +892,8 @@ function DefectRow({
   const isTriaged = defect.status === "TRIAGED";
   const isAssigned = defect.status === "ASSIGNED";
   const isInProgress = defect.status === "IN_PROGRESS";
-  const isResolved = defect.status === "RESOLVED_DEV";
+  const isResolved = defect.status === "RESOLVED_DEV" || defect.status === "QA_PASSED";
+  const isQaPassed = defect.status === "QA_PASSED";
   const isReady = defect.status === "READY_FOR_VERIFICATION";
   const isClosed = defect.status === "CLOSED" || defect.status === "PASSED_BY_AGREEMENT";
   const isPendingBiz = defect.status === "PENDING_BIZ_ACCEPTANCE";
@@ -923,6 +946,20 @@ function DefectRow({
   const resolveDevMut = useMutation({
     mutationFn: (rootCause: string) => customFetch(`/defects/${defect.id}/resolve`, { method: "PATCH", body: JSON.stringify({ root_cause_category: rootCause }) }),
     onSuccess: () => { invalidateProject(); toast.success("Defect resolved by developer"); setResolveOpen(false); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const qaReviewMut = useMutation({
+    mutationFn: (data: { result: "passed" | "failed"; notes?: string }) =>
+      customFetch(`/defects/${defect.id}/qa-review`, { method: "PATCH", body: JSON.stringify(data) }),
+    onSuccess: () => { invalidateProject(); toast.success("QA review recorded"); setQaReviewOpen(false); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const reassignMut = useMutation({
+    mutationFn: (data: { newDeveloperId: number; reason: string }) =>
+      customFetch(`/defects/${defect.id}/reassign`, { method: "PATCH", body: JSON.stringify(data) }),
+    onSuccess: () => { invalidateProject(); toast.success("Defect reassigned"); setReassignOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -1036,7 +1073,7 @@ function DefectRow({
       ];
       const flow: Record<string, number> = {
         NEW: 0, TRIAGED: 1,
-        ASSIGNED: 2, IN_PROGRESS: 2, RESOLVED_DEV: 2, REGRESSED: 2,
+        ASSIGNED: 2, IN_PROGRESS: 2, RESOLVED_DEV: 2, QA_PASSED: 2, REGRESSED: 2,
         READY_FOR_VERIFICATION: 3, PENDING_BIZ_ACCEPTANCE: 3,
         CLOSED: 4, PASSED_BY_AGREEMENT: 4,
       };
@@ -1047,24 +1084,26 @@ function DefectRow({
         { key: "ASSIGNED", label: "Assigned" },
         { key: "IN_PROGRESS", label: "In Progress" },
         { key: "RESOLVED_DEV", label: "Resolved" },
+        { key: "QA_PASSED", label: "QA Passed" },
       ];
       const flow: Record<string, number> = {
-        ASSIGNED: 0, IN_PROGRESS: 1, RESOLVED_DEV: 2, REGRESSED: 0,
+        ASSIGNED: 0, IN_PROGRESS: 1, RESOLVED_DEV: 2, QA_PASSED: 3, REGRESSED: 0,
       };
       return { statusSteps: steps, mainFlow: flow, isRegressed: defect.regression_index > 0 };
     }
-    // Full board — 10 states
+    // Full board — 11 states
     const steps: Step[] = [
       { key: "NEW", label: "New" },
       { key: "TRIAGED", label: "Triaged" },
       { key: "ASSIGNED", label: "Assigned" },
       { key: "IN_PROGRESS", label: "In Progress" },
       { key: "RESOLVED_DEV", label: "Resolved" },
+      { key: "QA_PASSED", label: "QA Passed" },
       { key: "READY_FOR_VERIFICATION", label: "Verification" },
       { key: "PENDING_BIZ_ACCEPTANCE", label: "Pending Biz" },
       { key: "CLOSED", label: "Closed" },
     ];
-    const flow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, RESOLVED_DEV:4, READY_FOR_VERIFICATION:5, PENDING_BIZ_ACCEPTANCE:6, CLOSED:7, PASSED_BY_AGREEMENT:7, REGRESSED:3 };
+    const flow: Record<string, number> = { NEW:0, TRIAGED:1, ASSIGNED:2, IN_PROGRESS:3, RESOLVED_DEV:4, QA_PASSED:5, READY_FOR_VERIFICATION:6, PENDING_BIZ_ACCEPTANCE:7, CLOSED:8, PASSED_BY_AGREEMENT:8, REGRESSED:3 };
     return { statusSteps: steps, mainFlow: flow, isRegressed: defect.regression_index > 0 };
   }, [activeTab, defect.regression_index]);
   const currentStatusIdx = mainFlow[defect.status] ?? 0;
@@ -1230,14 +1269,36 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">undo</span>
               </button>
             )}
-            {/* Flag Retest (RESOLVED_DEV → READY_FOR_VERIFICATION) */}
-            {canManage && isResolved && (
+            {/* QA Review (RESOLVED_DEV → QA_PASSED | IN_PROGRESS) — QA-flagged developers only */}
+            {isQa && defect.status === "RESOLVED_DEV" && (
+              <>
+                <button
+                  onClick={() => setQaReviewOpen(true)}
+                  className="action-btn action-btn-teal"
+                  title="QA Review — Pass / Fail"
+                >
+                  <span className="material-symbols-outlined text-sm">verified</span>
+                </button>
+              </>
+            )}
+            {/* Flag Retest (QA_PASSED → READY_FOR_VERIFICATION) — gated behind QA review */}
+            {canManage && isQaPassed && (
               <button
                 onClick={() => flagRetestMut.mutate()}
                 className="action-btn action-btn-amber"
                 title="Send for Verification"
               >
                 <span className="material-symbols-outlined text-sm">history_edu</span>
+              </button>
+            )}
+            {/* Reassign active defect to another developer (ASSIGNED | IN_PROGRESS) — TEST_LEAD only */}
+            {canManage && (isAssigned || isInProgress) && !isBlocked && (
+              <button
+                onClick={() => setReassignOpen(true)}
+                className="action-btn action-btn-purple"
+                title="Reassign to another developer"
+              >
+                <span className="material-symbols-outlined text-sm">swap_horiz</span>
               </button>
             )}
             {/* Flag Retest from NEW or non-terminal */}
@@ -1787,6 +1848,30 @@ function DefectRow({
             onSave={(rootCause) => resolveDevMut.mutate(rootCause)}
             onCancel={() => setResolveOpen(false)}
             loading={resolveDevMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* QA Review Dialog */}
+      {qaReviewOpen && (
+        <Dialog onClose={() => setQaReviewOpen(false)} title="QA Review">
+          <QaReviewForm
+            onSave={(data) => qaReviewMut.mutate(data)}
+            onCancel={() => setQaReviewOpen(false)}
+            loading={qaReviewMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Reassign Dialog */}
+      {reassignOpen && (
+        <Dialog onClose={() => setReassignOpen(false)} title="Reassign Defect">
+          <ReassignForm
+            projectId={projectId}
+            currentDeveloperId={defect.assigned_to_user_id}
+            onSave={(data) => reassignMut.mutate(data)}
+            onCancel={() => setReassignOpen(false)}
+            loading={reassignMut.isPending}
           />
         </Dialog>
       )}
@@ -2573,6 +2658,139 @@ function SimpleReasonForm({
         <button type="submit" disabled={loading || !isValid}
           className={`px-4 py-sm text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all ${confirmClassName}`}>
           {loading ? "Submitting..." : confirmLabel}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** QA review form — pass or fail a RESOLVED_DEV defect. Notes required on fail. */
+function QaReviewForm({
+  onSave, onCancel, loading,
+}: {
+  onSave: (data: { result: "passed" | "failed"; notes?: string }) => void;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  const [result, setResult] = useState<"passed" | "failed">("passed");
+  const [notes, setNotes] = useState("");
+  const isValid = result === "passed" || notes.trim().length >= 3;
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave({ result, notes: notes.trim() || undefined }); }} className="space-y-md">
+      <div className={`flex items-start gap-3 rounded-lg p-md ${result === "passed" ? "bg-teal-50 border border-teal-200" : "bg-red-50 border border-red-200"}`}>
+        <span className={`material-symbols-outlined text-xl flex-shrink-0 ${result === "passed" ? "text-teal-600" : "text-red-600"}`}>
+          {result === "passed" ? "verified" : "cancel"}
+        </span>
+        <div>
+          <p className={`font-label-md text-label-md ${result === "passed" ? "text-teal-900" : "text-red-900"}`}>
+            {result === "passed" ? "QA Review Passed" : "QA Review Failed"}
+          </p>
+          <p className={`font-body-sm text-body-sm ${result === "passed" ? "text-teal-800" : "text-red-800"}`}>
+            {result === "passed"
+              ? "The defect will move to QA Passed and become eligible for verification."
+              : "The defect will return to In Progress with the same developer. A reason is required."}
+          </p>
+        </div>
+      </div>
+      <div className="flex gap-md">
+        <button
+          type="button"
+          onClick={() => setResult("passed")}
+          className={`flex-1 py-sm rounded-lg font-label-sm border ${result === "passed" ? "bg-teal-600 text-white border-teal-600" : "bg-surface border-outline-variant"}`}
+        >
+          Pass
+        </button>
+        <button
+          type="button"
+          onClick={() => setResult("failed")}
+          className={`flex-1 py-sm rounded-lg font-label-sm border ${result === "failed" ? "bg-red-600 text-white border-red-600" : "bg-surface border-outline-variant"}`}
+        >
+          Fail
+        </button>
+      </div>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">
+          {result === "passed" ? "QA Notes (optional)" : "Failure Reason *"}
+        </label>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          className="w-full h-20 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
+          placeholder={result === "passed" ? "Optional notes about the QA pass..." : "Explain why the QA review failed (min 3 characters)..."}
+        />
+      </div>
+      <div className="flex justify-end gap-md pt-sm">
+        <button type="button" onClick={onCancel}
+          className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors">
+          Cancel
+        </button>
+        <button type="submit" disabled={loading || !isValid}
+          className={`px-4 py-sm text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all ${result === "passed" ? "bg-teal-600" : "bg-red-600"}`}>
+          {loading ? "Submitting..." : result === "passed" ? "Confirm Pass" : "Confirm Fail"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** Reassign an active defect to another developer on the project. */
+function ReassignForm({
+  projectId, currentDeveloperId, onSave, onCancel, loading,
+}: {
+  projectId: number;
+  currentDeveloperId: number | null;
+  onSave: (data: { newDeveloperId: number; reason: string }) => void;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  const { data: assignments } = useQuery({
+    queryKey: ["project-users", projectId],
+    queryFn: () => customFetch<ProjectAssignment[]>(`/projects/${projectId}/users`),
+  });
+  const developers = assignments?.filter((a) => a.role === "DEVELOPER" && a.user_id !== currentDeveloperId) ?? [];
+  const [newDeveloperId, setNewDeveloperId] = useState<number | null>(null);
+  const [reason, setReason] = useState("");
+  const isValid = newDeveloperId != null && reason.trim().length >= 1;
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (isValid && newDeveloperId != null) onSave({ newDeveloperId, reason: reason.trim() }); }} className="space-y-md">
+      <div className="flex items-start gap-3 bg-purple-50 border border-purple-200 rounded-lg p-md">
+        <span className="material-symbols-outlined text-purple-600 text-xl flex-shrink-0">swap_horiz</span>
+        <p className="font-body-sm text-purple-900">
+          Reassign this defect to another developer. The status is unchanged — this is a lateral handoff.
+        </p>
+      </div>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">New Developer *</label>
+        <select
+          value={newDeveloperId ?? ""}
+          onChange={(e) => setNewDeveloperId(e.target.value ? Number(e.target.value) : null)}
+          className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm"
+        >
+          <option value="">— Select developer —</option>
+          {developers.map((d) => (
+            <option key={d.user_id} value={d.user_id}>{d.user.name} ({d.user.username}){d.is_qa ? " · QA" : ""}</option>
+          ))}
+        </select>
+      </div>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Reason *</label>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          className="w-full h-20 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
+          placeholder="Why is this being reassigned?"
+          required
+        />
+      </div>
+      <div className="flex justify-end gap-md pt-sm">
+        <button type="button" onClick={onCancel}
+          className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors">
+          Cancel
+        </button>
+        <button type="submit" disabled={loading || !isValid}
+          className="px-4 py-sm bg-purple-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
+          {loading ? "Reassigning..." : "Reassign"}
         </button>
       </div>
     </form>

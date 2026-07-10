@@ -3,7 +3,7 @@ import { eq, desc, and, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { authenticate, authorize, checkProjectRole, checkProjectQa, AuthenticatedRequest } from "../middlewares/auth.js";
 import { logAudit, logSystemNote } from "../utils/project.js";
 
 const router = express.Router();
@@ -296,10 +296,12 @@ router.patch("/defects/:defectId/flag-blocked", async (req: AuthenticatedRequest
 });
 
 // PATCH /defects/:defectId/flag-retest-from-new — TEST_LEAD only
-// NEW | TRIAGED | ASSIGNED | IN_PROGRESS | BLOCKED | RESOLVED_DEV | REGRESSED
+// NEW | TRIAGED | ASSIGNED | IN_PROGRESS | BLOCKED | REGRESSED | QA_PASSED
 //   ─────────────────────────────────────────────────────────────────────────> READY_FOR_VERIFICATION
 // Automatically provisions a defect_retests trace and a retest_reason.
 // Accepts any non-terminal, non-closed status so Test Leads can retest from any stage.
+// RESOLVED_DEV is explicitly blocked here so a resolved-but-not-QA'd defect cannot
+// skip the QA gate through this back door (use flag-retest after QA passes instead).
 router.patch("/defects/:defectId/flag-retest-from-new", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
@@ -316,9 +318,9 @@ router.patch("/defects/:defectId/flag-retest-from-new", async (req: Authenticate
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    const terminalStatuses = ["CLOSED", "PASSED_BY_AGREEMENT", "PENDING_BIZ_ACCEPTANCE"];
-    if (terminalStatuses.includes(defect.status)) {
-      res.status(400).json({ message: "Defect cannot be retested in its current state." });
+    const blockedStatuses = ["CLOSED", "PASSED_BY_AGREEMENT", "PENDING_BIZ_ACCEPTANCE", "RESOLVED_DEV"];
+    if (blockedStatuses.includes(defect.status)) {
+      res.status(409).json({ message: "Defect must pass QA review before it can be sent for verification. A resolved (but not QA-reviewed) defect cannot be retested directly." });
       return;
     }
 
@@ -668,12 +670,92 @@ router.patch("/defects/:defectId/resolve", async (req: AuthenticatedRequest, res
 });
 
 // ---------------------------------------------------------------------------
+// PHASE 2.5 — QA Review (gate before verification)
+// ---------------------------------------------------------------------------
+
+// PATCH /defects/:defectId/qa-review — ADMIN, or DEVELOPER with is_qa flag
+// RESOLVED_DEV ────────────────────────────────────────────────> QA_PASSED (pass) | IN_PROGRESS (fail)
+// regression_index is NEVER changed by this endpoint — a QA fail is a fresh dev cycle, not a regression.
+router.patch("/defects/:defectId/qa-review", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({
+      result: z.enum(["passed", "failed"]),
+      notes: z.string().optional(),
+    }).superRefine((data, ctx) => {
+      if (data.result === "failed" && (!data.notes || data.notes.trim().length < 3)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A failure reason of at least 3 characters is required when QA review fails",
+          path: ["notes"],
+        });
+      }
+    });
+    const data = bodySchema.parse(req.body);
+
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+
+    const isQa = await checkProjectQa(req, projectId);
+    if (!isQa) {
+      res.status(403).json({ message: "Forbidden — only QA-flagged developers (or an admin) may submit a QA verdict" });
+      return;
+    }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    if (defect.status !== "RESOLVED_DEV") {
+      res.status(409).json({ message: "Defect must be RESOLVED_DEV to submit a QA verdict." });
+      return;
+    }
+
+    const oldStatus = defect.status;
+    const regressionIndex = defect.regression_index ?? 0;
+
+    if (data.result === "passed") {
+      const [updated] = await db.update(schema.defects)
+        .set({
+          status: "QA_PASSED",
+          qa_reviewed_by_user_id: req.user!.userId,
+          qa_reviewed_at: new Date(),
+          updated_at: new Date(),
+        })
+        .where(eq(schema.defects.id, defectId))
+        .returning();
+
+      await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "QA_PASSED", reason: data.notes ?? "QA passed" });
+      await logSystemNote(defectId, oldStatus, "QA_PASSED", req.user!.userId, `QA review passed. ${data.notes ?? ""}`);
+
+      res.json(updated);
+    } else {
+      const [updated] = await db.update(schema.defects)
+        .set({
+          status: "IN_PROGRESS",
+          qa_reviewed_by_user_id: null,
+          qa_reviewed_at: null,
+          regression_index: regressionIndex,
+          updated_at: new Date(),
+        })
+        .where(eq(schema.defects.id, defectId))
+        .returning();
+
+      await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "IN_PROGRESS", reason: data.notes ?? "QA failed" });
+      await logSystemNote(defectId, oldStatus, "IN_PROGRESS", req.user!.userId, `QA review failed. ${data.notes ?? ""}`);
+
+      res.json(updated);
+    }
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // PHASE 3 — Verification
 // ---------------------------------------------------------------------------
 
 // PATCH /defects/:defectId/flag-retest — TEST_LEAD only
-// RESOLVED_DEV ────────────────────────────────────────────────> READY_FOR_VERIFICATION
+// QA_PASSED ────────────────────────────────────────────────> READY_FOR_VERIFICATION
 // Automatically provisions a defect_retests trace with target_verification_run_id
+// Requires the defect to have passed QA review first (see PHASE 2.5).
 router.patch("/defects/:defectId/flag-retest", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
@@ -690,6 +772,11 @@ router.patch("/defects/:defectId/flag-retest", async (req: AuthenticatedRequest,
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    if (defect.status !== "QA_PASSED") {
+      res.status(409).json({ message: "Defect must pass QA review before it can be sent for verification." });
+      return;
+    }
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
@@ -832,8 +919,8 @@ router.patch("/defects/:defectId/resume-work", async (req: AuthenticatedRequest,
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
 
-    if (defect.status !== "RESOLVED_DEV") {
-      res.status(400).json({ message: "Defect is not in RESOLVED_DEV state" });
+    if (defect.status !== "RESOLVED_DEV" && defect.status !== "QA_PASSED") {
+      res.status(400).json({ message: "Defect is not in RESOLVED_DEV or QA_PASSED state" });
       return;
     }
 
@@ -864,8 +951,10 @@ router.patch("/defects/:defectId/resume-work", async (req: AuthenticatedRequest,
 });
 
 // PATCH /defects/:defectId/reschedule-retest — TEST_LEAD only
-// READY_FOR_VERIFICATION ──────────────────────────────────────> RESOLVED_DEV
-// Level 1 rollback (quick undo, no approval)
+// READY_FOR_VERIFICATION ──────────────────────────────────────> QA_PASSED
+// Level 1 rollback (quick undo of "sent for verification", no approval).
+// Returns to QA_PASSED (not RESOLVED_DEV): the defect already passed QA, so it
+// should not have to go through the QA gate again — only the verification send is undone.
 router.patch("/defects/:defectId/reschedule-retest", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
@@ -887,7 +976,7 @@ router.patch("/defects/:defectId/reschedule-retest", async (req: AuthenticatedRe
 
     const oldStatus = defect.status;
     const [updated] = await db.update(schema.defects)
-      .set({ status: "RESOLVED_DEV", updated_at: new Date() })
+      .set({ status: "QA_PASSED", updated_at: new Date() })
       .where(eq(schema.defects.id, defectId))
       .returning();
 
@@ -1141,6 +1230,85 @@ router.patch("/defects/:defectId/retry-after-regression", async (req: Authentica
 
     // TODO: Notify developer of reassignment
     // To be implemented when notification infrastructure is available
+
+    res.json({
+      id: updated.id,
+      status: updated.status,
+      assigned_to_user_id: updated.assigned_to_user_id,
+      updated_at: updated.updated_at,
+    });
+  } catch (err) { next(err); }
+});
+
+// PATCH /defects/:defectId/reassign — TEST_LEAD only
+// Lateral handoff: ASSIGNED | IN_PROGRESS ─── (status unchanged) ───> new developer
+// Only valid while the defect is actively with a developer in the Development Cycle.
+// REGRESSED defects are reassigned via retry-after-regression's reassignTo param instead.
+router.patch("/defects/:defectId/reassign", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const defectId = Number(req.params.defectId);
+    const bodySchema = z.object({
+      newDeveloperId: z.number(),
+      reason: z.string().min(1, "Reason is required"),
+    });
+    const data = bodySchema.parse(req.body);
+
+    const projectId = await getProjectId(defectId);
+    if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
+    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+
+    if (defect.status !== "ASSIGNED" && defect.status !== "IN_PROGRESS") {
+      const message =
+        defect.status === "REGRESSED"
+          ? "Cannot reassign a REGRESSED defect here — use Retry After Regression, which supports reassignment."
+          : "Defect can only be reassigned while it is ASSIGNED or IN_PROGRESS.";
+      res.status(409).json({ message });
+      return;
+    }
+
+    if (data.newDeveloperId === defect.assigned_to_user_id) {
+      res.status(400).json({ message: "Defect is already assigned to this developer" });
+      return;
+    }
+
+    // Verify the target user has an active DEVELOPER assignment on this project
+    const devAssignment = await db.query.projectAssignments.findFirst({
+      where: and(
+        eq(schema.projectAssignments.project_id, projectId),
+        eq(schema.projectAssignments.user_id, data.newDeveloperId),
+        eq(schema.projectAssignments.role, "DEVELOPER"),
+      ),
+    });
+    if (!devAssignment) {
+      res.status(422).json({ message: "Developer not found or invalid" });
+      return;
+    }
+
+    const oldDev = await db.query.users.findFirst({
+      where: eq(schema.users.id, defect.assigned_to_user_id ?? -1),
+      columns: { name: true },
+    });
+    const newDev = await db.query.users.findFirst({
+      where: eq(schema.users.id, data.newDeveloperId),
+      columns: { name: true },
+    });
+    const oldName = oldDev?.name ?? `user #${defect.assigned_to_user_id}`;
+    const newName = newDev?.name ?? `user #${data.newDeveloperId}`;
+    const detail = `Reassigned from ${oldName} to ${newName}: ${data.reason}`;
+
+    const oldStatus = defect.status;
+    const [updated] = await db.update(schema.defects)
+      .set({ assigned_to_user_id: data.newDeveloperId, updated_at: new Date() })
+      .where(eq(schema.defects.id, defectId))
+      .returning();
+
+    // Status is unchanged — log the ownership change in both audit trail and note timeline.
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: oldStatus, reason: detail });
+    await logSystemNote(defectId, oldStatus, oldStatus, req.user!.userId, detail);
 
     res.json({
       id: updated.id,

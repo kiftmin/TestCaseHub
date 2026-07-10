@@ -81,3 +81,27 @@ export async function checkProjectRole(
 
   return false;
 }
+
+/**
+ * Returns true when the caller is ADMIN, or has a project_assignment on this
+ * project with role === "DEVELOPER" and is_qa === true. Used to gate the QA
+ * review action — a QA person is modelled as a DEVELOPER with the is_qa flag.
+ */
+export async function checkProjectQa(
+  req: AuthenticatedRequest,
+  projectId: number,
+): Promise<boolean> {
+  if (!req.user) return false;
+  if (req.user.role === "ADMIN") return true;
+
+  const assignment = await db.query.projectAssignments.findFirst({
+    where: (pa, { and }) =>
+      and(
+        eq(pa.project_id, projectId),
+        eq(pa.user_id, req.user!.userId),
+      ),
+    columns: { role: true, is_qa: true },
+  });
+
+  return !!assignment && assignment.role === "DEVELOPER" && assignment.is_qa === true;
+}

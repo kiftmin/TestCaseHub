@@ -1310,8 +1310,8 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">lock_open</span>
               </button>
             )}
-            {/* Resume Work (RESOLVED_DEV → IN_PROGRESS) */}
-            {(isDeveloper || canManage) && isResolved && (
+            {/* Resume Work (RESOLVED_DEV → IN_PROGRESS) — assigned dev or manager */}
+            {(isDeveloper || canManage) && isResolved && (canManage || defect.assigned_to_user_id === user?.userId) && (
               <button
                 onClick={() => setResumeWorkOpen(true)}
                 className="action-btn action-btn-orange"

@@ -350,8 +350,8 @@ router.patch("/defects/:defectId/flag-retest-from-new", async (req: Authenticate
 });
 
 // PATCH /defects/:defectId/submit-for-business-decision — TEST_LEAD only
-// TRIAGED | ASSIGNED | IN_PROGRESS | RESOLVED_DEV | READY_FOR_VERIFICATION
-//   ────────────────────────────────────────────────────────────> PENDING_BIZ_ACCEPTANCE
+// NEW | TRIAGED | ASSIGNED | IN_PROGRESS | RESOLVED_DEV | QA_PASSED | REGRESSED | READY_FOR_VERIFICATION
+//   ─────────────────────────────────────────────────────────────────────────────────────────────────> PENDING_BIZ_ACCEPTANCE
 // Single unified endpoint for risk waivers and general business decisions.
 router.patch("/defects/:defectId/submit-for-business-decision", async (req: AuthenticatedRequest, res, next) => {
   try {
@@ -370,7 +370,7 @@ router.patch("/defects/:defectId/submit-for-business-decision", async (req: Auth
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
 
-    const validFromStates = ["NEW", "TRIAGED", "ASSIGNED", "IN_PROGRESS", "RESOLVED_DEV", "READY_FOR_VERIFICATION"];
+    const validFromStates = ["NEW", "TRIAGED", "ASSIGNED", "IN_PROGRESS", "RESOLVED_DEV", "QA_PASSED", "REGRESSED", "READY_FOR_VERIFICATION"];
     if (!validFromStates.includes(defect.status)) {
       res.status(400).json({
         message: `Defect must be in one of these states to submit for business decision: ${validFromStates.join(", ")}. Current status: ${defect.status}`
@@ -407,7 +407,7 @@ router.patch("/defects/:defectId/submit-for-business-decision", async (req: Auth
 
 
 // PATCH /defects/:defectId/quick-verify — TEST_LEAD | TESTER
-// READY_FOR_VERIFICATION ────────────────────────────────────> CLOSED (pass) | ASSIGNED (fail + regression bump)
+// READY_FOR_VERIFICATION ────────────────────────────────────> CLOSED (pass) | REGRESSED (fail + regression bump)
 // Auto-generates a hidden verification test run, logs a completed Retest record, and immediately transitions status.
 router.patch("/defects/:defectId/quick-verify", async (req: AuthenticatedRequest, res, next) => {
   try {
@@ -509,15 +509,15 @@ router.patch("/defects/:defectId/quick-verify", async (req: AuthenticatedRequest
     } else {
       const [updated] = await db.update(schema.defects)
         .set({
-          status: "ASSIGNED",
+          status: "REGRESSED",
           regression_index: sql`${schema.defects.regression_index} + 1`,
           updated_at: new Date(),
         })
         .where(eq(schema.defects.id, defectId))
         .returning();
 
-      await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "ASSIGNED", reason: data.notes ?? "Quick verify failed" });
-      await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, `Quick verification failed. Regression counter incremented. ${data.notes ?? ""}`);
+      await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "REGRESSED", reason: data.notes ?? "Quick verify failed" });
+      await logSystemNote(defectId, oldStatus, "REGRESSED", req.user!.userId, `Quick verification failed. Regression counter incremented. ${data.notes ?? ""}`);
       res.json({ defect: updated, verificationRun, retestId: retestRecord.id });
     }
   } catch (err) { next(err); }
@@ -527,7 +527,7 @@ router.patch("/defects/:defectId/quick-verify", async (req: AuthenticatedRequest
 // PHASE 2 — Developer Cycle
 // ---------------------------------------------------------------------------
 
-// PATCH /defects/:defectId/start — DEVELOPER only
+// PATCH /defects/:defectId/start — DEVELOPER or TEST_LEAD
 // ASSIGNED ───────────────────────────────────────────────────> IN_PROGRESS
 router.patch("/defects/:defectId/start", async (req: AuthenticatedRequest, res, next) => {
   try {
@@ -656,7 +656,7 @@ router.patch("/defects/:defectId/unblock", async (req: AuthenticatedRequest, res
   } catch (err) { next(err); }
 });
 
-// PATCH /defects/:defectId/resolve — DEVELOPER only
+// PATCH /defects/:defectId/resolve — DEVELOPER or TEST_LEAD
 // ASSIGNED | IN_PROGRESS ──────────────────────────────────────> RESOLVED_DEV
 // Requires root_cause_category. Sets resolved_at.
 router.patch("/defects/:defectId/resolve", async (req: AuthenticatedRequest, res, next) => {
@@ -885,7 +885,7 @@ router.patch("/defect-retests/:retestId", async (req: AuthenticatedRequest, res,
       await logSystemNote(retest.defect_id, oldDefectStatus, "REGRESSED", req.user!.userId, "Retest failed: " + (data.retestNotes || "No notes"));
     } else if (data.retestResult === "passed") {
       await db.update(schema.defects)
-        .set({ status: "CLOSED", updated_at: new Date(), resolved_at: new Date() })
+        .set({ status: "CLOSED", regression_index: 0, updated_at: new Date(), resolved_at: new Date() })
         .where(eq(schema.defects.id, retest.defect_id));
 
       await logAudit({
@@ -940,7 +940,7 @@ router.patch("/defects/:defectId/accept", async (req: AuthenticatedRequest, res,
 // ---------------------------------------------------------------------------
 
 // PATCH /defects/:defectId/resume-work — DEVELOPER or TEST_LEAD
-// RESOLVED_DEV ────────────────────────────────────────────────> IN_PROGRESS
+// RESOLVED_DEV | QA_PASSED ──────────────────────────────────────> IN_PROGRESS
 // Level 1 rollback (quick undo, no approval)
 router.patch("/defects/:defectId/resume-work", async (req: AuthenticatedRequest, res, next) => {
   try {
@@ -1020,8 +1020,8 @@ router.patch("/defects/:defectId/reschedule-retest", async (req: AuthenticatedRe
     await db.delete(schema.defectRetests)
       .where(eq(schema.defectRetests.defect_id, defectId));
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "RESOLVED_DEV", reason: data.reason });
-    await logSystemNote(defectId, oldStatus, "RESOLVED_DEV", req.user!.userId, data.reason);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "QA_PASSED", reason: data.reason });
+    await logSystemNote(defectId, oldStatus, "QA_PASSED", req.user!.userId, data.reason);
     res.json({
       id: updated.id,
       status: updated.status,
@@ -1186,15 +1186,8 @@ router.patch("/defects/:defectId/regress", async (req: AuthenticatedRequest, res
       `Severity impact: ${data.severity ?? "Not specified"}`,
     ].filter(Boolean).join("\n");
 
-    await db.insert(schema.defectNotes).values({
-      defect_id: defectId,
-      added_by_user_id: req.user!.userId,
-      note: `System Note: Regression detected — ${regressionNote}`,
-      is_system_note: true,
-    });
-
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "REGRESSED", reason: data.reason });
-    await logSystemNote(defectId, oldStatus, "REGRESSED", req.user!.userId, data.reason);
+    await logSystemNote(defectId, oldStatus, "REGRESSED", req.user!.userId, regressionNote);
 
     // TODO: Notify PROJECT_LEAD and TEST_LEAD urgently (escalation required)
     // To be implemented when notification infrastructure is available
@@ -1257,13 +1250,28 @@ router.patch("/defects/:defectId/retry-after-regression", async (req: Authentica
       updateData.assigned_to_user_id = data.reassignTo;
     }
 
+    let reassignDetail = "";
+    if (data.reassignTo !== undefined) {
+      const oldDev = await db.query.users.findFirst({
+        where: eq(schema.users.id, defect.assigned_to_user_id ?? -1),
+        columns: { name: true },
+      });
+      const newDev = await db.query.users.findFirst({
+        where: eq(schema.users.id, data.reassignTo),
+        columns: { name: true },
+      });
+      const oldName = oldDev?.name ?? `user #${defect.assigned_to_user_id}`;
+      const newName = newDev?.name ?? `user #${data.reassignTo}`;
+      reassignDetail = `Reassigned from ${oldName} to ${newName}: `;
+    }
+
     const [updated] = await db.update(schema.defects)
       .set(updateData)
       .where(eq(schema.defects.id, defectId))
       .returning();
 
     await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "ASSIGNED", reason: data.reason });
-    await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, data.reason + (data.reassignTo ? ` (reassigned to user #${data.reassignTo})` : ""));
+    await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, reassignDetail + data.reason);
 
     // TODO: Notify developer of reassignment
     // To be implemented when notification infrastructure is available

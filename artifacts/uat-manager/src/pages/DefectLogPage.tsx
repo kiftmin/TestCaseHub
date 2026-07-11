@@ -923,6 +923,7 @@ function DefectRow({
   const [qaReviewOpen, setQaReviewOpen] = useState(false);
   const [reassignOpen, setReassignOpen] = useState(false);
   const [resumeWorkOpen, setResumeWorkOpen] = useState(false);
+  const [retryAfterRegressionOpen, setRetryAfterRegressionOpen] = useState(false);
   const [blockOpen, setBlockOpen] = useState(false);
   const [unblockOpen, setUnblockOpen] = useState(false);
   const [untriagedAction, setUntriagedAction] = useState<string | null>(null);
@@ -967,8 +968,9 @@ function DefectRow({
   const isReady = defect.status === "READY_FOR_VERIFICATION";
   const isClosed = defect.status === "CLOSED" || defect.status === "PASSED_BY_AGREEMENT";
   const isPendingBiz = defect.status === "PENDING_BIZ_ACCEPTANCE";
+  const isRegressedStatus = defect.status === "REGRESSED";
 
-  const canRetestFromAnyState = false; // Removed: flag-retest is only valid from RESOLVED_DEV, handled by the dedicated Send for Verification button
+  const canRetestFromAnyState = canManage && !isResolved && !isClosed && !isPendingBiz;
 
   const invalidateProject = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["project-defects"] });
@@ -1036,6 +1038,13 @@ function DefectRow({
   const resumeWorkMut = useMutation({
     mutationFn: (reason: string) => customFetch(`/defects/${defect.id}/resume-work`, { method: "PATCH", body: JSON.stringify({ reason }) }),
     onSuccess: () => { invalidateProject(); toast.success("Work resumed"); setResumeWorkOpen(false); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const retryAfterRegressionMut = useMutation({
+    mutationFn: (data: { reason: string; reassignTo?: number }) =>
+      customFetch(`/defects/${defect.id}/retry-after-regression`, { method: "PATCH", body: JSON.stringify(data) }),
+    onSuccess: () => { invalidateProject(); toast.success("Defect returned to development"); setRetryAfterRegressionOpen(false); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -1310,7 +1319,7 @@ function DefectRow({
               </button>
             )}
             {/* Block (TRIAGED | ASSIGNED | IN_PROGRESS | REGRESSED) — assigned dev or manager */}
-            {(isDeveloper || canManage) && (isTriaged || isAssigned || isInProgress) && !isBlocked && (canManage || defect.assigned_to_user_id === user?.userId) && (
+            {(isDeveloper || canManage) && (isTriaged || isAssigned || isInProgress || isRegressedStatus) && !isBlocked && (canManage || defect.assigned_to_user_id === user?.userId) && (
               <button
                 onClick={() => setBlockOpen(true)}
                 className="action-btn action-btn-red"
@@ -1329,7 +1338,7 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">lock_open</span>
               </button>
             )}
-            {/* Resume Work (RESOLVED_DEV → IN_PROGRESS) — assigned dev or manager */}
+            {/* Resume Work (RESOLVED_DEV | QA_PASSED → IN_PROGRESS) — assigned dev or manager */}
             {(isDeveloper || canManage) && isResolved && (canManage || defect.assigned_to_user_id === user?.userId) && (
               <button
                 onClick={() => setResumeWorkOpen(true)}
@@ -1369,6 +1378,16 @@ function DefectRow({
                 title="Reassign to another developer"
               >
                 <span className="material-symbols-outlined text-sm">swap_horiz</span>
+              </button>
+            )}
+            {/* Retry After Regression (REGRESSED → ASSIGNED) — TEST_LEAD only, optionally reassign */}
+            {canManage && isRegressedStatus && (
+              <button
+                onClick={() => setRetryAfterRegressionOpen(true)}
+                className="action-btn action-btn-amber"
+                title="Retry — return to ASSIGNED (optionally reassign to a different developer)"
+              >
+                <span className="material-symbols-outlined text-sm">refresh</span>
               </button>
             )}
             {/* Flag Retest from NEW or non-terminal */}
@@ -1432,12 +1451,12 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">thumb_down</span>
               </button>
             )}
-            {/* Reschedule Retest (READY_FOR_VERIFICATION → RESOLVED_DEV) */}
+            {/* Reschedule Retest (READY_FOR_VERIFICATION → QA_PASSED) */}
             {canManage && isReady && (
               <button
                 onClick={() => setRescheduleOpen(true)}
                 className="action-btn action-btn-orange"
-                title="Reschedule — Soft return to RESOLVED_DEV (no regression penalty, keeps dev progress)"
+                title="Reschedule — Soft return to QA_PASSED (no regression penalty; QA review does not need to be redone)"
               >
                 <span className="material-symbols-outlined text-sm">schedule</span>
               </button>
@@ -1902,7 +1921,7 @@ function DefectRow({
           <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-lg p-md mb-sm">
             <span className="material-symbols-outlined text-orange-700 text-xl flex-shrink-0">schedule</span>
             <p className="font-body-sm text-orange-900">
-              Level 1 rollback — sends the defect back to <strong>RESOLVED_DEV</strong> without a regression penalty.
+              Level 1 rollback — sends the defect back to <strong>QA_PASSED</strong> without a regression penalty.
               The developer can make adjustments and re-submit. Use this when the fix mostly works but needs minor changes.
             </p>
           </div>
@@ -1964,6 +1983,18 @@ function DefectRow({
             onSave={(reason) => resumeWorkMut.mutate(reason)}
             onCancel={() => setResumeWorkOpen(false)}
             loading={resumeWorkMut.isPending}
+          />
+        </Dialog>
+      )}
+
+      {/* Retry After Regression Dialog */}
+      {retryAfterRegressionOpen && (
+        <Dialog onClose={() => setRetryAfterRegressionOpen(false)} title="Retry After Regression">
+          <RetryAfterRegressionForm
+            projectId={projectId}
+            onSave={(data) => retryAfterRegressionMut.mutate(data)}
+            onCancel={() => setRetryAfterRegressionOpen(false)}
+            loading={retryAfterRegressionMut.isPending}
           />
         </Dialog>
       )}
@@ -2695,7 +2726,7 @@ function QuickVerifyResultForm({
           <p className={`font-body-sm text-body-sm ${result === "passed" ? "text-green-800" : "text-red-800"}`}>
             {result === "passed"
               ? "This defect will be closed. It is ready for deployment."
-              : "This defect will be returned to ASSIGNED status and the regression counter will be incremented."}
+              : "This defect will be marked as REGRESSED and the regression counter will be incremented."}
           </p>
         </div>
       </div>
@@ -2889,6 +2920,70 @@ function ReassignForm({
         <button type="submit" disabled={loading || !isValid}
           className="px-4 py-sm bg-purple-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
           {loading ? "Reassigning..." : "Reassign"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** Retry After Regression — return a REGRESSED defect to ASSIGNED, optionally reassigning. */
+function RetryAfterRegressionForm({
+  projectId, onSave, onCancel, loading,
+}: {
+  projectId: number;
+  onSave: (data: { reason: string; reassignTo?: number }) => void;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  const { data: assignments } = useQuery({
+    queryKey: ["project-users", projectId],
+    queryFn: () => customFetch<ProjectAssignment[]>(`/projects/${projectId}/users`),
+  });
+  const developers = assignments?.filter((a) => a.role === "DEVELOPER") ?? [];
+  const [reason, setReason] = useState("");
+  const [reassignTo, setReassignTo] = useState<number | null>(null);
+  const isValid = reason.trim().length >= 1;
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave({ reason: reason.trim(), ...(reassignTo != null ? { reassignTo } : {}) }); }} className="space-y-md">
+      <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg p-md">
+        <span className="material-symbols-outlined text-amber-600 text-xl flex-shrink-0">refresh</span>
+        <p className="font-body-sm text-amber-900">
+          Return this REGRESSED defect to <strong>ASSIGNED</strong> for rework.
+          You may optionally reassign it to a different developer.
+        </p>
+      </div>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Reason *</label>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          className="w-full h-20 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none"
+          placeholder="Why is this being returned for rework?"
+          required
+        />
+      </div>
+      <div className="space-y-sm">
+        <label className="font-label-sm text-label-sm">Reassign to Developer (optional)</label>
+        <select
+          value={reassignTo ?? ""}
+          onChange={(e) => setReassignTo(e.target.value ? Number(e.target.value) : null)}
+          className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm"
+        >
+          <option value="">— Keep current developer —</option>
+          {developers.map((d) => (
+            <option key={d.user_id} value={d.user_id}>{d.user.name} ({d.user.username})</option>
+          ))}
+        </select>
+      </div>
+      <div className="flex justify-end gap-md pt-sm">
+        <button type="button" onClick={onCancel}
+          className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high transition-colors">
+          Cancel
+        </button>
+        <button type="submit" disabled={loading || !isValid}
+          className="px-4 py-sm bg-amber-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50 transition-all">
+          {loading ? "Submitting..." : "Return to Development"}
         </button>
       </div>
     </form>

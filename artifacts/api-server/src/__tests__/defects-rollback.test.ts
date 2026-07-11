@@ -853,3 +853,327 @@ describe("PATCH /defects/:defectId/reassign", () => {
   });
 });
 
+// ── quick-verify failure now produces REGRESSED (not ASSIGNED) ──────────────
+
+describe("PATCH /defects/:defectId/quick-verify (REGRESSED on fail)", () => {
+  it("should transition READY_FOR_VERIFICATION → REGRESSED with regression bump when failed", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "READY_FOR_VERIFICATION"),
+      columns: { id: true, project_id: true, regression_index: true },
+    });
+    if (!defect) return;
+
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+
+    const origRegression = defect.regression_index ?? 0;
+
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status, body } = await fetchApiAs(leadToken, `/defects/${defect.id}/quick-verify`, {
+      method: "PATCH",
+      body: JSON.stringify({ result: "failed", notes: "Failure persists" }),
+    });
+
+    expect(status).toBe(200);
+    expect(body?.defect?.status).toBe("REGRESSED");
+    expect(body?.defect?.regression_index ?? 0).toBe(origRegression + 1);
+
+    const after = await getDefect(defect.id);
+    expect(after?.status).toBe("REGRESSED");
+    expect(after?.regression_index ?? 0).toBe(origRegression + 1);
+  });
+
+  it("should still transition READY_FOR_VERIFICATION → CLOSED with regression_index reset when passed", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "READY_FOR_VERIFICATION"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+
+    // Set a nonzero regression_index to verify it gets reset
+    await db.update(schema.defects)
+      .set({ regression_index: 3 })
+      .where(eq(schema.defects.id, defect.id));
+
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status, body } = await fetchApiAs(leadToken, `/defects/${defect.id}/quick-verify`, {
+      method: "PATCH",
+      body: JSON.stringify({ result: "passed", notes: "Verified on staging" }),
+    });
+
+    expect(status).toBe(200);
+    expect(body?.defect?.status).toBe("CLOSED");
+
+    const after = await getDefect(defect.id);
+    expect(after?.status).toBe("CLOSED");
+    expect(after?.regression_index ?? -1).toBe(0);
+  });
+});
+
+// ── retry-after-regression ─────────────────────────────────────────────────
+
+describe("PATCH /defects/:defectId/retry-after-regression", () => {
+  it("should transition REGRESSED → ASSIGNED", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "REGRESSED"),
+      columns: { id: true, project_id: true, assigned_to_user_id: true },
+    });
+    if (!defect) return;
+
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status, body } = await fetchApiAs(leadToken, `/defects/${defect.id}/retry-after-regression`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason: "Ready for rework" }),
+    });
+
+    expect(status).toBe(200);
+    expect(body?.status).toBe("ASSIGNED");
+
+    const after = await getDefect(defect.id);
+    expect(after?.status).toBe("ASSIGNED");
+    expect(after?.assigned_to_user_id).toBe(defect.assigned_to_user_id);
+  });
+
+  it("should reassign to a different developer and log names in note", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "REGRESSED"),
+      columns: { id: true, project_id: true, assigned_to_user_id: true },
+    });
+    if (!defect || !defect.assigned_to_user_id) return;
+
+    // Find a different developer on the same project
+    const devs = await db.query.projectAssignments.findMany({
+      where: and(eq(schema.projectAssignments.project_id, defect.project_id), eq(schema.projectAssignments.role, "DEVELOPER")),
+    });
+    const otherDev = devs.find(d => d.user_id !== defect.assigned_to_user_id);
+    if (!otherDev) return;
+
+    const otherUser = await db.query.users.findFirst({
+      where: eq(schema.users.id, otherDev.user_id),
+      columns: { name: true },
+    });
+    if (!otherUser) return;
+
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status } = await fetchApiAs(leadToken, `/defects/${defect.id}/retry-after-regression`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason: "Better fit", reassignTo: otherDev.user_id }),
+    });
+
+    expect(status).toBe(200);
+
+    const after = await getDefect(defect.id);
+    expect(after?.assigned_to_user_id).toBe(otherDev.user_id);
+
+    // Check that the most recent system note contains the dev's name, not "user #"
+    const notes = await db.query.defectNotes.findMany({
+      where: and(
+        eq(schema.defectNotes.defect_id, defect.id),
+        eq(schema.defectNotes.is_system_note, true),
+      ),
+      orderBy: [{ column: schema.defectNotes.created_at, dir: "desc" }],
+      limit: 1,
+    });
+    expect(notes.length).toBe(1);
+    const noteText = notes[0].note;
+    const containsRawId = noteText.includes(`user #${otherDev.user_id}`);
+    expect(containsRawId).toBe(false);
+    const containsName = noteText.includes(otherUser.name);
+    expect(containsName).toBe(true);
+  });
+});
+
+// ── reschedule-retest now logs QA_PASSED (not RESOLVED_DEV) ────────────────
+
+describe("PATCH /defects/:defectId/reschedule-retest (logging fix)", () => {
+  let defectId: number;
+
+  beforeAll(async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "READY_FOR_VERIFICATION"),
+    });
+    if (defect) defectId = defect.id;
+  });
+
+  it("should transition to QA_PASSED and log QA_PASSED in audit trail", async () => {
+    if (!defectId) return;
+    const before = await getDefect(defectId);
+    expect(before?.status).toBe("READY_FOR_VERIFICATION");
+
+    const { status } = await fetchApi(`/defects/${defectId}/reschedule-retest`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason: "Reschedule for later verification" }),
+    });
+    expect(status).toBe(200);
+
+    const after = await getDefect(defectId);
+    expect(after?.status).toBe("QA_PASSED");
+
+    const logs = await getAuditLog(defectId);
+    const transitionLog = logs.find((l: any) => l.from_status === "READY_FOR_VERIFICATION");
+    expect(transitionLog?.to_status).toBe("QA_PASSED");
+    expect(transitionLog?.reason).toBe("Reschedule for later verification");
+
+    // Also check system note
+    const notes = await db.query.defectNotes.findMany({
+      where: and(
+        eq(schema.defectNotes.defect_id, defectId),
+        eq(schema.defectNotes.is_system_note, true),
+      ),
+      orderBy: [{ column: schema.defectNotes.created_at, dir: "desc" }],
+      limit: 5,
+    });
+    const rescheduleNote = notes.find((n: any) => n.note.includes("Reschedule for later verification"));
+    expect(rescheduleNote).not.toBe(undefined);
+    if (rescheduleNote) {
+      const containsResolvedDev = rescheduleNote.note.includes("RESOLVED_DEV");
+      expect(containsResolvedDev).toBe(false);
+      const containsQaPassed = rescheduleNote.note.includes("QA_PASSED");
+      expect(containsQaPassed).toBe(true);
+    }
+  });
+});
+
+// ── submit-for-business-decision from new allowed states ────────────────────
+
+describe("PATCH /defects/:defectId/submit-for-business-decision (QA_PASSED & REGRESSED)", () => {
+  it("should succeed from QA_PASSED", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "QA_PASSED"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status } = await fetchApiAs(leadToken, `/defects/${defect.id}/submit-for-business-decision`, {
+      method: "PATCH",
+      body: JSON.stringify({ justification: "Need business owner review before proceeding with verification", decisionType: "business_review" }),
+    });
+
+    expect(status).toBe(200);
+
+    const after = await getDefect(defect.id);
+    expect(after?.status).toBe("PENDING_BIZ_ACCEPTANCE");
+  });
+
+  it("should succeed from REGRESSED", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "REGRESSED"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status } = await fetchApiAs(leadToken, `/defects/${defect.id}/submit-for-business-decision`, {
+      method: "PATCH",
+      body: JSON.stringify({ justification: "This defect keeps failing retest, considering risk waiver", decisionType: "risk_waiver" }),
+    });
+
+    expect(status).toBe(200);
+
+    const after = await getDefect(defect.id);
+    expect(after?.status).toBe("PENDING_BIZ_ACCEPTANCE");
+  });
+});
+
+// ── defect-retests pass resets regression_index ────────────────────────────
+
+describe("PATCH /defect-retests/:retestId (regression_index reset on pass)", () => {
+  it("should set regression_index to 0 on pass", async () => {
+    // Find a defect with a retest record (ideally REGRESSED or READY_FOR_VERIFICATION with retests)
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "READY_FOR_VERIFICATION"),
+      columns: { id: true, project_id: true, regression_index: true },
+    });
+    if (!defect) return;
+
+    // Ensure there's a retest record and set a nonzero regression_index
+    let retest = await db.query.defectRetests.findFirst({
+      where: eq(schema.defectRetests.defect_id, defect.id),
+    });
+    if (!retest) {
+      [retest] = await db.insert(schema.defectRetests).values({
+        defect_id: defect.id,
+        test_run_id: defect.project_id,
+        target_verification_run_id: defect.project_id,
+      }).returning();
+    }
+    await db.update(schema.defects).set({ regression_index: 5 }).where(eq(schema.defects.id, defect.id));
+
+    const lead = await findTestLead(defect.project_id);
+    if (!lead) return;
+
+    const leadToken = makeToken({ userId: lead.userId, username: lead.username, role: "TEST_LEAD" });
+    const { status } = await fetchApiAs(leadToken, `/defect-retests/${retest.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ retestResult: "passed", retestNotes: "All good now" }),
+    });
+    expect(status).toBe(200);
+
+    const after = await getDefect(defect.id);
+    expect(after?.status).toBe("CLOSED");
+    expect(after?.regression_index ?? -1).toBe(0);
+  });
+});
+
+// ── regress endpoint produces exactly one note ─────────────────────────────
+
+describe("PATCH /defects/:defectId/regress (single note)", () => {
+  it("should produce exactly one system note with full details", async () => {
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.status, "CLOSED"),
+      columns: { id: true, project_id: true },
+    });
+    if (!defect) return;
+
+    const noteCountBefore = (await db.query.defectNotes.findMany({
+      where: eq(schema.defectNotes.defect_id, defect.id),
+    })).length;
+
+    const { status } = await fetchApi(`/defects/${defect.id}/regress`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        reason: "Production incident found in release — customer reported data loss on the export screen after deployment",
+        incidentType: "production",
+        customerReference: "TKT-45678",
+        severity: "Critical",
+      }),
+    });
+
+    expect(status).toBe(200);
+
+    const after = await getDefect(defect.id);
+    expect(after?.status).toBe("REGRESSED");
+
+    const notes = await db.query.defectNotes.findMany({
+      where: eq(schema.defectNotes.defect_id, defect.id),
+    });
+    const newNoteCount = notes.length - noteCountBefore;
+    // Should add exactly 1 system note (not 2)
+    expect(newNoteCount).toBe(1);
+
+    // The single note should contain the full regression detail
+    const latestNote = notes[notes.length - 1];
+    expect(latestNote.is_system_note).toBe(true);
+    const noteContainsDetails = latestNote.note.includes("Regression reported") &&
+      latestNote.note.includes("production") &&
+      latestNote.note.includes("TKT-45678");
+    expect(noteContainsDetails).toBe(true);
+  });
+});
+

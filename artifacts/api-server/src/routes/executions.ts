@@ -862,19 +862,22 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
           } else {
             await db.update(schema.defects)
               .set({
-                status: "ASSIGNED",
+                status: "REGRESSED",
                 regression_index: sql`${schema.defects.regression_index} + 1`,
                 updated_at: new Date(),
               })
               .where(eq(schema.defects.id, defect.id));
           }
 
+          const noteMessage = `Auto-resolved from retest run "${testRunFull.name}" — this defect's test case ${result === "passed" ? "passed" : "failed"}.`;
+          await logSystemNote(defect.id, "READY_FOR_VERIFICATION", result === "passed" ? "CLOSED" : "REGRESSED", req.user!.userId, noteMessage);
+
           await logAudit({
             entityType: "defect",
             entityId: defect.id,
             changedByUserId: req.user!.userId,
             fromStatus: "READY_FOR_VERIFICATION",
-            toStatus: result === "passed" ? "CLOSED" : "ASSIGNED",
+            toStatus: result === "passed" ? "CLOSED" : "REGRESSED",
             reason: `Auto-resolved from retest run ${testRunId} — test case ${defect.test_case_id} ${result}`,
           });
         }

@@ -1269,8 +1269,8 @@ function DefectRow({
         </td>
         <td className="px-md py-sm text-right" onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-end gap-0.5">
-            {/* Classify / Reclassify */}
-            {canManage && !isClosed && !isPendingBiz && (
+            {/* Classify / Reclassify — only before work starts */}
+            {canManage && (isNew || isTriaged || isAssigned) && (
               <button
                 onClick={() => isNew ? setClassifyOpen(true) : handleUntriagedAction("classify")}
                 className="action-btn action-btn-secondary"

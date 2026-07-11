@@ -1289,8 +1289,8 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">assignment</span>
               </button>
             )}
-            {/* Developer: Start Work (ASSIGNED → IN_PROGRESS) — assigned developer only */}
-            {isDeveloper && isAssigned && !isBlocked && defect.assigned_to_user_id === user?.userId && (
+            {/* Developer: Start Work (ASSIGNED → IN_PROGRESS) — assigned dev or manager */}
+            {(isDeveloper || canManage) && isAssigned && !isBlocked && (canManage || defect.assigned_to_user_id === user?.userId) && (
               <button
                 onClick={() => startMut.mutate()}
                 className="action-btn action-btn-cyan"
@@ -1299,8 +1299,8 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">play_arrow</span>
               </button>
             )}
-            {/* Developer: Resolve (ASSIGNED | IN_PROGRESS → RESOLVED_DEV) — assigned developer only */}
-            {isDeveloper && (isAssigned || isInProgress) && !isBlocked && defect.assigned_to_user_id === user?.userId && (
+            {/* Developer: Resolve (ASSIGNED | IN_PROGRESS → RESOLVED_DEV) — assigned dev or manager */}
+            {(isDeveloper || canManage) && (isAssigned || isInProgress) && !isBlocked && (canManage || defect.assigned_to_user_id === user?.userId) && (
               <button
                 onClick={() => setResolveOpen(true)}
                 className="action-btn action-btn-blue"

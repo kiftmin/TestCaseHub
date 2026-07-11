@@ -534,15 +534,19 @@ router.patch("/defects/:defectId/start", async (req: AuthenticatedRequest, res, 
     const defectId = Number(req.params.defectId);
     const projectId = await getProjectId(defectId);
     if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
-    const allowed = await checkProjectRole(req, projectId, ["DEVELOPER"]);
+    const allowed = await checkProjectRole(req, projectId, ["DEVELOPER", "TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
     if (defect.status !== "ASSIGNED") { res.status(409).json({ message: `Cannot start defect in status ${defect.status}. Only ASSIGNED defects can be started.` }); return; }
+    // DEVELOPER can only start their own defect; TEST_LEAD can start any
     if (defect.assigned_to_user_id !== req.user!.userId) {
-      res.status(403).json({ message: "You can only start work on defects assigned to you." });
-      return;
+      const isTestLead = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+      if (!isTestLead) {
+        res.status(403).json({ message: "You can only start work on defects assigned to you." });
+        return;
+      }
     }
 
     const oldStatus = defect.status;
@@ -670,14 +674,18 @@ router.patch("/defects/:defectId/resolve", async (req: AuthenticatedRequest, res
 
     const projectId = await getProjectId(defectId);
     if (!projectId) { res.status(404).json({ message: "Defect not found" }); return; }
-    const allowed = await checkProjectRole(req, projectId, ["DEVELOPER"]);
+    const allowed = await checkProjectRole(req, projectId, ["DEVELOPER", "TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    // DEVELOPER can only resolve their own defect; TEST_LEAD can resolve any
     if (defect.assigned_to_user_id !== req.user!.userId) {
-      res.status(403).json({ message: "You can only resolve defects assigned to you." });
-      return;
+      const isTestLead = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
+      if (!isTestLead) {
+        res.status(403).json({ message: "You can only resolve defects assigned to you." });
+        return;
+      }
     }
 
     const oldStatus = defect.status;

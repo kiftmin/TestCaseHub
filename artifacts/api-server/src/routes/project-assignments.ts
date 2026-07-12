@@ -216,7 +216,7 @@ router.get("/projects/:projectId/my-role", async (req: AuthenticatedRequest, res
     });
 
     if (assignment) {
-      const isQa = assignment.role === "DEVELOPER" && assignment.is_qa === true;
+      const isQa = (assignment.role === "DEVELOPER" || assignment.role === "TEST_LEAD") && assignment.is_qa === true;
       res.json({ role: assignment.role, isQa });
       return;
     }

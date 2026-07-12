@@ -704,7 +704,7 @@ router.patch("/defects/:defectId/resolve", async (req: AuthenticatedRequest, res
 // PHASE 2.5 — QA Review (gate before verification)
 // ---------------------------------------------------------------------------
 
-// PATCH /defects/:defectId/qa-review — ADMIN, or DEVELOPER with is_qa flag
+// PATCH /defects/:defectId/qa-review — ADMIN, or DEVELOPER/TEST_LEAD with is_qa flag
 // RESOLVED_DEV ────────────────────────────────────────────────> QA_PASSED (pass) | IN_PROGRESS (fail)
 // regression_index is NEVER changed by this endpoint — a QA fail is a fresh dev cycle, not a regression.
 router.patch("/defects/:defectId/qa-review", async (req: AuthenticatedRequest, res, next) => {

@@ -84,8 +84,9 @@ export async function checkProjectRole(
 
 /**
  * Returns true when the caller is ADMIN, or has a project_assignment on this
- * project with role === "DEVELOPER" and is_qa === true. Used to gate the QA
- * review action — a QA person is modelled as a DEVELOPER with the is_qa flag.
+ * project with role === "DEVELOPER" and is_qa === true, or role === "TEST_LEAD"
+ * and is_qa === true. Used to gate the QA review action — a QA person is
+ * modelled as a DEVELOPER or TEST_LEAD with the is_qa flag.
  */
 export async function checkProjectQa(
   req: AuthenticatedRequest,
@@ -103,5 +104,5 @@ export async function checkProjectQa(
     columns: { role: true, is_qa: true },
   });
 
-  return !!assignment && assignment.role === "DEVELOPER" && assignment.is_qa === true;
+  return !!assignment && (assignment.role === "DEVELOPER" || assignment.role === "TEST_LEAD") && assignment.is_qa === true;
 }

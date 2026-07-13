@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -10,7 +10,10 @@ import { ImportWizard } from "../components/import-wizard";
 import { useConfirmDialog } from "../hooks/use-confirm-dialog";
 import type { Project } from "../types/api";
 
-type ViewMode = "cards" | "list" | "details";
+type ViewMode = "cards" | "details";
+
+type SortKey = "project_code" | "name" | "module_name" | "is_signed_off" | "created_at" | "testLead" | "useCaseCount" | "version";
+type SortDir = "asc" | "desc";
 
 function useProjects() {
   return useQuery({
@@ -74,6 +77,38 @@ function ProjectCard({ p, isAdmin, onDelete }: { p: Project; isAdmin: boolean; o
         )}
       </div>
     </div>
+  );
+}
+
+const COLUMNS: { key: SortKey; label: string; sortable: boolean }[] = [
+  { key: "project_code", label: "Code", sortable: true },
+  { key: "name", label: "Name", sortable: true },
+  { key: "module_name", label: "Module", sortable: true },
+  { key: "is_signed_off", label: "Status", sortable: true },
+  { key: "created_at", label: "Created", sortable: true },
+  { key: "testLead", label: "Test Lead", sortable: true },
+  { key: "useCaseCount", label: "Scenarios", sortable: true },
+  { key: "version", label: "Version", sortable: true },
+];
+
+function getSortValue(p: Project, key: SortKey): string | number {
+  switch (key) {
+    case "project_code": return p.project_code;
+    case "name": return p.name.toLowerCase();
+    case "module_name": return p.module_name.toLowerCase();
+    case "is_signed_off": return p.is_signed_off;
+    case "created_at": return p.created_at;
+    case "testLead": return (p.testLead?.name ?? "").toLowerCase();
+    case "useCaseCount": return p.useCaseCount ?? 0;
+    case "version": return p.version;
+  }
+}
+
+function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
+  return (
+    <span className="material-symbols-outlined text-[14px] ml-1 align-text-bottom">
+      {active ? (dir === "asc" ? "arrow_upward" : "arrow_downward") : "unfold_more"}
+    </span>
   );
 }
 
@@ -157,6 +192,8 @@ function ProjectsPageContent() {
   const [importOpen, setImportOpen] = useState(false);
   const [followUpProject, setFollowUpProject] = useState<Project | null>(null);
   const [view, setView] = useState<ViewMode>("cards");
+  const [sortKey, setSortKey] = useState<SortKey>("created_at");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) =>
@@ -195,11 +232,30 @@ function ProjectsPageContent() {
     onError: (err: Error) => toast.error(err.message),
   });
 
-  const filtered = projects?.filter((p) => {
-    if (filter === "signed_off") return p.is_signed_off === 1;
-    if (filter === "in_progress") return p.is_signed_off === 0;
-    return true;
-  });
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir(key === "created_at" ? "desc" : "asc");
+    }
+  };
+
+  const filtered = useMemo(() => {
+    let list = projects ?? [];
+    if (filter === "signed_off") list = list.filter((p) => p.is_signed_off === 1);
+    if (filter === "in_progress") list = list.filter((p) => p.is_signed_off === 0);
+
+    if (view === "details") {
+      list = [...list].sort((a, b) => {
+        const va = getSortValue(a, sortKey);
+        const vb = getSortValue(b, sortKey);
+        const cmp = typeof va === "string" ? va.localeCompare(vb as string) : (va as number) - (vb as number);
+        return sortDir === "asc" ? cmp : -cmp;
+      });
+    }
+    return list;
+  }, [projects, filter, view, sortKey, sortDir]);
 
   const handleDelete = (p: Project) => {
     confirm.ask({
@@ -273,7 +329,7 @@ function ProjectsPageContent() {
         </div>
 
         <div className="flex items-center bg-surface-container-high rounded-lg p-0.5 border border-outline-variant">
-          {(["cards", "list", "details"] as const).map((v) => (
+          {(["cards", "details"] as const).map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
@@ -284,9 +340,9 @@ function ProjectsPageContent() {
               }`}
             >
               <span className="material-symbols-outlined text-[16px]">
-                {v === "cards" ? "grid_view" : v === "list" ? "view_list" : "table_rows"}
+                {v === "cards" ? "grid_view" : "table_rows"}
               </span>
-              {v === "cards" ? "Cards" : v === "list" ? "List" : "Details"}
+              {v === "cards" ? "Cards" : "Details"}
             </button>
           ))}
         </div>
@@ -299,13 +355,13 @@ function ProjectsPageContent() {
         <div className="text-center py-xl">
           <p className="text-error font-body-base">Failed to load projects</p>
         </div>
-      ) : filtered?.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <div className="text-center py-xl">
           <p className="text-on-surface-variant font-body-base">No projects found</p>
         </div>
       ) : view === "cards" ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-lg">
-          {filtered?.map((p) => (
+          {filtered.map((p) => (
             <ProjectCard key={p.id} p={p} isAdmin={isAdmin} onDelete={handleDelete} />
           ))}
         </div>
@@ -314,19 +370,25 @@ function ProjectsPageContent() {
           <table className="w-full text-left">
             <thead>
               <tr className="border-b border-outline-variant bg-surface-container-high text-label-sm text-on-surface-variant uppercase tracking-wider">
-                <th className="py-3 px-4 font-label-sm">Code</th>
-                <th className="py-3 px-4 font-label-sm">Name</th>
-                <th className="py-3 px-4 font-label-sm">Module</th>
-                <th className="py-3 px-4 font-label-sm">Status</th>
-                <th className="py-3 px-4 font-label-sm">Created</th>
-                <th className="py-3 px-4 font-label-sm">Test Lead</th>
-                <th className="py-3 px-4 font-label-sm">Scenarios</th>
-                <th className="py-3 px-4 font-label-sm">Version</th>
+                {COLUMNS.map((col) => (
+                  <th
+                    key={col.key}
+                    onClick={col.sortable ? () => handleSort(col.key) : undefined}
+                    className={`py-3 px-4 font-label-sm select-none ${
+                      col.sortable ? "cursor-pointer hover:text-on-surface" : ""
+                    }`}
+                  >
+                    <span className="inline-flex items-center">
+                      {col.label}
+                      {col.sortable && <SortIcon active={sortKey === col.key} dir={sortDir} />}
+                    </span>
+                  </th>
+                ))}
                 <th className="py-3 px-4 font-label-sm w-10" />
               </tr>
             </thead>
             <tbody>
-              {filtered?.map((p) => (
+              {filtered.map((p) => (
                 <ProjectRow key={p.id} p={p} isAdmin={isAdmin} onDelete={handleDelete} />
               ))}
             </tbody>

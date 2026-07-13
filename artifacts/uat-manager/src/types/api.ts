@@ -43,6 +43,8 @@ export interface Project {
   exit_criteria: string | null;
   created_at: string;
   updated_at: string;
+  testLead?: { id: number; name: string } | null;
+  useCaseCount?: number;
 }
 
 export interface SignOffData {

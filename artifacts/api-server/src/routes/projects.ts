@@ -21,18 +21,20 @@ function generateProjectCode(): string {
 router.get("/", async (req: AuthenticatedRequest, res, next) => {
   try {
     if (req.user!.role === "ADMIN") {
-      const projects = await db.query.projects.findMany({
-        with: { testLead: true },
+      const rows = await db.query.projects.findMany({
+        with: { testLead: true, useCases: { columns: { id: true } } },
         orderBy: desc(schema.projects.created_at),
       });
-      res.json(projects);
+      res.json(rows.map(({ useCases, ...p }) => ({ ...p, useCaseCount: useCases.length })));
     } else {
       const assignments = await db.query.projectAssignments.findMany({
         where: eq(schema.projectAssignments.user_id, req.user!.userId),
-        with: { project: { with: { testLead: true } } },
+        with: { project: { with: { testLead: true, useCases: { columns: { id: true } } } } },
       });
-      const projects = assignments.map(a => a.project);
-      res.json(projects);
+      res.json(assignments.map(a => {
+        const { useCases, ...p } = a.project;
+        return { ...p, useCaseCount: useCases.length };
+      }));
     }
   } catch (err) { next(err); }
 });

@@ -10,11 +10,134 @@ import { ImportWizard } from "../components/import-wizard";
 import { useConfirmDialog } from "../hooks/use-confirm-dialog";
 import type { Project } from "../types/api";
 
+type ViewMode = "cards" | "list" | "details";
+
 function useProjects() {
   return useQuery({
     queryKey: ["projects"],
     queryFn: () => customFetch<Project[]>("/projects"),
   });
+}
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString("en-GB", {
+    day: "numeric", month: "short", year: "numeric",
+  });
+}
+
+function StatusBadge({ isSignedOff }: { isSignedOff: number }) {
+  const on = isSignedOff === 1;
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+        on ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+      }`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${on ? "bg-green-500" : "bg-amber-500"}`} />
+      {on ? "Signed Off" : "In Progress"}
+    </span>
+  );
+}
+
+function ProjectCard({ p, isAdmin, onDelete }: { p: Project; isAdmin: boolean; onDelete: (p: Project) => void }) {
+  const [, navigate] = useLocation();
+  return (
+    <div
+      onClick={() => navigate(`/projects/${p.id}`)}
+      className="group bg-surface-container-lowest border border-outline-variant rounded-xl p-md cursor-pointer hover:shadow-lg hover:border-secondary/30 transition-all duration-300"
+    >
+      <div className="flex justify-between items-start mb-sm">
+        <code className="font-mono text-[11px] px-2 py-1 bg-surface-container-high text-on-surface-variant rounded">
+          {p.project_code}
+        </code>
+        <StatusBadge isSignedOff={p.is_signed_off} />
+      </div>
+      <h3 className="font-title-sm text-title-sm text-on-surface mb-1 group-hover:text-secondary transition-colors">
+        {p.name}
+      </h3>
+      <p className="text-body-sm text-on-surface-variant mb-3">Module: {p.module_name}</p>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-label-sm text-on-surface-variant mb-3">
+        <span>Created: {formatDate(p.created_at)}</span>
+        <span>Lead: {p.testLead?.name ?? "—"}</span>
+        <span>Scenarios: {p.useCaseCount ?? 0}</span>
+      </div>
+      <div className="flex items-center justify-between pt-md border-t border-outline-variant/50">
+        <span className="text-label-sm font-label-sm text-on-surface-variant">v{p.version}</span>
+        {isAdmin && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(p); }}
+            className="text-on-surface-variant/40 hover:text-error transition-colors p-1"
+            title="Delete project"
+          >
+            <span className="material-symbols-outlined text-[18px]">delete</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProjectRow({ p, isAdmin, onDelete }: { p: Project; isAdmin: boolean; onDelete: (p: Project) => void }) {
+  const [, navigate] = useLocation();
+  return (
+    <tr
+      onClick={() => navigate(`/projects/${p.id}`)}
+      className="border-b border-outline-variant/50 cursor-pointer hover:bg-surface-container-high transition-colors"
+    >
+      <td className="py-3 px-4">
+        <code className="font-mono text-[11px] px-2 py-1 bg-surface-container-high text-on-surface-variant rounded">
+          {p.project_code}
+        </code>
+      </td>
+      <td className="py-3 px-4 font-label-md text-on-surface">{p.name}</td>
+      <td className="py-3 px-4 text-label-sm text-on-surface-variant">{p.module_name}</td>
+      <td className="py-3 px-4"><StatusBadge isSignedOff={p.is_signed_off} /></td>
+      <td className="py-3 px-4 text-label-sm text-on-surface-variant">{formatDate(p.created_at)}</td>
+      <td className="py-3 px-4 text-label-sm text-on-surface-variant">{p.testLead?.name ?? "—"}</td>
+      <td className="py-3 px-4 text-label-sm text-on-surface-variant">{p.useCaseCount ?? 0}</td>
+      <td className="py-3 px-4 text-label-sm text-on-surface-variant">v{p.version}</td>
+      <td className="py-3 px-4">
+        {isAdmin && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(p); }}
+            className="text-on-surface-variant/40 hover:text-error transition-colors p-1"
+            title="Delete project"
+          >
+            <span className="material-symbols-outlined text-[18px]">delete</span>
+          </button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function SkeletonCards() {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-lg">
+      {[1, 2, 3].map((i) => (
+        <div key={i} className="bg-surface-container-lowest border border-outline-variant rounded-xl p-md animate-pulse">
+          <div className="flex justify-between mb-sm"><div className="w-16 h-5 skeleton rounded" /><div className="w-20 h-5 skeleton rounded-full" /></div>
+          <div className="w-3/4 h-6 skeleton rounded mb-2" /><div className="w-1/2 h-4 skeleton rounded mb-4" />
+          <div className="pt-md border-t border-outline-variant/50 flex justify-between"><div className="w-12 h-4 skeleton rounded" /><div className="w-16 h-6 skeleton rounded-full" /></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SkeletonTable() {
+  return (
+    <div className="animate-pulse space-y-3">
+      {[1, 2, 3].map((i) => (
+        <div key={i} className="flex gap-4 p-4 bg-surface-container-lowest border border-outline-variant rounded-lg">
+          <div className="w-20 h-5 skeleton rounded" />
+          <div className="w-48 h-5 skeleton rounded" />
+          <div className="w-32 h-5 skeleton rounded" />
+          <div className="w-24 h-5 skeleton rounded" />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function ProjectsPage() {
@@ -33,6 +156,7 @@ function ProjectsPageContent() {
   const [filter, setFilter] = useState<"all" | "signed_off" | "in_progress">("all");
   const [importOpen, setImportOpen] = useState(false);
   const [followUpProject, setFollowUpProject] = useState<Project | null>(null);
+  const [view, setView] = useState<ViewMode>("cards");
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) =>
@@ -77,6 +201,16 @@ function ProjectsPageContent() {
     return true;
   });
 
+  const handleDelete = (p: Project) => {
+    confirm.ask({
+      title: "Delete Project",
+      message: `Are you sure you want to permanently delete "${p.name}" (${p.project_code})? This will remove all use cases, test cases, test runs, defects, and discussions — this action cannot be undone.`,
+      confirmLabel: "Delete",
+      destructive: true,
+      onConfirm: () => deleteMutation.mutate(p.id),
+    });
+  };
+
   return (
     <>
       {/* Header */}
@@ -111,53 +245,56 @@ function ProjectsPageContent() {
         </div>
       </div>
 
-      {/* Filter Bar */}
-      <div className="flex items-center gap-sm mb-lg">
-        <span className="text-label-sm text-on-surface-variant font-label-sm uppercase tracking-wider">
-          Filter by:
-        </span>
-        <div className="flex gap-xs">
-          {(["all", "in_progress", "signed_off"] as const).map((f) => (
+      {/* Filter Bar + View Toggle */}
+      <div className="flex flex-wrap items-center justify-between gap-sm mb-lg">
+        <div className="flex items-center gap-sm">
+          <span className="text-label-sm text-on-surface-variant font-label-sm uppercase tracking-wider">
+            Filter by:
+          </span>
+          <div className="flex gap-xs">
+            {(["all", "in_progress", "signed_off"] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className={`px-md py-1.5 rounded-full border text-label-sm font-label-sm transition-colors ${
+                  filter === f
+                    ? "border-secondary bg-secondary/10 text-secondary"
+                    : "border-outline-variant text-on-surface-variant hover:bg-surface-container"
+                }`}
+              >
+                {f === "all"
+                  ? "All Projects"
+                  : f === "signed_off"
+                    ? "Signed Off"
+                    : "In Progress"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center bg-surface-container-high rounded-lg p-0.5 border border-outline-variant">
+          {(["cards", "list", "details"] as const).map((v) => (
             <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`px-md py-1.5 rounded-full border text-label-sm font-label-sm transition-colors ${
-                filter === f
-                  ? "border-secondary bg-secondary/10 text-secondary"
-                  : "border-outline-variant text-on-surface-variant hover:bg-surface-container"
+              key={v}
+              onClick={() => setView(v)}
+              className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-label-sm font-label-sm transition-colors ${
+                view === v
+                  ? "bg-surface-container-lowest text-on-surface shadow-sm"
+                  : "text-on-surface-variant hover:text-on-surface"
               }`}
             >
-              {f === "all"
-                ? "All Projects"
-                : f === "signed_off"
-                  ? "Signed Off"
-                  : "In Progress"}
+              <span className="material-symbols-outlined text-[16px]">
+                {v === "cards" ? "grid_view" : v === "list" ? "view_list" : "table_rows"}
+              </span>
+              {v === "cards" ? "Cards" : v === "list" ? "List" : "Details"}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Grid */}
+      {/* Content */}
       {isLoading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-lg">
-          {[1, 2, 3].map((i) => (
-            <div
-              key={i}
-              className="bg-surface-container-lowest border border-outline-variant rounded-xl p-md animate-pulse"
-            >
-              <div className="flex justify-between mb-sm">
-                <div className="w-16 h-5 skeleton rounded" />
-                <div className="w-20 h-5 skeleton rounded-full" />
-              </div>
-              <div className="w-3/4 h-6 skeleton rounded mb-2" />
-              <div className="w-1/2 h-4 skeleton rounded mb-4" />
-              <div className="pt-md border-t border-outline-variant/50 flex justify-between">
-                <div className="w-12 h-4 skeleton rounded" />
-                <div className="w-16 h-6 skeleton rounded-full" />
-              </div>
-            </div>
-          ))}
-        </div>
+        view === "cards" ? <SkeletonCards /> : <SkeletonTable />
       ) : error ? (
         <div className="text-center py-xl">
           <p className="text-error font-body-base">Failed to load projects</p>
@@ -166,64 +303,34 @@ function ProjectsPageContent() {
         <div className="text-center py-xl">
           <p className="text-on-surface-variant font-body-base">No projects found</p>
         </div>
-      ) : (
+      ) : view === "cards" ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-lg">
           {filtered?.map((p) => (
-            <div
-              key={p.id}
-              onClick={() => navigate(`/projects/${p.id}`)}
-              className="group bg-surface-container-lowest border border-outline-variant rounded-xl p-md cursor-pointer hover:shadow-lg hover:border-secondary/30 transition-all duration-300"
-            >
-              <div className="flex justify-between items-start mb-sm">
-                <code className="font-mono text-[11px] px-2 py-1 bg-surface-container-high text-on-surface-variant rounded">
-                  {p.project_code}
-                </code>
-                <span
-                  className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                    p.is_signed_off === 1
-                      ? "bg-green-100 text-green-700"
-                      : "bg-amber-100 text-amber-700"
-                  }`}
-                >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      p.is_signed_off === 1 ? "bg-green-500" : "bg-amber-500"
-                    }`}
-                  />
-                  {p.is_signed_off === 1 ? "Signed Off" : "In Progress"}
-                </span>
-              </div>
-              <h3 className="font-title-sm text-title-sm text-on-surface mb-1 group-hover:text-secondary transition-colors">
-                {p.name}
-              </h3>
-              <p className="text-body-sm text-on-surface-variant mb-4">
-                Module: {p.module_name}
-              </p>
-              <div className="flex items-center justify-between pt-md border-t border-outline-variant/50">
-                <span className="text-label-sm font-label-sm text-on-surface-variant">
-                  v{p.version}
-                </span>
-                {isAdmin && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      confirm.ask({
-                        title: "Delete Project",
-                        message: `Are you sure you want to permanently delete "${p.name}" (${p.project_code})? This will remove all use cases, test cases, test runs, defects, and discussions — this action cannot be undone.`,
-                        confirmLabel: "Delete",
-                        destructive: true,
-                        onConfirm: () => deleteMutation.mutate(p.id),
-                      });
-                    }}
-                    className="text-on-surface-variant/40 hover:text-error transition-colors p-1"
-                    title="Delete project"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">delete</span>
-                  </button>
-                )}
-              </div>
-            </div>
+            <ProjectCard key={p.id} p={p} isAdmin={isAdmin} onDelete={handleDelete} />
           ))}
+        </div>
+      ) : (
+        <div className="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="border-b border-outline-variant bg-surface-container-high text-label-sm text-on-surface-variant uppercase tracking-wider">
+                <th className="py-3 px-4 font-label-sm">Code</th>
+                <th className="py-3 px-4 font-label-sm">Name</th>
+                <th className="py-3 px-4 font-label-sm">Module</th>
+                <th className="py-3 px-4 font-label-sm">Status</th>
+                <th className="py-3 px-4 font-label-sm">Created</th>
+                <th className="py-3 px-4 font-label-sm">Test Lead</th>
+                <th className="py-3 px-4 font-label-sm">Scenarios</th>
+                <th className="py-3 px-4 font-label-sm">Version</th>
+                <th className="py-3 px-4 font-label-sm w-10" />
+              </tr>
+            </thead>
+            <tbody>
+              {filtered?.map((p) => (
+                <ProjectRow key={p.id} p={p} isAdmin={isAdmin} onDelete={handleDelete} />
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 

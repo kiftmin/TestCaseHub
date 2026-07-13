@@ -299,7 +299,19 @@ router.put("/:projectId", async (req: AuthenticatedRequest, res, next) => {
 router.delete("/:projectId", authenticate, authorize(["ADMIN"]), async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
+    const project = await db.query.projects.findFirst({
+      where: eq(schema.projects.id, projectId),
+      columns: { id: true, name: true, project_code: true },
+    });
+    if (!project) { res.status(404).json({ message: "Project not found" }); return; }
     await db.delete(schema.projects).where(eq(schema.projects.id, projectId));
+    await logAudit({
+      entityType: "project",
+      entityId: projectId,
+      changedByUserId: req.user!.userId,
+      toStatus: "deleted",
+      reason: `Project "${project.name}" (${project.project_code}) deleted by admin`,
+    });
     res.status(204).end();
   } catch (err) { next(err); }
 });

@@ -7,6 +7,7 @@ import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { TestPlanForm, type TestPlanFormData } from "../components/test-plan-form";
 import { ImportWizard } from "../components/import-wizard";
+import { useConfirmDialog } from "../hooks/use-confirm-dialog";
 import type { Project } from "../types/api";
 
 function useProjects() {
@@ -25,12 +26,23 @@ function ProjectsPageContent() {
   const isAdmin = user?.role === "ADMIN";
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
+  const confirm = useConfirmDialog();
   useEffect(() => { document.title = "Projects | TestCaseHub"; }, []);
   const { data: projects, isLoading, error } = useProjects();
   const [slideOver, setSlideOver] = useState(false);
   const [filter, setFilter] = useState<"all" | "signed_off" | "in_progress">("all");
   const [importOpen, setImportOpen] = useState(false);
   const [followUpProject, setFollowUpProject] = useState<Project | null>(null);
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) =>
+      customFetch<void>(`/projects/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      toast.success("Project deleted");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
 
   const createMutation = useMutation({
     mutationFn: (data: TestPlanFormData) =>
@@ -191,6 +203,24 @@ function ProjectsPageContent() {
                 <span className="text-label-sm font-label-sm text-on-surface-variant">
                   v{p.version}
                 </span>
+                {isAdmin && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      confirm.ask({
+                        title: "Delete Project",
+                        message: `Are you sure you want to permanently delete "${p.name}" (${p.project_code})? This will remove all use cases, test cases, test runs, defects, and discussions — this action cannot be undone.`,
+                        confirmLabel: "Delete",
+                        destructive: true,
+                        onConfirm: () => deleteMutation.mutate(p.id),
+                      });
+                    }}
+                    className="text-on-surface-variant/40 hover:text-error transition-colors p-1"
+                    title="Delete project"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">delete</span>
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -273,6 +303,8 @@ function ProjectsPageContent() {
           </button>
         </div>
       </Dialog>
+
+      {confirm.dialog}
     </>
   );
 }

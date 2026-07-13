@@ -46,6 +46,7 @@ export interface Project {
   testLead?: { id: number; name: string } | null;
   useCaseCount?: number;
   testRunCount?: number;
+  attachmentCount?: number;
 }
 
 export interface SignOffData {

@@ -155,7 +155,10 @@ function ProjectHeader({ projectId }: { projectId: number }) {
 
   const deleteMutation = useMutation({
     mutationFn: () =>
-      customFetch<void>(`/projects/${projectId}`, { method: "DELETE" }),
+      customFetch<void>(`/projects/${projectId}`, {
+        method: "DELETE",
+        body: JSON.stringify({ confirmName: deleteConfirmText }),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       toast.success("Project deleted");
@@ -288,6 +291,7 @@ function ProjectHeader({ projectId }: { projectId: number }) {
                   <li>{project.useCaseCount} scenario{(project.useCaseCount ?? 0) !== 1 ? "s" : ""}</li>
                   <li>All test cases, steps, and execution results within those scenarios</li>
                   <li>{project.testRunCount ?? 0} test run{(project.testRunCount ?? 0) !== 1 ? "s" : ""}</li>
+                  <li>{project.attachmentCount ?? 0} attachment{(project.attachmentCount ?? 0) !== 1 ? "s" : ""}</li>
                   <li>Defects, discussions, and audit logs</li>
                 </ul>
                 <p className="text-body-sm text-on-surface-variant mt-2 font-medium">

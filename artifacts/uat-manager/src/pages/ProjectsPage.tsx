@@ -200,7 +200,10 @@ function ProjectsPageContent() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) =>
-      customFetch<void>(`/projects/${id}`, { method: "DELETE" }),
+      customFetch<void>(`/projects/${id}`, {
+        method: "DELETE",
+        body: JSON.stringify({ confirmName: deleteConfirmText }),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       toast.success("Project deleted");
@@ -448,6 +451,7 @@ function ProjectsPageContent() {
                     <li>All test cases, steps, and execution results within those scenarios</li>
                   )}
                   <li>{deleteTarget.testRunCount ?? 0} test run{(deleteTarget.testRunCount ?? 0) !== 1 ? "s" : ""}</li>
+                  <li>{deleteTarget.attachmentCount ?? 0} attachment{(deleteTarget.attachmentCount ?? 0) !== 1 ? "s" : ""}</li>
                   <li>Defects, discussions, and audit logs</li>
                 </ul>
                 <p className="text-body-sm text-on-surface-variant mt-2 font-medium">

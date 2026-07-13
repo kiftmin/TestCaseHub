@@ -1,10 +1,16 @@
 import express from "express";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, desc, and, or, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
 import { bumpProjectVersion, logAudit } from "../utils/project.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 
@@ -15,6 +21,50 @@ function generateProjectCode(): string {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return code;
+}
+
+async function getAttachmentCounts(projectIds: number[]): Promise<Map<number, number>> {
+  const map = new Map<number, number>();
+  if (projectIds.length === 0) return map;
+
+  const defectAttachments = await db
+    .select({
+      projectId: schema.defects.project_id,
+      count: sql<number>`cast(count(*) as int)`,
+    })
+    .from(schema.attachments)
+    .innerJoin(schema.defects, and(
+      eq(schema.attachments.entity_type, "defect"),
+      eq(schema.attachments.entity_id, schema.defects.id),
+      inArray(schema.defects.project_id, projectIds),
+    ))
+    .groupBy(schema.defects.project_id);
+
+  const runAttachments = await db
+    .select({
+      projectId: schema.testRuns.project_id,
+      count: sql<number>`cast(count(*) as int)`,
+    })
+    .from(schema.attachments)
+    .innerJoin(schema.testRuns, and(
+      or(eq(schema.attachments.entity_type, "test_run"), eq(schema.attachments.entity_type, "test-run")),
+      eq(schema.attachments.entity_id, schema.testRuns.id),
+      inArray(schema.testRuns.project_id, projectIds),
+    ))
+    .groupBy(schema.testRuns.project_id);
+
+  for (const row of defectAttachments) {
+    map.set(row.projectId, (map.get(row.projectId) ?? 0) + row.count);
+  }
+  for (const row of runAttachments) {
+    map.set(row.projectId, (map.get(row.projectId) ?? 0) + row.count);
+  }
+  return map;
+}
+
+async function getSingleAttachmentCount(projectId: number): Promise<number> {
+  const map = await getAttachmentCounts([projectId]);
+  return map.get(projectId) ?? 0;
 }
 
 // GET /api/projects - List all projects
@@ -29,9 +79,11 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
         },
         orderBy: desc(schema.projects.created_at),
       });
-      res.json(rows.map(({ useCases, testRuns, ...p }) => ({
+      const rowsWithCounts = rows.map(({ useCases, testRuns, ...p }) => ({
         ...p, useCaseCount: useCases.length, testRunCount: testRuns.length,
-      })));
+      }));
+      const attachmentCounts = await getAttachmentCounts(rowsWithCounts.map(p => p.id));
+      res.json(rowsWithCounts.map(p => ({ ...p, attachmentCount: attachmentCounts.get(p.id) ?? 0 })));
     } else {
       const assignments = await db.query.projectAssignments.findMany({
         where: eq(schema.projectAssignments.user_id, req.user!.userId),
@@ -45,10 +97,12 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
           },
         },
       });
-      res.json(assignments.map(a => {
+      const rowsWithCounts = assignments.map(a => {
         const { useCases, testRuns, ...p } = a.project;
         return { ...p, useCaseCount: useCases.length, testRunCount: testRuns.length };
-      }));
+      });
+      const attachmentCounts = await getAttachmentCounts(rowsWithCounts.map(p => p.id));
+      res.json(rowsWithCounts.map(p => ({ ...p, attachmentCount: attachmentCounts.get(p.id) ?? 0 })));
     }
   } catch (err) { next(err); }
 });
@@ -134,7 +188,8 @@ router.get("/:projectId", async (req: AuthenticatedRequest, res, next) => {
     });
     if (!project) { res.status(404).json({ message: "Project not found" }); return; }
     const { testRuns, ...rest } = project;
-    res.json({ ...rest, useCaseCount: project.useCases.length, testRunCount: testRuns.length });
+    const attachmentCount = await getSingleAttachmentCount(projectId);
+    res.json({ ...rest, useCaseCount: project.useCases.length, testRunCount: testRuns.length, attachmentCount });
   } catch (err) { next(err); }
 });
 
@@ -317,12 +372,69 @@ router.put("/:projectId", async (req: AuthenticatedRequest, res, next) => {
 router.delete("/:projectId", authenticate, authorize(["ADMIN"]), async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
+
+    const deleteSchema = z.object({ confirmName: z.string() });
+    const parsed = deleteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: "confirmName is required" });
+      return;
+    }
+
     const project = await db.query.projects.findFirst({
       where: eq(schema.projects.id, projectId),
       columns: { id: true, name: true, project_code: true },
     });
     if (!project) { res.status(404).json({ message: "Project not found" }); return; }
-    await db.delete(schema.projects).where(eq(schema.projects.id, projectId));
+
+    if (parsed.data.confirmName !== project.name) {
+      res.status(400).json({ message: "confirmName does not match project name" });
+      return;
+    }
+
+    // Collect defect and test-run IDs for attachment cleanup
+    const defectIds = (await db.query.defects.findMany({
+      where: eq(schema.defects.project_id, projectId),
+      columns: { id: true },
+    })).map(d => d.id);
+
+    const testRunIds = (await db.query.testRuns.findMany({
+      where: eq(schema.testRuns.project_id, projectId),
+      columns: { id: true },
+    })).map(r => r.id);
+
+    // Collect file URLs before deleting rows
+    const attachmentFilter = defectIds.length === 0 && testRunIds.length === 0
+      ? sql`1=0`
+      : or(
+          and(eq(schema.attachments.entity_type, "defect"), inArray(schema.attachments.entity_id, defectIds.length > 0 ? defectIds : [-1])),
+          and(eq(schema.attachments.entity_type, "test_run"), inArray(schema.attachments.entity_id, testRunIds.length > 0 ? testRunIds : [-1])),
+          and(eq(schema.attachments.entity_type, "test-run"), inArray(schema.attachments.entity_id, testRunIds.length > 0 ? testRunIds : [-1])),
+        );
+
+    const attachmentsToDelete = await db.query.attachments.findMany({
+      where: attachmentFilter,
+      columns: { file_url: true },
+    });
+
+    // Transaction for DB cleanup
+    await db.transaction(async (tx) => {
+      if (defectIds.length > 0 || testRunIds.length > 0) {
+        await tx.delete(schema.attachments).where(attachmentFilter);
+      }
+      await tx.delete(schema.projects).where(eq(schema.projects.id, projectId));
+    });
+
+    // Best-effort filesystem cleanup after transaction
+    for (const att of attachmentsToDelete) {
+      if (!att.file_url) continue;
+      try {
+        const filePath = path.join(__dirname, "../../", att.file_url.replace(/^\//, ""));
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      } catch { /* best-effort */ }
+    }
+
     await logAudit({
       entityType: "project",
       entityId: projectId,
@@ -330,6 +442,7 @@ router.delete("/:projectId", authenticate, authorize(["ADMIN"]), async (req: Aut
       toStatus: "deleted",
       reason: `Project "${project.name}" (${project.project_code}) deleted by admin`,
     });
+
     res.status(204).end();
   } catch (err) { next(err); }
 });

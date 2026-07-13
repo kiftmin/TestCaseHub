@@ -129,10 +129,12 @@ router.get("/:projectId", async (req: AuthenticatedRequest, res, next) => {
             },
           },
         },
+        testRuns: { columns: { id: true } },
       },
     });
     if (!project) { res.status(404).json({ message: "Project not found" }); return; }
-    res.json(project);
+    const { testRuns, ...rest } = project;
+    res.json({ ...rest, useCaseCount: project.useCases.length, testRunCount: testRuns.length });
   } catch (err) { next(err); }
 });
 

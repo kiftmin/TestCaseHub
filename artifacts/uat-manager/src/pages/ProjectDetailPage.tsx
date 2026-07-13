@@ -3,7 +3,9 @@ import { useLocation, useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
+import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
+import { Button } from "../components/ui/button";
 import { TestPlanForm, type TestPlanFormData } from "../components/test-plan-form";
 import { TestPlanTab as TestPlanTabV2 } from "../components/test-plan-tab";
 import type {
@@ -116,8 +118,13 @@ function ProjectHeader({ projectId }: { projectId: number }) {
   });
   const role = useProjectRole(projectId);
   const canEdit = role === "TEST_LEAD" || role === "ADMIN" || role === "TEST_AUTHOR";
+  const user = getStoredUser();
+  const isAdmin = user?.role === "ADMIN";
+  const [, navigate] = useLocation();
   const [collapsed, setCollapsed] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const queryClient = useQueryClient();
 
   const editMutation = useMutation({
@@ -144,6 +151,21 @@ function ProjectHeader({ projectId }: { projectId: number }) {
       toast.success("Project updated");
     },
     onError: (err: Error) => toast.error(err.message),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () =>
+      customFetch<void>(`/projects/${projectId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      toast.success("Project deleted");
+      navigate("/projects");
+    },
+    onError: (err: Error) => {
+      toast.error(err.message);
+      setDeleteOpen(false);
+      setDeleteConfirmText("");
+    },
   });
 
   if (isLoading) {
@@ -207,6 +229,19 @@ function ProjectHeader({ projectId }: { projectId: number }) {
               Edit Project
             </button>
           )}
+          {isAdmin && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setDeleteOpen(true);
+                setDeleteConfirmText("");
+              }}
+              className="flex items-center gap-sm text-error font-label-md text-label-md border border-error px-md py-1 rounded-lg hover:bg-error/5 transition-all"
+            >
+              <span className="material-symbols-outlined text-sm">delete</span>
+              Delete
+            </button>
+          )}
           <span className="material-symbols-outlined text-on-surface-variant transition-transform">
             {collapsed ? "expand_more" : "expand_less"}
           </span>
@@ -221,6 +256,82 @@ function ProjectHeader({ projectId }: { projectId: number }) {
         onSave={(data) => editMutation.mutate(data)}
         onClose={() => setEditOpen(false)}
       />
+      {/* Delete Confirmation Modal */}
+      {deleteOpen && project && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-md" role="dialog" aria-modal="true">
+          <div
+            className="absolute inset-0"
+            style={{ backgroundColor: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)" }}
+            onClick={() => { setDeleteOpen(false); setDeleteConfirmText(""); }}
+            aria-hidden="true"
+          />
+          <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-lg mx-4 p-lg space-y-md">
+            <div className="flex items-start gap-md">
+              <div className="w-10 h-10 rounded-full bg-error-container text-error flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined">warning</span>
+              </div>
+              <div className="min-w-0">
+                <h2 className="font-headline-md text-headline-md text-primary leading-tight">Delete Project</h2>
+                <p className="text-body-sm text-on-surface-variant mt-1">
+                  This will permanently delete <strong>{project.name}</strong> ({project.project_code}).
+                </p>
+              </div>
+            </div>
+
+            {(project.useCaseCount ?? 0) > 0 && (
+              <div className="bg-error-container/50 border border-error rounded-lg p-md -mx-sm">
+                <p className="font-label-md text-error flex items-center gap-1.5 mb-1">
+                  <span className="material-symbols-outlined text-[16px]">info</span>
+                  This project contains data
+                </p>
+                <ul className="text-body-sm text-on-surface-variant space-y-0.5 ml-5 list-disc">
+                  <li>{project.useCaseCount} scenario{(project.useCaseCount ?? 0) !== 1 ? "s" : ""}</li>
+                  <li>All test cases, steps, and execution results within those scenarios</li>
+                  <li>{project.testRunCount ?? 0} test run{(project.testRunCount ?? 0) !== 1 ? "s" : ""}</li>
+                  <li>Defects, discussions, and audit logs</li>
+                </ul>
+                <p className="text-body-sm text-on-surface-variant mt-2 font-medium">
+                  This action <strong className="text-error">cannot be undone</strong>.
+                </p>
+              </div>
+            )}
+
+            <div>
+              <label className="text-label-sm text-on-surface-variant font-label-sm block mb-1">
+                Type the project name <strong className="text-on-surface">{project.name}</strong> to confirm:
+              </label>
+              <input
+                type="text"
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                placeholder={project.name}
+                className="w-full px-md py-2 rounded-lg border border-outline-variant bg-surface-container-lowest text-on-surface placeholder:text-on-surface-variant/40 text-body-sm focus:outline-none focus:ring-2 focus:ring-error/50 focus:border-error transition-all"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && deleteConfirmText === project.name) {
+                    deleteMutation.mutate();
+                  }
+                }}
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-sm pt-sm">
+              <Button variant="ghost" onClick={() => { setDeleteOpen(false); setDeleteConfirmText(""); }}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                disabled={deleteConfirmText !== project.name}
+                onClick={() => deleteMutation.mutate()}
+                className={deleteConfirmText === project.name ? "!bg-error !text-on-error hover:!brightness-110" : ""}
+              >
+                Delete this project
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {!collapsed && (
         <div className="p-md pt-0 grid grid-cols-1 md:grid-cols-3 gap-lg border-t border-outline-variant/50 bg-surface-container-lowest">
           <div className="mt-md">

@@ -428,6 +428,97 @@ function TeamStep({
   );
 }
 
+/* ───────────── Expandable Field ───────────── */
+
+function ExpandableField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  rows,
+  helper,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  rows: number;
+  helper: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  const handleOpen = () => {
+    setDraft(value);
+    setOpen(true);
+  };
+
+  const handleDone = () => {
+    onChange(draft);
+    setOpen(false);
+  };
+
+  return (
+    <>
+      <div className="relative group cursor-pointer" onClick={handleOpen}>
+        <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+          <span className="material-symbols-outlined text-[18px] text-secondary">fullscreen</span>
+        </div>
+        <Textarea
+          rows={rows}
+          value={value}
+          readOnly
+          placeholder={placeholder}
+          className="cursor-pointer pointer-events-none"
+        />
+      </div>
+      <p className="text-label-sm text-on-surface-variant">{helper}</p>
+
+      {open && (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center p-md"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="absolute inset-0"
+            style={{ backgroundColor: "rgba(0,0,0,0.45)", backdropFilter: "blur(4px)" }}
+            onClick={() => setOpen(false)}
+            aria-hidden="true"
+          />
+          <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] mx-4 p-lg flex flex-col gap-md">
+            <div className="flex items-center justify-between shrink-0">
+              <h3 className="font-headline-sm text-headline-sm text-primary">{label}</h3>
+              <button
+                onClick={() => setOpen(false)}
+                className="text-on-surface-variant hover:text-on-surface"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <textarea
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder={placeholder}
+              className="w-full flex-1 min-h-[50vh] p-md rounded-lg border border-outline-variant bg-surface text-body-sm text-on-surface placeholder:text-on-surface-variant/40 resize-none focus:outline-none focus:ring-2 focus:ring-secondary/50 focus:border-secondary"
+            />
+            <div className="flex items-center justify-end gap-sm shrink-0">
+              <Button variant="ghost" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={handleDone}>
+                <span className="material-symbols-outlined text-[18px]">check</span>
+                Done
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 /* ───────────── Step 3: Scope & Criteria ───────────── */
 
 function ScopeStep({
@@ -452,15 +543,14 @@ function ScopeStep({
           label="Objectives"
           htmlFor="tp-objectives"
           error={errors.objectives}
-          helper="The goals this test plan aims to achieve."
         >
-          <Textarea
-            id="tp-objectives"
-            rows={3}
+          <ExpandableField
+            label="Objectives"
             value={form.objectives}
-            onChange={(e) => set("objectives", e.target.value)}
+            onChange={(v) => set("objectives", v)}
             placeholder="e.g. Verify that the new transfer flow handles all supported account types correctly."
-            invalid={!!errors.objectives}
+            rows={3}
+            helper="The goals this test plan aims to achieve."
           />
         </Field>
 
@@ -469,15 +559,14 @@ function ScopeStep({
             label="In Scope"
             htmlFor="tp-scope"
             error={errors.scope}
-            helper="Features, systems, or areas included."
           >
-            <Textarea
-              id="tp-scope"
-              rows={4}
+            <ExpandableField
+              label="In Scope"
               value={form.scope}
-              onChange={(e) => set("scope", e.target.value)}
+              onChange={(v) => set("scope", v)}
               placeholder="e.g. Mobile transfer flow, account linking, biometric login."
-              invalid={!!errors.scope}
+              rows={4}
+              helper="Features, systems, or areas included."
             />
           </Field>
 
@@ -485,15 +574,14 @@ function ScopeStep({
             label="Out of Scope"
             htmlFor="tp-out-of-scope"
             error={errors.outOfScope}
-            helper="Features, systems, or areas explicitly excluded."
           >
-            <Textarea
-              id="tp-out-of-scope"
-              rows={4}
+            <ExpandableField
+              label="Out of Scope"
               value={form.outOfScope}
-              onChange={(e) => set("outOfScope", e.target.value)}
+              onChange={(v) => set("outOfScope", v)}
               placeholder="e.g. Web banking, ATM flow, fraud detection."
-              invalid={!!errors.outOfScope}
+              rows={4}
+              helper="Features, systems, or areas explicitly excluded."
             />
           </Field>
         </div>
@@ -508,15 +596,14 @@ function ScopeStep({
             label="Entry Criteria"
             htmlFor="tp-entry"
             error={errors.entryCriteria}
-            helper="What must be true before testing can begin (e.g. test data loaded, environment stable)."
           >
-            <Textarea
-              id="tp-entry"
-              rows={4}
+            <ExpandableField
+              label="Entry Criteria"
               value={form.entryCriteria}
-              onChange={(e) => set("entryCriteria", e.target.value)}
+              onChange={(v) => set("entryCriteria", v)}
               placeholder="e.g. Build deployed to staging, test accounts provisioned, test data seeded."
-              invalid={!!errors.entryCriteria}
+              rows={4}
+              helper="What must be true before testing can begin (e.g. test data loaded, environment stable)."
             />
           </Field>
 
@@ -524,15 +611,14 @@ function ScopeStep({
             label="Exit Criteria"
             htmlFor="tp-exit"
             error={errors.exitCriteria}
-            helper="What must be true before this test plan can be signed off (e.g. 95% pass rate, no critical defects)."
           >
-            <Textarea
-              id="tp-exit"
-              rows={4}
+            <ExpandableField
+              label="Exit Criteria"
               value={form.exitCriteria}
-              onChange={(e) => set("exitCriteria", e.target.value)}
+              onChange={(v) => set("exitCriteria", v)}
               placeholder="e.g. 100% of critical scenarios executed, no P1 defects open, all defects triaged."
-              invalid={!!errors.exitCriteria}
+              rows={4}
+              helper="What must be true before this test plan can be signed off (e.g. 95% pass rate, no critical defects)."
             />
           </Field>
         </div>

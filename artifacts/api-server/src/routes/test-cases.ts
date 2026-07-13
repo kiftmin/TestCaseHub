@@ -65,6 +65,7 @@ router.post("/", async (req: AuthenticatedRequest, res, next) => {
       test_type: z.string().optional(),
       estimated_minutes: z.number().optional(),
       acceptance_criteria: z.string().optional(),
+      precondition: z.string().optional(),
     }).parse(req.body);
 
     const maxSort = await db.select({ max: sql<number>`MAX(${schema.testCases.sort_order})` })
@@ -100,6 +101,7 @@ router.put("/:testCaseId", async (req: AuthenticatedRequest, res, next) => {
       test_type: z.string().nullable().optional(),
       estimated_minutes: z.number().nullable().optional(),
       acceptance_criteria: z.string().nullable().optional(),
+      precondition: z.string().nullable().optional(),
       sort_order: z.number().optional(),
     }).parse(req.body);
 

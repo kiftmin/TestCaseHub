@@ -16,6 +16,7 @@ import {
   type TestCaseFormData,
   type StepFormData,
 } from "./test-plan-dialogs";
+import { ImportWizard } from "./import-wizard";
 import { TestPlanDocumentPDF } from "../lib/pdf-documents";
 import type { Project, UseCase, TestCase, TestStep } from "../types/api";
 
@@ -86,7 +87,22 @@ export function TestPlanTab({ projectId }: { projectId: number }) {
     stepNumber: number;
   }>({ open: false, mode: "create", testCaseId: null, step: null, stepNumber: 1 });
 
+  const [importOpen, setImportOpen] = useState(false);
+  const ranQueryParam = useRef(false);
+
   const confirm = useConfirmDialog();
+
+  // Handle ?import=1 and ?openScenario=1 query params on mount
+  useEffect(() => {
+    if (ranQueryParam.current) return;
+    ranQueryParam.current = true;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("import") === "1") {
+      setImportOpen(true);
+    } else if (params.get("openScenario") === "1") {
+      setScenarioDialog({ open: true, mode: "create", scenario: null });
+    }
+  }, []);
 
   /* ── Scenario mutations ── */
   const createScenario = useMutation({
@@ -148,6 +164,7 @@ export function TestPlanTab({ projectId }: { projectId: number }) {
           test_type: d.test_type.trim() || null,
           ...(d.estimated_minutes != null ? { estimated_minutes: d.estimated_minutes } : {}),
           ...(d.acceptance_criteria.trim() ? { acceptance_criteria: d.acceptance_criteria.trim() } : {}),
+          ...(d.precondition.trim() ? { precondition: d.precondition.trim() } : {}),
         }),
       }),
     onSuccess: () => {
@@ -168,6 +185,7 @@ export function TestPlanTab({ projectId }: { projectId: number }) {
           test_type: d.test_type.trim() || null,
           ...(d.estimated_minutes != null ? { estimated_minutes: d.estimated_minutes } : { estimated_minutes: null }),
           ...(d.acceptance_criteria.trim() ? { acceptance_criteria: d.acceptance_criteria.trim() } : { acceptance_criteria: null }),
+          ...(d.precondition.trim() ? { precondition: d.precondition.trim() } : { precondition: null }),
         }),
       }),
     onSuccess: () => {
@@ -363,6 +381,15 @@ export function TestPlanTab({ projectId }: { projectId: number }) {
             </>
           )}
         </PDFDownloadLink>
+        {canEdit && (
+          <button
+            onClick={() => setImportOpen(true)}
+            className="flex items-center gap-sm px-md py-sm border border-outline text-on-surface rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
+          >
+            <span className="material-symbols-outlined text-sm">upload_file</span>
+            Import from Excel
+          </button>
+        )}
       </PlanHeader>
 
       {useCases.length === 0 ? (
@@ -526,6 +553,18 @@ export function TestPlanTab({ projectId }: { projectId: number }) {
           } else if (stepDialog.step) {
             updateStep.mutate({ id: stepDialog.step.id, ...data });
           }
+        }}
+      />
+
+      {/* Import from Excel */}
+      <ImportWizard
+        mode="existing-project"
+        open={importOpen}
+        projectId={projectId}
+        onClose={() => setImportOpen(false)}
+        onImportComplete={() => {
+          setImportOpen(false);
+          invalidateProject();
         }}
       />
 

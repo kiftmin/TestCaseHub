@@ -25,6 +25,7 @@ import defectRoutes from "./routes/defects.js";
 // bugRoutes deprecated — bugs consolidated into defects
 import discussionRoutes from "./routes/discussions.js";
 import attachmentRoutes from "./routes/attachments.js";
+import importRoutes from "./routes/import-routes.js";
 
 const app: Express = express();
 app.use(
@@ -70,6 +71,7 @@ api.use("/", authenticate, defectRoutes);      // /defects, /test-runs/:id/defec
 // api.use("/", authenticate, bugRoutes);        // /bugs — deprecated
 api.use("/", authenticate, discussionRoutes);   // /discussions, /test-runs/:id/discussions
 api.use("/", authenticate, attachmentRoutes);   // /upload, /attachments
+api.use("/", authenticate, importRoutes);       // /projects/:projectId/import
 
 app.use("/api", api);
 app.use(errorHandler);

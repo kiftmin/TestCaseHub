@@ -101,6 +101,7 @@ export interface TestCase {
   test_type: string | null;
   estimated_minutes: number | null;
   acceptance_criteria: string | null;
+  precondition: string | null;
   sort_order?: number;
   created_at: string;
   steps?: TestStep[];

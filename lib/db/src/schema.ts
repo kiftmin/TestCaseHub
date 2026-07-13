@@ -114,6 +114,7 @@ export const testCases = pgTable("test_cases", {
   test_type: text("test_type"),
   estimated_minutes: integer("estimated_minutes"),
   acceptance_criteria: text("acceptance_criteria"),
+  precondition: text("precondition"),
   sort_order: integer("sort_order").default(0).notNull(),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });

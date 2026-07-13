@@ -2,9 +2,11 @@ import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { Dialog } from "../components/ui/dialog";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { TestPlanForm, type TestPlanFormData } from "../components/test-plan-form";
+import { ImportWizard } from "../components/import-wizard";
 import type { Project } from "../types/api";
 
 function useProjects() {
@@ -27,6 +29,8 @@ function ProjectsPageContent() {
   const { data: projects, isLoading, error } = useProjects();
   const [slideOver, setSlideOver] = useState(false);
   const [filter, setFilter] = useState<"all" | "signed_off" | "in_progress">("all");
+  const [importOpen, setImportOpen] = useState(false);
+  const [followUpProject, setFollowUpProject] = useState<Project | null>(null);
 
   const createMutation = useMutation({
     mutationFn: (data: TestPlanFormData) =>
@@ -50,7 +54,7 @@ function ProjectsPageContent() {
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       setSlideOver(false);
       toast.success("Project created");
-      navigate(`/projects/${proj.id}`);
+      setFollowUpProject(proj);
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -73,15 +77,26 @@ function ProjectsPageContent() {
             Manage and monitor your enterprise UAT cycles.
           </p>
         </div>
-        {isAdmin && (
-          <button
-            onClick={() => setSlideOver(true)}
-            className="bg-secondary text-on-secondary px-lg py-sm rounded-lg font-label-md flex items-center gap-sm shadow-sm hover:brightness-110 transition-all"
-          >
-            <span className="material-symbols-outlined">add_circle</span>
-            New Project
-          </button>
-        )}
+        <div className="flex items-center gap-sm">
+          {isAdmin && (
+            <>
+              <button
+                onClick={() => setImportOpen(true)}
+                className="bg-surface-container-high text-on-surface px-lg py-sm rounded-lg font-label-md flex items-center gap-sm border border-outline-variant hover:bg-surface-container transition-all"
+              >
+                <span className="material-symbols-outlined">upload_file</span>
+                Import from Excel
+              </button>
+              <button
+                onClick={() => setSlideOver(true)}
+                className="bg-secondary text-on-secondary px-lg py-sm rounded-lg font-label-md flex items-center gap-sm shadow-sm hover:brightness-110 transition-all"
+              >
+                <span className="material-symbols-outlined">add_circle</span>
+                New Project
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Filter Bar */}
@@ -190,6 +205,74 @@ function ProjectsPageContent() {
         onSave={(data) => createMutation.mutate(data)}
         saving={createMutation.isPending}
       />
+
+      {/* Import from Excel wizard (new-project mode) */}
+      <ImportWizard
+        mode="new-project"
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImportComplete={(projId) => {
+          setImportOpen(false);
+          navigate(`/projects/${projId}`);
+        }}
+      />
+
+      {/* Part 2: Follow-up choices after project creation */}
+      <Dialog
+        open={!!followUpProject}
+        onClose={() => {
+          if (followUpProject) navigate(`/projects/${followUpProject.id}`);
+          setFollowUpProject(null);
+        }}
+        title="Project created"
+        subtitle="What would you like to do next?"
+        size="md"
+      >
+        <div className="flex flex-col gap-md py-md">
+          <button
+            onClick={() => {
+              const p = followUpProject!;
+              setFollowUpProject(null);
+              navigate(`/projects/${p.id}?openScenario=1`);
+            }}
+            className="flex items-center gap-md p-md border border-outline-variant rounded-lg hover:bg-surface-container-high transition-colors text-left"
+          >
+            <span className="material-symbols-outlined text-secondary text-[32px]">playlist_add</span>
+            <div>
+              <p className="font-label-md text-on-surface">Add use cases now</p>
+              <p className="text-body-sm text-on-surface-variant">Open the project and start creating scenarios right away.</p>
+            </div>
+          </button>
+          <button
+            onClick={() => {
+              const p = followUpProject!;
+              setFollowUpProject(null);
+              navigate(`/projects/${p.id}?import=1`);
+            }}
+            className="flex items-center gap-md p-md border border-outline-variant rounded-lg hover:bg-surface-container-high transition-colors text-left"
+          >
+            <span className="material-symbols-outlined text-secondary text-[32px]">upload_file</span>
+            <div>
+              <p className="font-label-md text-on-surface">Import from Excel</p>
+              <p className="text-body-sm text-on-surface-variant">Import test cases from a spreadsheet into this project.</p>
+            </div>
+          </button>
+          <button
+            onClick={() => {
+              const p = followUpProject!;
+              setFollowUpProject(null);
+              navigate(`/projects/${p.id}`);
+            }}
+            className="flex items-center gap-md p-md border border-outline-variant rounded-lg hover:bg-surface-container-high transition-colors text-left"
+          >
+            <span className="material-symbols-outlined text-on-surface-variant text-[32px]">schedule</span>
+            <div>
+              <p className="font-label-md text-on-surface">I'll do this later</p>
+              <p className="text-body-sm text-on-surface-variant">Go to the project overview page.</p>
+            </div>
+          </button>
+        </div>
+      </Dialog>
     </>
   );
 }

@@ -204,6 +204,7 @@ export interface TestCaseFormData {
   test_type: string;
   estimated_minutes: number | null;
   acceptance_criteria: string;
+  precondition: string;
 }
 
 interface TestCaseDialogProps {
@@ -231,6 +232,7 @@ export function TestCaseDialog({
     test_type: "",
     estimated_minutes: null,
     acceptance_criteria: "",
+    precondition: "",
   });
   const [errors, setErrors] = useState<Partial<Record<keyof TestCaseFormData, string>>>({});
 
@@ -245,6 +247,7 @@ export function TestCaseDialog({
               test_type: initial.test_type ?? "",
               estimated_minutes: initial.estimated_minutes,
               acceptance_criteria: initial.acceptance_criteria ?? "",
+              precondition: initial.precondition ?? "",
             }
           : {
               case_number: suggestedCaseNumber ?? "",
@@ -252,6 +255,7 @@ export function TestCaseDialog({
               test_type: "",
               estimated_minutes: null,
               acceptance_criteria: "",
+              precondition: "",
             }
       );
       setErrors({});
@@ -291,7 +295,7 @@ export function TestCaseDialog({
       subtitle={
         mode === "create"
           ? "A test case verifies a specific behaviour with one or more executable steps."
-          : "Update the test case's title, type, or acceptance criteria."
+          : "Update the test case's title, type, acceptance criteria, or precondition."
       }
       size="lg"
       footer={
@@ -408,6 +412,22 @@ export function TestCaseDialog({
             onChange={(e) => set("acceptance_criteria", e.target.value)}
             placeholder="e.g. The transfer appears in the transaction history within 5 seconds."
             invalid={!!errors.acceptance_criteria}
+          />
+        </Field>
+
+        <Field
+          label="Precondition"
+          htmlFor="td-precondition"
+          error={errors.precondition}
+          helper="Only needed if this specific test case has a precondition beyond the project's Entry Criteria."
+        >
+          <Textarea
+            id="td-precondition"
+            rows={2}
+            value={form.precondition}
+            onChange={(e) => set("precondition", e.target.value)}
+            placeholder="e.g. Invoice Exists"
+            invalid={!!errors.precondition}
           />
         </Field>
       </div>

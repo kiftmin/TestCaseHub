@@ -45,6 +45,7 @@ export interface Project {
   updated_at: string;
   testLead?: { id: number; name: string } | null;
   useCaseCount?: number;
+  testRunCount?: number;
 }
 
 export interface SignOffData {

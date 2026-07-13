@@ -22,18 +22,32 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
   try {
     if (req.user!.role === "ADMIN") {
       const rows = await db.query.projects.findMany({
-        with: { testLead: true, useCases: { columns: { id: true } } },
+        with: {
+          testLead: true,
+          useCases: { columns: { id: true } },
+          testRuns: { columns: { id: true } },
+        },
         orderBy: desc(schema.projects.created_at),
       });
-      res.json(rows.map(({ useCases, ...p }) => ({ ...p, useCaseCount: useCases.length })));
+      res.json(rows.map(({ useCases, testRuns, ...p }) => ({
+        ...p, useCaseCount: useCases.length, testRunCount: testRuns.length,
+      })));
     } else {
       const assignments = await db.query.projectAssignments.findMany({
         where: eq(schema.projectAssignments.user_id, req.user!.userId),
-        with: { project: { with: { testLead: true, useCases: { columns: { id: true } } } } },
+        with: {
+          project: {
+            with: {
+              testLead: true,
+              useCases: { columns: { id: true } },
+              testRuns: { columns: { id: true } },
+            },
+          },
+        },
       });
       res.json(assignments.map(a => {
-        const { useCases, ...p } = a.project;
-        return { ...p, useCaseCount: useCases.length };
+        const { useCases, testRuns, ...p } = a.project;
+        return { ...p, useCaseCount: useCases.length, testRunCount: testRuns.length };
       }));
     }
   } catch (err) { next(err); }

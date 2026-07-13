@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Dialog } from "../components/ui/dialog";
+import { Button } from "../components/ui/button";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { TestPlanForm, type TestPlanFormData } from "../components/test-plan-form";
@@ -194,6 +195,8 @@ function ProjectsPageContent() {
   const [view, setView] = useState<ViewMode>("cards");
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) =>
@@ -201,8 +204,14 @@ function ProjectsPageContent() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       toast.success("Project deleted");
+      setDeleteTarget(null);
+      setDeleteConfirmText("");
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => {
+      toast.error(err.message);
+      setDeleteTarget(null);
+      setDeleteConfirmText("");
+    },
   });
 
   const createMutation = useMutation({
@@ -257,14 +266,17 @@ function ProjectsPageContent() {
     return list;
   }, [projects, filter, view, sortKey, sortDir]);
 
-  const handleDelete = (p: Project) => {
-    confirm.ask({
-      title: "Delete Project",
-      message: `Are you sure you want to permanently delete "${p.name}" (${p.project_code})? This will remove all use cases, test cases, test runs, defects, and discussions — this action cannot be undone.`,
-      confirmLabel: "Delete",
-      destructive: true,
-      onConfirm: () => deleteMutation.mutate(p.id),
-    });
+  const handleDeleteClick = (p: Project) => {
+    setDeleteTarget(p);
+    setDeleteConfirmText("");
+  };
+
+  const isNonEmpty = (deleteTarget?.useCaseCount ?? 0) > 0;
+  const confirmMatch = deleteConfirmText === deleteTarget?.name;
+
+  const handleDeleteConfirm = () => {
+    if (!deleteTarget || !confirmMatch) return;
+    deleteMutation.mutate(deleteTarget.id);
   };
 
   return (
@@ -362,7 +374,7 @@ function ProjectsPageContent() {
       ) : view === "cards" ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-lg">
           {filtered.map((p) => (
-            <ProjectCard key={p.id} p={p} isAdmin={isAdmin} onDelete={handleDelete} />
+            <ProjectCard key={p.id} p={p} isAdmin={isAdmin} onDelete={handleDeleteClick} />
           ))}
         </div>
       ) : (
@@ -389,10 +401,93 @@ function ProjectsPageContent() {
             </thead>
             <tbody>
               {filtered.map((p) => (
-                <ProjectRow key={p.id} p={p} isAdmin={isAdmin} onDelete={handleDelete} />
+                <ProjectRow key={p.id} p={p} isAdmin={isAdmin} onDelete={handleDeleteClick} />
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-md"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="absolute inset-0"
+            style={{ backgroundColor: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)" }}
+            onClick={() => { setDeleteTarget(null); setDeleteConfirmText(""); }}
+            aria-hidden="true"
+          />
+          <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-lg mx-4 p-lg space-y-md transform transition-all">
+            <div className="flex items-start gap-md">
+              <div className="w-10 h-10 rounded-full bg-error-container text-error flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined">warning</span>
+              </div>
+              <div className="min-w-0">
+                <h2 className="font-headline-md text-headline-md text-primary leading-tight">
+                  Delete Project
+                </h2>
+                <p className="text-body-sm text-on-surface-variant mt-1">
+                  This will permanently delete <strong>{deleteTarget.name}</strong> ({deleteTarget.project_code}).
+                </p>
+              </div>
+            </div>
+
+            {isNonEmpty && (
+              <div className="bg-error-container/50 border border-error rounded-lg p-md -mx-sm">
+                <p className="font-label-md text-error flex items-center gap-1.5 mb-1">
+                  <span className="material-symbols-outlined text-[16px]">info</span>
+                  This project contains data
+                </p>
+                <ul className="text-body-sm text-on-surface-variant space-y-0.5 ml-5 list-disc">
+                  <li>{deleteTarget.useCaseCount} scenario{(deleteTarget.useCaseCount ?? 0) !== 1 ? "s" : ""}</li>
+                  {deleteTarget.useCaseCount && deleteTarget.useCaseCount > 0 && (
+                    <li>All test cases, steps, and execution results within those scenarios</li>
+                  )}
+                  <li>{deleteTarget.testRunCount ?? 0} test run{(deleteTarget.testRunCount ?? 0) !== 1 ? "s" : ""}</li>
+                  <li>Defects, discussions, and audit logs</li>
+                </ul>
+                <p className="text-body-sm text-on-surface-variant mt-2 font-medium">
+                  This action <strong className="text-error">cannot be undone</strong>.
+                </p>
+              </div>
+            )}
+
+            <div>
+              <label className="text-label-sm text-on-surface-variant font-label-sm block mb-1">
+                Type the project name <strong className="text-on-surface">{deleteTarget.name}</strong> to confirm:
+              </label>
+              <input
+                type="text"
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                placeholder={deleteTarget.name}
+                className="w-full px-md py-2 rounded-lg border border-outline-variant bg-surface-container-lowest text-on-surface placeholder:text-on-surface-variant/40 text-body-sm focus:outline-none focus:ring-2 focus:ring-error/50 focus:border-error transition-all"
+                autoFocus
+                onKeyDown={(e) => { if (e.key === "Enter" && confirmMatch) handleDeleteConfirm(); }}
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-sm pt-sm">
+              <Button
+                variant="ghost"
+                onClick={() => { setDeleteTarget(null); setDeleteConfirmText(""); }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                disabled={!confirmMatch}
+                onClick={handleDeleteConfirm}
+                className={confirmMatch ? "!bg-error !text-on-error hover:!brightness-110" : ""}
+              >
+                Delete this project
+              </Button>
+            </div>
+          </div>
         </div>
       )}
 

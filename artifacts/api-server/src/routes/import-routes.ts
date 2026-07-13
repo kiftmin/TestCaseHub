@@ -34,6 +34,7 @@ interface ParsedUseCase {
 interface ParsedTestCase {
   caseNumber: string;
   title: string;
+  precondition: string | null;
   steps: ParsedStep[];
 }
 
@@ -50,6 +51,11 @@ interface SuggestedMetadata {
   designDate: string | null;
   releaseVersion: string | null;
   precondition: string | null;
+  objectives: string | null;
+  scope: string | null;
+  outOfScope: string | null;
+  entryCriteria: string | null;
+  exitCriteria: string | null;
 }
 
 interface Warning {
@@ -84,6 +90,11 @@ function parseImportFile(
     designDate: null,
     releaseVersion: null,
     precondition: null,
+    objectives: null,
+    scope: null,
+    outOfScope: null,
+    entryCriteria: null,
+    exitCriteria: null,
   };
 
   function extractMetadata(label: string, value: string) {
@@ -92,7 +103,6 @@ function parseImportFile(
     else if (lc.startsWith("module name")) suggestedMetadata.moduleName = value || null;
     else if (/^test designed by/i.test(label)) suggestedMetadata.designedBy = value || null;
     else if (/^test designed date/i.test(label)) {
-      // Handle Excel date serial numbers
       if (value && /^\d+(\.\d+)?$/.test(value)) {
         const parsed = XLSX.SSF.parse_date_code(Number(value));
         if (parsed) {
@@ -107,6 +117,16 @@ function parseImportFile(
     } else if (/^release version/i.test(label)) suggestedMetadata.releaseVersion = value || null;
     else if (lc.startsWith("pre-condition") || lc.startsWith("precondition"))
       suggestedMetadata.precondition = value || null;
+    else if (lc.startsWith("objectives") || lc.startsWith("objective"))
+      suggestedMetadata.objectives = value || null;
+    else if (lc.startsWith("in scope") || lc === "scope")
+      suggestedMetadata.scope = value || null;
+    else if (lc.startsWith("out of scope"))
+      suggestedMetadata.outOfScope = value || null;
+    else if (lc.startsWith("entry criteria") || lc.startsWith("entry"))
+      suggestedMetadata.entryCriteria = value || null;
+    else if (lc.startsWith("exit criteria") || lc.startsWith("exit"))
+      suggestedMetadata.exitCriteria = value || null;
   }
 
   let dataStartRow = 0;
@@ -171,6 +191,7 @@ function parseImportFile(
     const stepsIdx = columnMap["steps"];
     const dataIdx = columnMap["testData"];
     const expectedIdx = columnMap["expectedResult"];
+    const precondIdx = columnMap["precondition"];
 
     const testCaseCell = tcIdx != null ? String(row[tcIdx] ?? "").trim() : "";
     const stepsCell = stepsIdx != null ? String(row[stepsIdx] ?? "").trim() : "";
@@ -183,6 +204,7 @@ function parseImportFile(
       currentTestCase = {
         caseNumber: testCaseCell,
         title: titleCell || testCaseCell,
+        precondition: precondIdx != null ? String(row[precondIdx] ?? "").trim() || null : null,
         steps: [
           {
             instruction: stepsCell,
@@ -376,6 +398,7 @@ router.post(
                 use_case_id: insertedUseCase.id,
                 case_number: tc.caseNumber,
                 title: tc.title,
+                precondition: tc.precondition,
                 sort_order: nextTcSort,
               })
               .returning();
@@ -441,6 +464,7 @@ function buildColumnMap(headerRow: Record<string, string>): Record<string, numbe
     else if (/^actualresult/.test(cell) || /^actual/i.test(cell)) map["actualResult"] = i;
     else if (/^status/.test(cell)) map["status"] = i;
     else if (/^notes?$/.test(cell)) map["notes"] = i;
+    else if (/^precondition/i.test(cell)) map["precondition"] = i;
   }
   return map;
 }

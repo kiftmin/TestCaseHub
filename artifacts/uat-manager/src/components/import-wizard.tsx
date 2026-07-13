@@ -40,6 +40,11 @@ interface ParsedResult {
     designDate: string | null;
     releaseVersion: string | null;
     precondition: string | null;
+    objectives: string | null;
+    scope: string | null;
+    outOfScope: string | null;
+    entryCriteria: string | null;
+    exitCriteria: string | null;
   };
   useCases: ParsedUseCase[];
   totalCases: number;
@@ -81,7 +86,8 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
     newProjectId?: number;
   } | null>(null);
   const [metadataForm, setMetadataForm] = useState<ParsedResult["metadata"]>({
-    projectName: "", moduleName: "", designedBy: "", designDate: "", releaseVersion: "", precondition: "",
+    projectName: "", moduleName: "", designedBy: "", designDate: "", releaseVersion: "",
+    precondition: "", objectives: "", scope: "", outOfScope: "", entryCriteria: "", exitCriteria: "",
   } as any);
 
   const handleReset = useCallback(() => {
@@ -105,16 +111,19 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
 
       let result: ParsedResult;
 
+      const nullMeta = {
+        projectName: null, moduleName: null, designedBy: null, designDate: null,
+        releaseVersion: null, precondition: null,
+        objectives: null, scope: null, outOfScope: null, entryCriteria: null, exitCriteria: null,
+      };
+
       if (mode === "existing-project" && projectId) {
         const res = await customFetch<any>(`/projects/${projectId}/import?dryRun=true`, {
           method: "POST",
           body: formData,
         });
         result = {
-          metadata: res.suggestedProjectMetadata ?? {
-            projectName: null, moduleName: null, designedBy: null, designDate: null,
-            releaseVersion: null, precondition: null,
-          },
+          metadata: res.suggestedProjectMetadata ?? { ...nullMeta },
           useCases: res.useCases ?? [],
           totalCases: res.totals?.testCases ?? 0,
           totalSteps: res.totals?.steps ?? 0,
@@ -126,10 +135,7 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
           body: formData,
         });
         result = {
-          metadata: res.suggestedProjectMetadata ?? {
-            projectName: null, moduleName: null, designedBy: null, designDate: null,
-            releaseVersion: null, precondition: null,
-          },
+          metadata: res.suggestedProjectMetadata ?? { ...nullMeta },
           useCases: res.useCases ?? [],
           totalCases: res.totals?.testCases ?? 0,
           totalSteps: res.totals?.steps ?? 0,
@@ -145,6 +151,11 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
         designDate: result.metadata.designDate ?? "",
         releaseVersion: result.metadata.releaseVersion ?? "",
         precondition: result.metadata.precondition ?? "",
+        objectives: result.metadata.objectives ?? "",
+        scope: result.metadata.scope ?? "",
+        outOfScope: result.metadata.outOfScope ?? "",
+        entryCriteria: result.metadata.entryCriteria ?? "",
+        exitCriteria: result.metadata.exitCriteria ?? "",
       });
       setCompleted([0]);
       setStep(1);
@@ -172,11 +183,11 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
             designDate: metadataForm.designDate.trim() || new Date().toISOString().slice(0, 10),
             testLink: null,
             testLeadId: user?.id ?? 1,
-            objectives: null,
-            scope: null,
-            outOfScope: null,
-            entryCriteria: metadataForm.precondition?.trim() || null,
-            exitCriteria: null,
+            objectives: metadataForm.objectives?.trim() || null,
+            scope: metadataForm.scope?.trim() || null,
+            outOfScope: metadataForm.outOfScope?.trim() || null,
+            entryCriteria: metadataForm.entryCriteria?.trim() || metadataForm.precondition?.trim() || null,
+            exitCriteria: metadataForm.exitCriteria?.trim() || null,
           }),
         });
 
@@ -298,12 +309,52 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
                 />
               </Field>
               <div className="md:col-span-2">
-                <Field label="Entry Criteria (Precondition)" helper="Optional. Conditions that must be met before testing begins.">
-                  <input
-                    type="text"
-                    value={metadataForm.precondition}
-                    onChange={(e) => setMetadataForm((m) => ({ ...m, precondition: e.target.value }))}
-                    className={`${inputBaseClass} ${inputValidClass}`}
+                <Field label="Objectives" helper="The goals this test plan aims to achieve.">
+                  <textarea
+                    rows={2}
+                    value={metadataForm.objectives}
+                    onChange={(e) => setMetadataForm((m) => ({ ...m, objectives: e.target.value }))}
+                    className={`${inputBaseClass} resize-y ${inputValidClass}`}
+                  />
+                </Field>
+              </div>
+              <div className="md:col-span-2">
+                <Field label="In Scope" helper="Features, systems, or areas included.">
+                  <textarea
+                    rows={2}
+                    value={metadataForm.scope}
+                    onChange={(e) => setMetadataForm((m) => ({ ...m, scope: e.target.value }))}
+                    className={`${inputBaseClass} resize-y ${inputValidClass}`}
+                  />
+                </Field>
+              </div>
+              <div className="md:col-span-2">
+                <Field label="Out of Scope" helper="Features, systems, or areas explicitly excluded.">
+                  <textarea
+                    rows={2}
+                    value={metadataForm.outOfScope}
+                    onChange={(e) => setMetadataForm((m) => ({ ...m, outOfScope: e.target.value }))}
+                    className={`${inputBaseClass} resize-y ${inputValidClass}`}
+                  />
+                </Field>
+              </div>
+              <div className="md:col-span-2">
+                <Field label="Entry Criteria" helper="What must be true before testing can begin.">
+                  <textarea
+                    rows={2}
+                    value={metadataForm.entryCriteria}
+                    onChange={(e) => setMetadataForm((m) => ({ ...m, entryCriteria: e.target.value }))}
+                    className={`${inputBaseClass} resize-y ${inputValidClass}`}
+                  />
+                </Field>
+              </div>
+              <div className="md:col-span-2">
+                <Field label="Exit Criteria" helper="What must be true before this test plan can be signed off.">
+                  <textarea
+                    rows={2}
+                    value={metadataForm.exitCriteria}
+                    onChange={(e) => setMetadataForm((m) => ({ ...m, exitCriteria: e.target.value }))}
+                    className={`${inputBaseClass} resize-y ${inputValidClass}`}
                   />
                 </Field>
               </div>

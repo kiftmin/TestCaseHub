@@ -1,7 +1,7 @@
 import express from "express";
 import { eq, sql } from "drizzle-orm";
 import multer from "multer";
-import * as XLSX from "xlsx";
+import XLSX from "xlsx";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
@@ -58,6 +58,233 @@ interface Warning {
   reason: string;
 }
 
+/**
+ * Parse a spreadsheet buffer and extract metadata + use-case/test-case/step data.
+ */
+function parseImportFile(
+  buffer: Buffer,
+): {
+  suggestedMetadata: SuggestedMetadata;
+  parsedUseCases: ParsedUseCase[];
+  warnings: Warning[];
+} {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) throw new Error("Spreadsheet has no sheets");
+  const sheet = workbook.Sheets[sheetName];
+  const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+  if (rows.length === 0) throw new Error("Spreadsheet is empty");
+
+  // Phase 1: Extract header-block metadata
+  const suggestedMetadata: SuggestedMetadata = {
+    projectName: null,
+    moduleName: null,
+    designedBy: null,
+    designDate: null,
+    releaseVersion: null,
+    precondition: null,
+  };
+
+  function extractMetadata(label: string, value: string) {
+    const lc = label.toLowerCase();
+    if (lc.startsWith("project name")) suggestedMetadata.projectName = value || null;
+    else if (lc.startsWith("module name")) suggestedMetadata.moduleName = value || null;
+    else if (/^test designed by/i.test(label)) suggestedMetadata.designedBy = value || null;
+    else if (/^test designed date/i.test(label)) {
+      // Handle Excel date serial numbers
+      if (value && /^\d+(\.\d+)?$/.test(value)) {
+        const parsed = XLSX.SSF.parse_date_code(Number(value));
+        if (parsed) {
+          const y = parsed.y ?? 1900;
+          const m = String(parsed.m ?? 1).padStart(2, "0");
+          const d = String(parsed.d ?? 1).padStart(2, "0");
+          suggestedMetadata.designDate = `${y}-${m}-${d}`;
+        }
+      } else {
+        suggestedMetadata.designDate = value || null;
+      }
+    } else if (/^release version/i.test(label)) suggestedMetadata.releaseVersion = value || null;
+    else if (lc.startsWith("pre-condition") || lc.startsWith("precondition"))
+      suggestedMetadata.precondition = value || null;
+  }
+
+  let dataStartRow = 0;
+  for (let i = 0; i < Math.min(rows.length, 50); i++) {
+    const row = rows[i] as any;
+    const cell0 = String(row[0] ?? "").trim();
+    const cell1 = String(row[1] ?? "").trim();
+    const cell3 = String(row[3] ?? "").trim();
+    const cell4 = String(row[4] ?? "").trim();
+
+    extractMetadata(cell0, cell1);
+    if (cell3) extractMetadata(cell3, cell4);
+
+    if (/^Use Case\s+/i.test(cell0)) {
+      dataStartRow = i;
+      break;
+    }
+  }
+
+  // Phase 2: Parse use cases, test cases, steps
+  const parsedUseCases: ParsedUseCase[] = [];
+  let currentUseCase: ParsedUseCase | null = null;
+  let currentTestCase: ParsedTestCase | null = null;
+  let columnMap: Record<string, number> | null = null;
+
+  const UC_REGEX = /^Use Case\s+([\w-]+):\s*(.*)$/i;
+
+  for (let i = dataStartRow; i < rows.length; i++) {
+    const row = rows[i] as any;
+    const cell0 = String(row[0] ?? "").trim();
+
+    const ucMatch = cell0.match(UC_REGEX);
+    if (ucMatch) {
+      if (currentUseCase && currentTestCase) {
+        currentUseCase.testCases.push(currentTestCase);
+        currentTestCase = null;
+      }
+      currentUseCase = {
+        code: ucMatch[1],
+        name: ucMatch[2] || ucMatch[1],
+        testCases: [],
+      };
+      parsedUseCases.push(currentUseCase);
+      columnMap = null;
+      currentTestCase = null;
+      continue;
+    }
+
+    if (!currentUseCase) continue;
+
+    const clean0 = cell0.toLowerCase().replace(/[#\s]/g, "");
+    if (clean0 === "testcase" || clean0 === "testcase#" || /^test\s*case/i.test(cell0)) {
+      columnMap = buildColumnMap(row);
+      currentTestCase = null;
+      continue;
+    }
+
+    if (!columnMap) continue;
+
+    const tcIdx = columnMap["testCase"];
+    const titleIdx = columnMap["title"];
+    const stepsIdx = columnMap["steps"];
+    const dataIdx = columnMap["testData"];
+    const expectedIdx = columnMap["expectedResult"];
+
+    const testCaseCell = tcIdx != null ? String(row[tcIdx] ?? "").trim() : "";
+    const stepsCell = stepsIdx != null ? String(row[stepsIdx] ?? "").trim() : "";
+
+    if (testCaseCell && stepsCell) {
+      if (currentTestCase) {
+        currentUseCase.testCases.push(currentTestCase);
+      }
+      const titleCell = titleIdx != null ? String(row[titleIdx] ?? "").trim() : "";
+      currentTestCase = {
+        caseNumber: testCaseCell,
+        title: titleCell || testCaseCell,
+        steps: [
+          {
+            instruction: stepsCell,
+            testData: dataIdx != null ? String(row[dataIdx] ?? "").trim() || null : null,
+            expectedResult: expectedIdx != null ? String(row[expectedIdx] ?? "").trim() || null : null,
+          },
+        ],
+      };
+    } else if (!testCaseCell && stepsCell && currentTestCase) {
+      currentTestCase.steps.push({
+        instruction: stepsCell,
+        testData: dataIdx != null ? String(row[dataIdx] ?? "").trim() || null : null,
+        expectedResult: expectedIdx != null ? String(row[expectedIdx] ?? "").trim() || null : null,
+      });
+    }
+  }
+
+  if (currentUseCase && currentTestCase) {
+    currentUseCase.testCases.push(currentTestCase);
+  }
+
+  // Phase 3: Detect warnings
+  const warnings: Warning[] = [];
+  for (const uc of parsedUseCases) {
+    const realCases = uc.testCases.filter((tc) =>
+      tc.steps.some((s) => s.instruction.trim())
+    );
+    if (realCases.length === 0) {
+      warnings.push({
+        useCaseCode: uc.code,
+        useCaseName: uc.name,
+        reason:
+          "Use case has no test cases with step content — likely a copy-paste leftover or empty section.",
+      });
+      continue;
+    }
+
+    for (const other of parsedUseCases) {
+      if (other === uc) break;
+      if (other.testCases.length === 0 || uc.testCases.length === 0) continue;
+      if (other.testCases.length !== uc.testCases.length) continue;
+
+      const isDuplicate = other.testCases.every((otc, idx) => {
+        const utc = uc.testCases[idx];
+        if (!utc) return false;
+        if (otc.title !== utc.title) return false;
+        return otc.steps.every((os, si) => {
+          const us = utc.steps[si];
+          return us && os.instruction === us.instruction;
+        });
+      });
+
+      if (isDuplicate) {
+        warnings.push({
+          useCaseCode: uc.code,
+          useCaseName: uc.name,
+          reason: `Content is a near-exact duplicate of use case "${other.code}: ${other.name}". May be a copy-paste leftover.`,
+        });
+      }
+    }
+  }
+
+  return { suggestedMetadata, parsedUseCases, warnings };
+}
+
+// POST /api/import/preview — dry-run parse without requiring a project
+router.post(
+  "/import/preview",
+  authenticate,
+  upload.single("file"),
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      if (!req.file) {
+        res.status(400).json({ message: "No file uploaded" });
+        return;
+      }
+
+      const { suggestedMetadata, parsedUseCases, warnings } = parseImportFile(req.file.buffer);
+
+      res.json({
+        suggestedProjectMetadata: suggestedMetadata,
+        useCases: parsedUseCases,
+        warnings,
+        totals: {
+          useCases: parsedUseCases.length,
+          testCases: parsedUseCases.reduce((s, uc) => s + uc.testCases.length, 0),
+          steps: parsedUseCases.reduce(
+            (s, uc) => s + uc.testCases.reduce((ss, tc) => ss + tc.steps.length, 0),
+            0,
+          ),
+        },
+      });
+    } catch (err) {
+      if (err instanceof Error && (err.message.includes("Invalid file type") || err.message.includes("Spreadsheet"))) {
+        res.status(400).json({ message: err.message });
+        return;
+      }
+      next(err);
+    }
+  },
+);
+
 // POST /api/projects/:projectId/import
 router.post(
   "/projects/:projectId/import",
@@ -84,193 +311,20 @@ router.post(
 
       const dryRun = req.query.dryRun === "true";
 
-      // Parse workbook
-      const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
-      const sheetName = workbook.SheetNames[0];
-      if (!sheetName) {
-        res.status(400).json({ message: "Spreadsheet has no sheets" });
-        return;
-      }
-      const sheet = workbook.Sheets[sheetName];
-      const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-
-      if (rows.length === 0) {
-        res.status(400).json({ message: "Spreadsheet is empty" });
-        return;
-      }
-
-      // Phase 1: Extract header-block metadata
-      const suggestedMetadata: SuggestedMetadata = {
-        projectName: null,
-        moduleName: null,
-        designedBy: null,
-        designDate: null,
-        releaseVersion: null,
-        precondition: null,
-      };
-
-      let dataStartRow = 0;
-      for (let i = 0; i < Math.min(rows.length, 50); i++) {
-        const row = rows[i] as any;
-        const cell0 = String(row[0] ?? "").trim();
-        const cell1 = String(row[1] ?? "").trim();
-
-        if (cell0.toLowerCase().startsWith("project name")) {
-          suggestedMetadata.projectName = cell1 || null;
-        } else if (cell0.toLowerCase().startsWith("module name")) {
-          suggestedMetadata.moduleName = cell1 || null;
-        } else if (/^test designed by/i.test(cell0)) {
-          suggestedMetadata.designedBy = cell1 || null;
-        } else if (/^test designed date/i.test(cell0)) {
-          suggestedMetadata.designDate = cell1 || null;
-        } else if (/^release version/i.test(cell0)) {
-          suggestedMetadata.releaseVersion = cell1 || null;
-        } else if (
-          cell0.toLowerCase().startsWith("pre-condition") ||
-          cell0.toLowerCase().startsWith("precondition")
-        ) {
-          suggestedMetadata.precondition = cell1 || null;
-        }
-
-        if (/^Use Case\s+/i.test(cell0)) {
-          dataStartRow = i;
-          break;
-        }
-      }
-
-      // Phase 2: Parse use cases, test cases, steps
-      const parsedUseCases: ParsedUseCase[] = [];
-      let currentUseCase: ParsedUseCase | null = null;
-      let currentTestCase: ParsedTestCase | null = null;
-      let columnMap: Record<string, number> | null = null;
-
-      const UC_REGEX = /^Use Case\s+([\w-]+):\s*(.*)$/i;
-
-      for (let i = dataStartRow; i < rows.length; i++) {
-        const row = rows[i] as any;
-        const cell0 = String(row[0] ?? "").trim();
-
-        const ucMatch = cell0.match(UC_REGEX);
-        if (ucMatch) {
-          if (currentUseCase && currentTestCase) {
-            currentUseCase.testCases.push(currentTestCase);
-            currentTestCase = null;
-          }
-          currentUseCase = {
-            code: ucMatch[1],
-            name: ucMatch[2] || ucMatch[1],
-            testCases: [],
-          };
-          parsedUseCases.push(currentUseCase);
-          columnMap = null;
-          currentTestCase = null;
-          continue;
-        }
-
-        if (!currentUseCase) continue;
-
-        const clean0 = cell0.toLowerCase().replace(/[#\s]/g, "");
-        if (clean0 === "testcase" || clean0 === "testcase#" || /^test\s*case/i.test(cell0)) {
-          columnMap = buildColumnMap(row);
-          currentTestCase = null;
-          continue;
-        }
-
-        if (!columnMap) continue;
-
-        const tcIdx = columnMap["testCase"];
-        const titleIdx = columnMap["title"];
-        const stepsIdx = columnMap["steps"];
-        const dataIdx = columnMap["testData"];
-        const expectedIdx = columnMap["expectedResult"];
-
-        const testCaseCell = tcIdx != null ? String(row[tcIdx] ?? "").trim() : "";
-        const stepsCell = stepsIdx != null ? String(row[stepsIdx] ?? "").trim() : "";
-
-        if (testCaseCell && stepsCell) {
-          if (currentTestCase) {
-            currentUseCase.testCases.push(currentTestCase);
-          }
-          const titleCell = titleIdx != null ? String(row[titleIdx] ?? "").trim() : "";
-          currentTestCase = {
-            caseNumber: testCaseCell,
-            title: titleCell || testCaseCell,
-            steps: [
-              {
-                instruction: stepsCell,
-                testData: dataIdx != null ? String(row[dataIdx] ?? "").trim() || null : null,
-                expectedResult: expectedIdx != null ? String(row[expectedIdx] ?? "").trim() || null : null,
-              },
-            ],
-          };
-        } else if (!testCaseCell && stepsCell && currentTestCase) {
-          currentTestCase.steps.push({
-            instruction: stepsCell,
-            testData: dataIdx != null ? String(row[dataIdx] ?? "").trim() || null : null,
-            expectedResult: expectedIdx != null ? String(row[expectedIdx] ?? "").trim() || null : null,
-          });
-        }
-      }
-
-      if (currentUseCase && currentTestCase) {
-        currentUseCase.testCases.push(currentTestCase);
-      }
-
-      // Phase 3: Detect warnings
-      const warnings: Warning[] = [];
-      for (const uc of parsedUseCases) {
-        const realCases = uc.testCases.filter((tc) =>
-          tc.steps.some((s) => s.instruction.trim())
-        );
-        if (realCases.length === 0) {
-          warnings.push({
-            useCaseCode: uc.code,
-            useCaseName: uc.name,
-            reason:
-              "Use case has no test cases with step content — likely a copy-paste leftover or empty section.",
-          });
-          continue;
-        }
-
-        for (const other of parsedUseCases) {
-          if (other === uc) break;
-          if (other.testCases.length === 0 || uc.testCases.length === 0) continue;
-          if (other.testCases.length !== uc.testCases.length) continue;
-
-          const isDuplicate = other.testCases.every((otc, idx) => {
-            const utc = uc.testCases[idx];
-            if (!utc) return false;
-            if (otc.title !== utc.title) return false;
-            return otc.steps.every((os, si) => {
-              const us = utc.steps[si];
-              return us && os.instruction === us.instruction;
-            });
-          });
-
-          if (isDuplicate) {
-            warnings.push({
-              useCaseCode: uc.code,
-              useCaseName: uc.name,
-              reason: `Content is a near-exact duplicate of use case "${other.code}: ${other.name}". May be a copy-paste leftover.`,
-            });
-          }
-        }
-      }
+      const { suggestedMetadata, parsedUseCases, warnings } = parseImportFile(req.file.buffer);
 
       // Phase 4: Dry-run
       if (dryRun) {
         res.json({
-          useCasesCreated: 0,
-          testCasesCreated: 0,
-          stepsCreated: 0,
-          warnings,
           suggestedProjectMetadata: suggestedMetadata,
-          detected: {
+          useCases: parsedUseCases,
+          warnings,
+          totals: {
             useCases: parsedUseCases.length,
             testCases: parsedUseCases.reduce((s, uc) => s + uc.testCases.length, 0),
             steps: parsedUseCases.reduce(
               (s, uc) => s + uc.testCases.reduce((ss, tc) => ss + tc.steps.length, 0),
-              0
+              0,
             ),
           },
         });
@@ -344,9 +398,9 @@ router.post(
             }
           }
         }
-      });
 
-      await bumpProjectVersion(projectId);
+        await bumpProjectVersion(projectId, tx);
+      });
       await logAudit({
         entityType: "project",
         entityId: projectId,
@@ -362,7 +416,7 @@ router.post(
         suggestedProjectMetadata: null,
       });
     } catch (err) {
-      if (err instanceof Error && err.message.includes("Invalid file type")) {
+      if (err instanceof Error && (err.message.includes("Invalid file type") || err.message.includes("Spreadsheet"))) {
         res.status(400).json({ message: err.message });
         return;
       }

@@ -3,13 +3,15 @@ import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { Dialog } from "./ui/dialog";
 import { Button } from "./ui/button";
+import { Field, inputBaseClass, inputInvalidClass, inputValidClass } from "./ui/field";
+import { Input } from "./ui/input";
 import { Stepper, type Step } from "./ui/stepper";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import type { Project } from "../types/api";
 
 /* ─────────────────────────────────────────────
-   Parsing types (shareable with backend)
+   Types matching backend dry-run/preview response
    ───────────────────────────────────────────── */
 
 interface ParsedStep {
@@ -43,144 +45,6 @@ interface ParsedResult {
   totalCases: number;
   totalSteps: number;
   warnings: { useCaseCode: string; useCaseName: string; reason: string }[];
-}
-
-/* ─────────────────────────────────────────────
-   Client-side parsing (mirrors backend logic)
-   ───────────────────────────────────────────── */
-
-const UC_REGEX = /^Use Case\s+([\w-]+):\s*(.*)$/i;
-
-function buildColumnIndexes(headerRow: any[]): Record<string, number> {
-  const map: Record<string, number> = {};
-  for (let i = 0; i < Math.max(headerRow.length, 20); i++) {
-    const cell = String(headerRow[i] ?? "")
-      .trim()
-      .toLowerCase()
-      .replace(/[#\s]/g, "");
-    if (/^testcase/.test(cell)) map.testCase = i;
-    else if (/^testtitle/.test(cell) || /^title/i.test(cell)) map.title = i;
-    else if (/^teststeps/.test(cell) || /^steps/i.test(cell)) map.steps = i;
-    else if (/^testdata/.test(cell) || /^data/i.test(cell)) map.testData = i;
-    else if (/^expectedresult/.test(cell) || /^expected/i.test(cell)) map.expectedResult = i;
-  }
-  return map;
-}
-
-async function parseFile(file: File): Promise<ParsedResult> {
-  const buf = await file.arrayBuffer();
-  const XLSX = await import("xlsx");
-  const wb = XLSX.read(buf, { type: "array" });
-  const sheet = wb.Sheets[wb.SheetNames[0]];
-  const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-
-  const metadata: ParsedResult["metadata"] = {
-    projectName: null,
-    moduleName: null,
-    designedBy: null,
-    designDate: null,
-    releaseVersion: null,
-    precondition: null,
-  };
-
-  let dataStartRow = 0;
-  for (let i = 0; i < Math.min(rows.length, 50); i++) {
-    const c0 = String(rows[i]?.[0] ?? "").trim();
-    const c1 = String(rows[i]?.[1] ?? "").trim();
-    if (c0.toLowerCase().startsWith("project name")) metadata.projectName = c1 || null;
-    else if (c0.toLowerCase().startsWith("module name")) metadata.moduleName = c1 || null;
-    else if (/^test designed by/i.test(c0)) metadata.designedBy = c1 || null;
-    else if (/^test designed date/i.test(c0)) metadata.designDate = c1 || null;
-    else if (/^release version/i.test(c0)) metadata.releaseVersion = c1 || null;
-    else if (/^pre-?condition/i.test(c0)) metadata.precondition = c1 || null;
-    if (UC_REGEX.test(c0)) { dataStartRow = i; break; }
-  }
-
-  const useCases: ParsedUseCase[] = [];
-  let currentUseCase: ParsedUseCase | null = null;
-  let currentTestCase: ParsedTestCase | null = null;
-  let columnMap: Record<string, number> | null = null;
-
-  for (let i = dataStartRow; i < rows.length; i++) {
-    const row = rows[i];
-    const c0 = String(row?.[0] ?? "").trim();
-    const ucMatch = c0.match(UC_REGEX);
-
-    if (ucMatch) {
-      if (currentUseCase && currentTestCase) { currentUseCase.testCases.push(currentTestCase); currentTestCase = null; }
-      currentUseCase = { code: ucMatch[1], name: ucMatch[2] || ucMatch[1], testCases: [] };
-      useCases.push(currentUseCase);
-      columnMap = null;
-      currentTestCase = null;
-      continue;
-    }
-
-    if (!currentUseCase) continue;
-
-    const clean0 = c0.toLowerCase().replace(/[#\s]/g, "");
-    if (clean0 === "testcase" || clean0 === "testcase#" || /^test\s*case/i.test(c0)) {
-      columnMap = buildColumnIndexes(row);
-      currentTestCase = null;
-      continue;
-    }
-
-    if (!columnMap) continue;
-
-    const tcCell = columnMap.testCase != null ? String(row[columnMap.testCase] ?? "").trim() : "";
-    const stCell = columnMap.steps != null ? String(row[columnMap.steps] ?? "").trim() : "";
-
-    if (tcCell && stCell) {
-      if (currentTestCase) currentUseCase.testCases.push(currentTestCase);
-      const title = columnMap.title != null ? String(row[columnMap.title] ?? "").trim() : "";
-      currentTestCase = {
-        caseNumber: tcCell,
-        title: title || tcCell,
-        steps: [{
-          instruction: stCell,
-          testData: columnMap.testData != null ? String(row[columnMap.testData] ?? "").trim() || null : null,
-          expectedResult: columnMap.expectedResult != null ? String(row[columnMap.expectedResult] ?? "").trim() || null : null,
-        }],
-      };
-    } else if (!tcCell && stCell && currentTestCase) {
-      currentTestCase.steps.push({
-        instruction: stCell,
-        testData: columnMap.testData != null ? String(row[columnMap.testData] ?? "").trim() || null : null,
-        expectedResult: columnMap.expectedResult != null ? String(row[columnMap.expectedResult] ?? "").trim() || null : null,
-      });
-    }
-  }
-
-  if (currentUseCase && currentTestCase) currentUseCase.testCases.push(currentTestCase);
-
-  // Warnings
-  const warnings: ParsedResult["warnings"] = [];
-  for (const uc of useCases) {
-    const real = uc.testCases.filter((tc) => tc.steps.some((s) => s.instruction.trim()));
-    if (real.length === 0) {
-      warnings.push({ useCaseCode: uc.code, useCaseName: uc.name, reason: "Use case has no test cases with step content — likely a copy-paste leftover or empty section." });
-      continue;
-    }
-    for (const other of useCases) {
-      if (other === uc) break;
-      if (other.testCases.length === 0 || uc.testCases.length === 0 || other.testCases.length !== uc.testCases.length) continue;
-      const dupe = other.testCases.every((otc, idx) => {
-        const utc = uc.testCases[idx];
-        return utc && otc.title === utc.title && otc.steps.every((os, si) => utc.steps[si]?.instruction === os.instruction);
-      });
-      if (dupe) warnings.push({
-        useCaseCode: uc.code, useCaseName: uc.name,
-        reason: `Content is a near-exact duplicate of use case "${other.code}: ${other.name}". May be a copy-paste leftover.`,
-      });
-    }
-  }
-
-  return {
-    metadata,
-    useCases,
-    totalCases: useCases.reduce((s, u) => s + u.testCases.length, 0),
-    totalSteps: useCases.reduce((s, u) => s + u.testCases.reduce((ss, tc) => ss + tc.steps.length, 0), 0),
-    warnings,
-  };
 }
 
 /* ─────────────────────────────────────────────
@@ -234,8 +98,45 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
     const f = e.target.files?.[0];
     if (!f) return;
     setFile(f);
+
     try {
-      const result = await parseFile(f);
+      const formData = new FormData();
+      formData.append("file", f);
+
+      let result: ParsedResult;
+
+      if (mode === "existing-project" && projectId) {
+        const res = await customFetch<any>(`/projects/${projectId}/import?dryRun=true`, {
+          method: "POST",
+          body: formData,
+        });
+        result = {
+          metadata: res.suggestedProjectMetadata ?? {
+            projectName: null, moduleName: null, designedBy: null, designDate: null,
+            releaseVersion: null, precondition: null,
+          },
+          useCases: res.useCases ?? [],
+          totalCases: res.totals?.testCases ?? 0,
+          totalSteps: res.totals?.steps ?? 0,
+          warnings: res.warnings ?? [],
+        };
+      } else {
+        const res = await customFetch<any>("/import/preview", {
+          method: "POST",
+          body: formData,
+        });
+        result = {
+          metadata: res.suggestedProjectMetadata ?? {
+            projectName: null, moduleName: null, designedBy: null, designDate: null,
+            releaseVersion: null, precondition: null,
+          },
+          useCases: res.useCases ?? [],
+          totalCases: res.totals?.testCases ?? 0,
+          totalSteps: res.totals?.steps ?? 0,
+          warnings: res.warnings ?? [],
+        };
+      }
+
       setParsed(result);
       setMetadataForm({
         projectName: result.metadata.projectName ?? "",
@@ -247,8 +148,8 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
       });
       setCompleted([0]);
       setStep(1);
-    } catch (err) {
-      toast.error("Failed to parse file. Make sure it's a valid Excel test plan.");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to parse file. Make sure it's a valid Excel test plan.");
     }
   };
 
@@ -257,9 +158,11 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
     setImporting(true);
 
     try {
+      const fd = new FormData();
+      fd.append("file", file);
+
       if (mode === "new-project") {
         const user = getStoredUser();
-        // Create the project first
         const project = await customFetch<Project>("/projects", {
           method: "POST",
           body: JSON.stringify({
@@ -277,32 +180,28 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
           }),
         });
 
-        // Import into the new project
-        const fd = new FormData();
-        fd.append("file", file);
-        const result = await customFetch<{
-          useCasesCreated: number;
-          testCasesCreated: number;
-          stepsCreated: number;
-          warnings: any[];
-        }>(`/projects/${project.id}/import`, { method: "POST", body: fd });
+        const result = await customFetch<any>(`/projects/${project.id}/import`, {
+          method: "POST",
+          body: fd,
+        });
 
         setImportResult({
-          ...result,
+          useCasesCreated: result.useCasesCreated,
+          testCasesCreated: result.testCasesCreated,
+          stepsCreated: result.stepsCreated,
           newProjectId: project.id,
         });
       } else {
-        // Existing project — import directly
-        const fd = new FormData();
-        fd.append("file", file);
-        const result = await customFetch<{
-          useCasesCreated: number;
-          testCasesCreated: number;
-          stepsCreated: number;
-          warnings: any[];
-        }>(`/projects/${projectId}/import`, { method: "POST", body: fd });
+        const result = await customFetch<any>(`/projects/${projectId}/import`, {
+          method: "POST",
+          body: fd,
+        });
 
-        setImportResult(result);
+        setImportResult({
+          useCasesCreated: result.useCasesCreated,
+          testCasesCreated: result.testCasesCreated,
+          stepsCreated: result.stepsCreated,
+        });
       }
 
       setCompleted([0, 1, 2]);
@@ -320,7 +219,7 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
     <Dialog
       open={open}
       onClose={() => { handleReset(); onClose(); }}
-      title={mode === "new-project" ? "Import from Excel" : "Import from Excel"}
+      title="Import from Excel"
       subtitle="Parse a test plan from an .xlsx file and import it."
       size="lg"
       contentClassName={step === 1 ? "min-h-[400px]" : ""}
@@ -364,56 +263,55 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
           {/* Metadata fields (editable in new-project, read-only in existing) */}
           {mode === "new-project" && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-md p-md border border-outline-variant rounded-lg bg-surface-container-lowest">
-              <div>
-                <label className="text-label-sm font-label-sm">Project Name</label>
+              <Field label="Project Name" required helper="A short, recognisable name shown in lists and reports.">
                 <input
                   type="text"
                   value={metadataForm.projectName}
                   onChange={(e) => setMetadataForm((m) => ({ ...m, projectName: e.target.value }))}
-                  className="w-full px-md py-sm border border-outline rounded-lg text-body-sm"
+                  placeholder="e.g. Q4 Mobile Banking UAT"
+                  className={`${inputBaseClass} text-title-sm font-title-sm ${inputValidClass}`}
                 />
-              </div>
-              <div>
-                <label className="text-label-sm font-label-sm">Module Name</label>
+              </Field>
+              <Field label="Module Name" required helper="Feature, epic, or component under test.">
                 <input
                   type="text"
                   value={metadataForm.moduleName}
                   onChange={(e) => setMetadataForm((m) => ({ ...m, moduleName: e.target.value }))}
-                  className="w-full px-md py-sm border border-outline rounded-lg text-body-sm"
+                  placeholder="e.g. Mobile App"
+                  className={`${inputBaseClass} ${inputValidClass}`}
                 />
-              </div>
-              <div>
-                <label className="text-label-sm font-label-sm">Designed By</label>
+              </Field>
+              <Field label="Designed By" required>
                 <input
                   type="text"
                   value={metadataForm.designedBy}
                   onChange={(e) => setMetadataForm((m) => ({ ...m, designedBy: e.target.value }))}
-                  className="w-full px-md py-sm border border-outline rounded-lg text-body-sm"
+                  className={`${inputBaseClass} ${inputValidClass}`}
                 />
-              </div>
-              <div>
-                <label className="text-label-sm font-label-sm">Design Date</label>
+              </Field>
+              <Field label="Design Date" required>
                 <input
                   type="date"
                   value={metadataForm.designDate}
                   onChange={(e) => setMetadataForm((m) => ({ ...m, designDate: e.target.value }))}
-                  className="w-full px-md py-sm border border-outline rounded-lg text-body-sm"
+                  className={`${inputBaseClass} ${inputValidClass}`}
                 />
-              </div>
+              </Field>
               <div className="md:col-span-2">
-                <label className="text-label-sm font-label-sm">Entry Criteria (Precondition)</label>
-                <input
-                  type="text"
-                  value={metadataForm.precondition}
-                  onChange={(e) => setMetadataForm((m) => ({ ...m, precondition: e.target.value }))}
-                  className="w-full px-md py-sm border border-outline rounded-lg text-body-sm"
-                />
+                <Field label="Entry Criteria (Precondition)" helper="Optional. Conditions that must be met before testing begins.">
+                  <input
+                    type="text"
+                    value={metadataForm.precondition}
+                    onChange={(e) => setMetadataForm((m) => ({ ...m, precondition: e.target.value }))}
+                    className={`${inputBaseClass} ${inputValidClass}`}
+                  />
+                </Field>
               </div>
             </div>
           )}
 
           {mode === "existing-project" && parsed.metadata.precondition && (
-            <div className="p-md border border-amber-200 bg-amber-50 rounded-lg text-body-sm text-amber-800">
+            <div className="p-md border border-error bg-error-container rounded-lg text-body-sm text-on-error-container">
               <strong>Note:</strong> This file lists a precondition — compare with your project's existing Entry Criteria.
               {parsed.metadata.precondition && <p className="mt-1 italic">"{parsed.metadata.precondition}"</p>}
             </div>
@@ -422,9 +320,9 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
           {/* Warnings */}
           {hasWarnings && (
             <div className="space-y-xs">
-              <p className="text-label-sm font-label-sm text-warning">Warnings</p>
+              <p className="text-label-sm font-label-sm text-on-error-container">Warnings</p>
               {parsed.warnings.map((w, i) => (
-                <div key={i} className="flex items-start gap-sm p-sm bg-amber-50 border border-amber-200 rounded-lg text-body-sm text-amber-800">
+                <div key={i} className="flex items-start gap-sm p-sm bg-error-container border border-error rounded-lg text-body-sm text-on-error-container">
                   <span className="material-symbols-outlined text-sm shrink-0 mt-0.5">warning</span>
                   <span><strong>{w.useCaseCode}</strong>: {w.reason}</span>
                 </div>
@@ -462,7 +360,7 @@ export function ImportWizard({ mode, open, onClose, projectId, onImportComplete 
 
       {step === 3 && importResult && (
         <div className="flex flex-col items-center gap-md py-lg text-center">
-          <span className="material-symbols-outlined text-[48px] text-green-600">check_circle</span>
+          <span className="material-symbols-outlined text-[48px] text-secondary">check_circle</span>
           <p className="font-title-sm text-title-sm">Import complete</p>
           <div className="flex items-center gap-lg flex-wrap justify-center">
             <div className="bg-surface-container-high rounded-lg px-md py-sm text-center min-w-[80px]">

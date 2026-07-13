@@ -2,8 +2,11 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
 
-export async function bumpProjectVersion(projectId: number): Promise<void> {
-  await db
+export async function bumpProjectVersion(
+  projectId: number,
+  client: typeof db = db,
+): Promise<void> {
+  await client
     .update(schema.projects)
     .set({
       version: sql`${schema.projects.version} + 1`,

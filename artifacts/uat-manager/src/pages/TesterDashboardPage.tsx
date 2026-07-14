@@ -1,5 +1,5 @@
 import { useLocation } from "wouter";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
@@ -8,9 +8,11 @@ import {
   EmptyState,
   StatusChip,
   runStatusVariant,
+  progressStatusVariant,
   KpiCard,
   FilterTabs,
   type FilterTab,
+  PRIORITY_BADGE_VARIANT,
 } from "../components/ui";
 import type { TestRunUseCase, Execution } from "../types/api";
 
@@ -206,6 +208,8 @@ export function TesterDashboardPage() {
   const [, navigate] = useLocation();
   const user = getStoredUser();
   const [filter, setFilter] = useState<RunFilter>("all");
+  const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
+  const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' }>({ key: '', dir: 'asc' });
 
   useEffect(() => { document.title = "My Runs | TestCaseHub"; }, []);
 
@@ -329,6 +333,48 @@ export function TesterDashboardPage() {
 
   const handleOpen = (runId: number) => navigate(`/tester/run/${runId}`);
 
+  const toggleSort = (key: string) => {
+    setSort((prev) => prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' });
+  };
+
+  const sortedGroups = useMemo(() => {
+    if (!sort.key) return filteredGroups;
+    return [...filteredGroups].sort((a, b) => {
+      const getVal = (g: RunGroup): string => {
+        switch (sort.key) {
+          case "name": return g.run.name.toLowerCase();
+          case "project": return (g.run as any).project?.name?.toLowerCase() ?? "";
+          case "status": return g.run.status;
+          case "progress": return g.progress;
+          case "scenarios": return String(g.totalCases).padStart(10, "0");
+          default: return "";
+        }
+      };
+      const aVal = getVal(a);
+      const bVal = getVal(b);
+      return sort.dir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+    });
+  }, [filteredGroups, sort]);
+
+  const SortHeader = ({ sortKey, children, className }: { sortKey: string; children: ReactNode; className?: string }) => {
+    const active = sort.key === sortKey;
+    return (
+      <th
+        className={`${className ?? ""} px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider cursor-pointer select-none hover:text-on-surface transition-colors`}
+        onClick={() => toggleSort(sortKey)}
+      >
+        <span className="inline-flex items-center gap-1">
+          {children}
+          {active ? (
+            <span className="material-symbols-outlined text-[12px]">{sort.dir === 'asc' ? 'arrow_upward' : 'arrow_downward'}</span>
+          ) : (
+            <span className="material-symbols-outlined text-[12px] opacity-30">unfold_more</span>
+          )}
+        </span>
+      </th>
+    );
+  };
+
   return (
     <div className="space-y-lg max-w-7xl mx-auto w-full">
       <PageHeader
@@ -395,8 +441,34 @@ export function TesterDashboardPage() {
         />
       ) : (
         <>
-          <div className="flex items-center justify-between gap-md flex-wrap">
-            <FilterTabs<RunFilter> tabs={filterTabs} active={filter} onChange={setFilter} />
+          <div className="flex items-center justify-between gap-md flex-wrap-reverse">
+            <div className="flex items-center gap-md">
+              <FilterTabs<RunFilter> tabs={filterTabs} active={filter} onChange={setFilter} />
+              <div className="inline-flex items-center gap-xs bg-surface-container p-xs rounded-lg shrink-0">
+                <button
+                  onClick={() => setViewMode('cards')}
+                  className={`px-md py-xs rounded-md font-label-md text-label-sm transition-all ${
+                    viewMode === 'cards'
+                      ? 'bg-surface-container-lowest text-secondary shadow-sm'
+                      : 'text-on-surface-variant hover:text-on-surface'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">grid_view</span>
+                  Cards
+                </button>
+                <button
+                  onClick={() => setViewMode('list')}
+                  className={`px-md py-xs rounded-md font-label-md text-label-sm transition-all ${
+                    viewMode === 'list'
+                      ? 'bg-surface-container-lowest text-secondary shadow-sm'
+                      : 'text-on-surface-variant hover:text-on-surface'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">list</span>
+                  List
+                </button>
+              </div>
+            </div>
             <p className="text-label-sm text-on-surface-variant">
               Showing {filteredGroups.length} of {grouped.length}
             </p>
@@ -409,11 +481,61 @@ export function TesterDashboardPage() {
               description="Try a different filter to see more of your assigned runs."
             />
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-lg">
-              {filteredGroups.map((g) => (
-                <RunCard key={g.run.id} group={g} onOpen={handleOpen} />
-              ))}
-            </div>
+            viewMode === 'cards' ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-lg">
+                {filteredGroups.map((g) => (
+                  <RunCard key={g.run.id} group={g} onOpen={handleOpen} />
+                ))}
+              </div>
+            ) : (
+              <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-surface-container-low border-b border-outline-variant">
+                        <SortHeader sortKey="name">Run Name</SortHeader>
+                        <SortHeader sortKey="project">Project</SortHeader>
+                        <SortHeader sortKey="status">Status</SortHeader>
+                        <SortHeader sortKey="progress">Progress</SortHeader>
+                        <SortHeader sortKey="scenarios">Scenarios</SortHeader>
+                        <th className="px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-outline-variant/60">
+                      {sortedGroups.map((g) => {
+                        const { run, progress, completed, totalCases } = g;
+                        const runStatusVariant_ = runStatusVariant[run.status] ?? "neutral";
+                        const runStatusIcon = run.status === "completed" ? "check_circle" : run.status === "in_progress" ? "autorenew" : "event";
+                        const primaryAction = g.inProgress > 0 ? "Continue Testing" : g.notStarted > 0 ? "Start Testing" : "Review Results";
+                        return (
+                          <tr key={run.id} className="hover:bg-surface-container-low cursor-pointer" onClick={() => handleOpen(run.id)}>
+                            <td className="px-md py-sm"><p className="font-title-sm text-title-sm text-on-surface leading-snug">{run.name}</p></td>
+                            <td className="px-md py-sm"><p className="text-body-sm text-on-surface-variant">{run.project?.name ?? ""}</p></td>
+                            <td className="px-md py-sm">
+                              <StatusChip variant={runStatusVariant_} icon={runStatusIcon} size="sm">
+                                {run.status.replace(/_/g, " ")}
+                              </StatusChip>
+                            </td>
+                            <td className="px-md py-sm">
+                              <StatusChip variant={progressStatusVariant[progress]} size="sm">
+                                {completed}/{totalCases}
+                              </StatusChip>
+                            </td>
+                            <td className="px-md py-sm"><p className="text-body-sm text-on-surface-variant">{totalCases}</p></td>
+                            <td className="px-md py-sm text-right">
+                              <button onClick={(e) => { e.stopPropagation(); handleOpen(run.id); }} className="inline-flex items-center gap-xs px-md py-1.5 rounded-lg bg-primary text-on-primary text-label-sm font-label-md hover:opacity-90 transition-all">
+                                {primaryAction}
+                                <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
           )}
         </>
       )}

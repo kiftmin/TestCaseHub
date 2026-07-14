@@ -16,7 +16,7 @@ export { SlideOver } from "./slide-over";
 export { Dialog } from "./dialog";
 export { EmptyState } from "./empty-state";
 export { StatusChip } from "./status-chip";
-export { runStatusVariant, scenarioStatusVariant, caseStatusVariant, progressStatusVariant, type StatusVariant } from "./status-variants";
+export { runStatusVariant, scenarioStatusVariant, caseStatusVariant, progressStatusVariant, PRIORITY_BADGE_VARIANT, type StatusVariant } from "./status-variants";
 export { KpiCard } from "./kpi-card";
 export { FilterTabs, type FilterTab } from "./filter-tabs";
 export { PageHeader } from "./page-header";

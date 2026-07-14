@@ -32,3 +32,10 @@ export const progressStatusVariant: Record<string, StatusVariant> = {
   "In Progress": "warning",
   Completed: "success",
 };
+
+export const PRIORITY_BADGE_VARIANT: Record<string, "error" | "warning" | "neutral"> = {
+  Critical: "error",
+  High: "warning",
+  Medium: "warning",
+  Low: "neutral",
+};

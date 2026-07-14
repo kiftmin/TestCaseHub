@@ -11,6 +11,7 @@ import {
   StatusChip,
   Dialog,
   progressStatusVariant,
+  PRIORITY_BADGE_VARIANT,
   type FilterTab,
 } from "../components/ui";
 import type { TestRun, TestRunUseCase, TestCase, TestStep, Execution } from "../types/api";
@@ -86,13 +87,6 @@ function computeRunProgress(
    Status mapping helpers
    ──────────────────────────────────────────────────────────────────── */
 
-const PRIORITY_BADGE_VARIANT: Record<string, "error" | "warning" | "neutral"> = {
-  Critical: "error",
-  High: "warning",
-  Medium: "warning",
-  Low: "neutral",
-};
-
 const PRIORITY_STRIPE: Record<string, string> = {
   Critical: "border-l-error",
   High: "border-l-orange-500",
@@ -122,6 +116,7 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
   const [filter, setFilter] = useState<ScenarioFilter>("all");
   const [showSubmitDialog, setShowSubmitDialog] = useState(false);
   const queryClient = useQueryClient();
+  const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards'); // 'cards' by default
 
   useEffect(() => { document.title = "Scenarios | TestCaseHub"; }, []);
 
@@ -336,7 +331,33 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
       ) : (
         <>
           <div className="flex items-center justify-between gap-md flex-wrap">
-            <FilterTabs<ScenarioFilter> tabs={filterTabs} active={filter} onChange={setFilter} />
+            <div className="flex items-center gap-md">
+              <FilterTabs<ScenarioFilter> tabs={filterTabs} active={filter} onChange={setFilter} />
+              <div className="inline-flex items-center gap-xs bg-surface-container p-xs rounded-lg shrink-0">
+                <button
+                  onClick={() => setViewMode('cards')}
+                  className={`px-md py-xs rounded-md font-label-md text-label-sm transition-all ${
+                    viewMode === 'cards'
+                      ? 'bg-surface-container-lowest text-secondary shadow-sm'
+                      : 'text-on-surface-variant hover:text-on-surface'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">grid_view</span>
+                  Cards
+                </button>
+                <button
+                  onClick={() => setViewMode('list')}
+                  className={`px-md py-xs rounded-md font-label-md text-label-sm transition-all ${
+                    viewMode === 'list'
+                      ? 'bg-surface-container-lowest text-secondary shadow-sm'
+                      : 'text-on-surface-variant hover:text-on-surface'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">list</span>
+                  List
+                </button>
+              </div>
+            </div>
             <p className="text-label-sm text-on-surface-variant">
               Showing {filtered.length} of {useCases.length}
             </p>
@@ -349,16 +370,104 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
               description="Try a different filter to see more scenarios."
             />
           ) : (
-            <div className="space-y-sm">
-              {filtered.map((uc) => (
-                <ScenarioRow
-                  key={uc.id}
-                  useCase={uc}
-                  progress={scenarioProgresses.get(uc.use_case_id) ?? "Not Started"}
-                  onOpen={() => navigate(`/tester/run/${testRunId}/scenario/${uc.use_case_id}`)}
-                />
-              ))}
-            </div>
+            viewMode === 'cards' ? (
+              <div className="space-y-sm">
+                {filtered.map((uc) => (
+                  <ScenarioRow
+                    key={uc.id}
+                    useCase={uc}
+                    progress={scenarioProgresses.get(uc.use_case_id) ?? "Not Started"}
+                    onOpen={() => navigate(`/tester/run/${testRunId}/scenario/${uc.use_case_id}`)}
+                  />
+                ))}
+              </div>
+            ) : ( // List view
+              <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-surface-container-low border-b border-outline-variant">
+                        <th className="px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider">Code</th>
+                        <th className="px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider">Name</th>
+                        <th className="px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider">Priority</th>
+                        <th className="px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider">Category</th>
+                        <th className="px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider">Progress</th>
+                        <th className="px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-outline-variant/60">
+                      {filtered.map((uc) => {
+                        const progress = scenarioProgresses.get(uc.use_case_id) ?? "Not Started";
+                        const priority = uc.useCase?.priority;
+                        const actionLabel = progress === "Completed" ? "Review" : progress === "In Progress" ? "Continue" : "Start";
+                        const actionIcon = progress === "Completed" ? "visibility" : progress === "In Progress" ? "play_arrow" : "arrow_forward";
+                        return (
+                          <tr key={uc.id} className="hover:bg-surface-container-low cursor-pointer" onClick={() => navigate(`/tester/run/${testRunId}/scenario/${uc.use_case_id}`)}>
+                            <td className="px-md py-sm whitespace-nowrap">
+                              <span className="font-label-md text-label-md text-secondary font-bold">
+                                {uc.useCase?.code ?? `#${uc.use_case_id}`}
+                              </span>
+                            </td>
+                            <td className="px-md py-sm">
+                              <p className="font-title-sm text-title-sm text-on-surface leading-snug">
+                                {uc.useCase?.name ?? `Scenario #${uc.use_case_id}`}
+                              </p>
+                            </td>
+                            <td className="px-md py-sm">
+                              {priority && (
+                                <StatusChip variant={PRIORITY_BADGE_VARIANT[priority] ?? "neutral"} size="sm">
+                                  {priority}
+                                </StatusChip>
+                              )}
+                            </td>
+                            <td className="px-md py-sm">
+                              {uc.useCase?.category && (
+                                <span className="text-[10px] text-on-surface-variant bg-surface-container-high px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
+                                  {uc.useCase.category}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-md py-sm">
+                              <StatusChip
+                                variant={progressStatusVariant[progress] ?? "neutral"}
+                                icon={PROGRESS_ICONS[progress]}
+                                size="sm"
+                              >
+                                {PROGRESS_LABELS[progress]}
+                              </StatusChip>
+                              {uc.tester_sign_off && (
+                                <span className="ml-1 inline-flex items-center gap-0.5 text-gray-400 text-label-sm" title="Already submitted">
+                                  <span className="material-symbols-outlined text-[14px]">lock</span>
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-md py-sm text-right">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); navigate(`/tester/run/${testRunId}/scenario/${uc.use_case_id}`); }}
+                                className="inline-flex items-center gap-xs px-md py-1.5 rounded-lg bg-primary text-on-primary text-label-sm font-label-md hover:opacity-90 transition-all"
+                              >
+                                {actionLabel}
+                                <span className="material-symbols-outlined text-[16px]">{actionIcon}</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {filtered.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="p-lg text-center text-on-surface-variant font-body-sm">
+                            <div className="flex flex-col items-center gap-2 py-lg">
+                              <span className="material-symbols-outlined text-3xl text-outline-variant">search_off</span>
+                              <p className="text-on-surface-variant">No scenarios match the current filters</p>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
           )}
         </>
       )}

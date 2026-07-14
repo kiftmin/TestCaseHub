@@ -238,9 +238,13 @@ router.get("/recent-activity", async (req: AuthenticatedRequest, res, next) => {
 });
 
 // GET /api/dashboard/developer/:userId/defects
-router.get("/developer/:userId/defects", async (req, res, next) => {
+router.get("/developer/:userId/defects", async (req: AuthenticatedRequest, res, next) => {
   try {
     const userId = Number(req.params.userId);
+    if (req.user!.role !== "ADMIN" && req.user!.userId !== userId) {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
 
     const assignedDefects = await db.query.defects.findMany({
       where: eq(schema.defects.assigned_to_user_id, userId),

@@ -888,20 +888,33 @@ router.patch("/defect-retests/:retestId", async (req: AuthenticatedRequest, res,
       .where(eq(schema.defectRetests.id, retestId));
 
     if (data.retestResult === "failed") {
-      const newRegressionIndex = (defect.regression_index ?? 0) + 1;
-      await db.update(schema.defects)
-        .set({ status: "REGRESSED", regression_index: newRegressionIndex, updated_at: new Date() })
-        .where(eq(schema.defects.id, retest.defect_id));
+      const txn = await db.transaction(async (tx) => {
+        const [locked] = await tx
+          .select()
+          .from(schema.defects)
+          .where(eq(schema.defects.id, retest.defect_id))
+          .for("update");
+        if (!locked) return null;
+
+        const newRegressionIndex = (locked.regression_index ?? 0) + 1;
+        await tx.update(schema.defects)
+          .set({ status: "REGRESSED", regression_index: newRegressionIndex, updated_at: new Date() })
+          .where(eq(schema.defects.id, retest.defect_id));
+
+        return { oldStatus: locked.status };
+      });
+
+      if (!txn) { res.status(404).json({ message: "Defect not found" }); return; }
 
       await logAudit({
         entityType: "defect",
         entityId: retest.defect_id,
         changedByUserId: req.user!.userId,
-        fromStatus: oldDefectStatus,
+        fromStatus: txn.oldStatus,
         toStatus: "REGRESSED",
         reason: "Retest failed: " + (data.retestNotes || "No notes"),
       });
-      await logSystemNote(retest.defect_id, oldDefectStatus, "REGRESSED", req.user!.userId, "Retest failed: " + (data.retestNotes || "No notes"));
+      await logSystemNote(retest.defect_id, txn.oldStatus, "REGRESSED", req.user!.userId, "Retest failed: " + (data.retestNotes || "No notes"));
     } else if (data.retestResult === "passed") {
       await db.update(schema.defects)
         .set({ status: "CLOSED", regression_index: 0, updated_at: new Date(), resolved_at: new Date() })
@@ -1066,65 +1079,77 @@ router.patch("/defects/:defectId/reject-verification", async (req: Authenticated
     const allowed = await checkProjectRole(req, projectId, ["BUSINESS_OWNER", "TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Only business owner or test lead can reject verification" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    const txn = await db.transaction(async (tx) => {
+      const [defect] = await tx
+        .select()
+        .from(schema.defects)
+        .where(eq(schema.defects.id, defectId))
+        .for("update");
+      if (!defect) return { error: { status: 404, message: "Not found" } };
 
-    if (defect.status !== "READY_FOR_VERIFICATION") {
-      res.status(400).json({ message: "Defect is not in READY_FOR_VERIFICATION state" });
-      return;
-    }
+      if (defect.status !== "READY_FOR_VERIFICATION") {
+        return { error: { status: 400, message: "Defect is not in READY_FOR_VERIFICATION state" } };
+      }
 
-    const oldStatus = defect.status;
-    const nextStatus = defect.assigned_to_user_id
-      ? "ASSIGNED"
-      : await getPreviousStatus(defectId);
+      const oldStatus = defect.status;
+      const nextStatus = defect.assigned_to_user_id
+        ? "ASSIGNED"
+        : await getPreviousStatus(defectId);
 
-    const newRegressionIndex = (defect.regression_index ?? 0) + 1;
+      const newRegressionIndex = (defect.regression_index ?? 0) + 1;
 
-    // Append to rejection_log as JSON array
-    let rejections: Array<{ at: string; by: number; reason: string; type?: string }> = [];
-    if (defect.rejection_log) {
-      try {
-        const parsed = JSON.parse(defect.rejection_log);
-        if (Array.isArray(parsed.rejections)) {
-          rejections = parsed.rejections;
-        }
-      } catch { /* start fresh */ }
-    }
-    rejections.push({
-      at: new Date().toISOString(),
-      by: req.user!.userId,
-      reason: data.reason,
-      ...(data.rejectionType ? { type: data.rejectionType } : {}),
+      // Append to rejection_log as JSON array
+      let rejections: Array<{ at: string; by: number; reason: string; type?: string }> = [];
+      if (defect.rejection_log) {
+        try {
+          const parsed = JSON.parse(defect.rejection_log);
+          if (Array.isArray(parsed.rejections)) {
+            rejections = parsed.rejections;
+          }
+        } catch { /* start fresh */ }
+      }
+      rejections.push({
+        at: new Date().toISOString(),
+        by: req.user!.userId,
+        reason: data.reason,
+        ...(data.rejectionType ? { type: data.rejectionType } : {}),
+      });
+
+      const rejectionLog = JSON.stringify({ rejections });
+
+      const [updated] = await tx.update(schema.defects)
+        .set({
+          status: nextStatus,
+          regression_index: newRegressionIndex,
+          rejection_log: rejectionLog,
+          updated_at: new Date(),
+        })
+        .where(eq(schema.defects.id, defectId))
+        .returning();
+
+      return { ok: true, updated, oldStatus, nextStatus, reason: data.reason };
     });
 
-    const rejectionLog = JSON.stringify({ rejections });
-
-    const [updated] = await db.update(schema.defects)
-      .set({
-        status: nextStatus,
-        regression_index: newRegressionIndex,
-        rejection_log: rejectionLog,
-        updated_at: new Date(),
-      })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
+    if ("error" in txn) {
+      res.status(txn.error.status).json({ message: txn.error.message });
+      return;
+    }
 
     await db.delete(schema.defectRetests)
       .where(eq(schema.defectRetests.defect_id, defectId));
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: nextStatus, reason: data.reason });
-    await logSystemNote(defectId, oldStatus, nextStatus, req.user!.userId, data.reason);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: txn.oldStatus, toStatus: txn.nextStatus, reason: data.reason });
+    await logSystemNote(defectId, txn.oldStatus, txn.nextStatus, req.user!.userId, data.reason);
 
     // TODO: Notify developer (in-app notification + optional email)
     // To be implemented when notification infrastructure is available
 
     res.json({
-      id: updated.id,
-      status: updated.status,
-      assigned_to_user_id: updated.assigned_to_user_id,
-      updated_at: updated.updated_at,
-      regression_index: updated.regression_index,
+      id: txn.updated.id,
+      status: txn.updated.status,
+      assigned_to_user_id: txn.updated.assigned_to_user_id,
+      updated_at: txn.updated.updated_at,
+      regression_index: txn.updated.regression_index,
     });
   } catch (err) { next(err); }
 });
@@ -1148,73 +1173,85 @@ router.patch("/defects/:defectId/regress", async (req: AuthenticatedRequest, res
     const allowed = await checkProjectRole(req, projectId, ["DEVELOPER", "TEST_LEAD", "BUSINESS_OWNER"]);
     if (!allowed) { res.status(403).json({ message: "Insufficient permissions to regress defect" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    const txn = await db.transaction(async (tx) => {
+      const [defect] = await tx
+        .select()
+        .from(schema.defects)
+        .where(eq(schema.defects.id, defectId))
+        .for("update");
+      if (!defect) return { error: { status: 404, message: "Not found" } };
 
-    if (defect.status !== "CLOSED" && defect.status !== "PASSED_BY_AGREEMENT") {
-      res.status(400).json({ message: "Defect is not in a closeable state (not CLOSED)" });
+      if (defect.status !== "CLOSED" && defect.status !== "PASSED_BY_AGREEMENT") {
+        return { error: { status: 400, message: "Defect is not in a closeable state (not CLOSED)" } };
+      }
+
+      const oldStatus = defect.status;
+      const newRegressionIndex = (defect.regression_index ?? 0) + 1;
+
+      // Append to rejection_log as JSON array under regressions key
+      let regressions: Array<{ at: string; by: number; reason: string; type: string; customerReference?: string }> = [];
+      if (defect.rejection_log) {
+        try {
+          const parsed = JSON.parse(defect.rejection_log);
+          if (Array.isArray(parsed.regressions)) {
+            regressions = parsed.regressions;
+          }
+        } catch { /* start fresh */ }
+      }
+      regressions.push({
+        at: new Date().toISOString(),
+        by: req.user!.userId,
+        reason: data.reason,
+        type: data.incidentType,
+        ...(data.customerReference ? { customerReference: data.customerReference } : {}),
+      });
+
+      const rejectionLog = JSON.stringify({ ...(defect.rejection_log ? (() => { try { return JSON.parse(defect.rejection_log); } catch { return {}; } })() : {}), regressions });
+
+      // Set priority to P1 if it was lower
+      const currentPriority = defect.priority ?? "P4";
+      const newPriority = (currentPriority === "P1" || currentPriority === "P2") ? currentPriority : "P1";
+
+      const updateData: Record<string, unknown> = {
+        status: "REGRESSED",
+        regression_index: newRegressionIndex,
+        rejection_log: rejectionLog,
+        priority: newPriority,
+        updated_at: new Date(),
+      };
+
+      const [updated] = await tx.update(schema.defects)
+        .set(updateData)
+        .where(eq(schema.defects.id, defectId))
+        .returning();
+
+      return { ok: true, updated, oldStatus, regressionNote: [
+        `Regression reported: ${data.reason}`,
+        `Incident type: ${data.incidentType}`,
+        data.customerReference ? `Customer reference: ${data.customerReference}` : null,
+        `Severity impact: ${data.severity ?? "Not specified"}`,
+      ].filter(Boolean).join("\n") };
+    });
+
+    if ("error" in txn) {
+      res.status(txn.error.status).json({ message: txn.error.message });
       return;
     }
 
-    const oldStatus = defect.status;
-    const newRegressionIndex = (defect.regression_index ?? 0) + 1;
-
-    // Append to rejection_log as JSON array under regressions key
-    let regressions: Array<{ at: string; by: number; reason: string; type: string; customerReference?: string }> = [];
-    if (defect.rejection_log) {
-      try {
-        const parsed = JSON.parse(defect.rejection_log);
-        if (Array.isArray(parsed.regressions)) {
-          regressions = parsed.regressions;
-        }
-      } catch { /* start fresh */ }
-    }
-    regressions.push({
-      at: new Date().toISOString(),
-      by: req.user!.userId,
-      reason: data.reason,
-      type: data.incidentType,
-      ...(data.customerReference ? { customerReference: data.customerReference } : {}),
-    });
-
-    const rejectionLog = JSON.stringify({ ...(defect.rejection_log ? (() => { try { return JSON.parse(defect.rejection_log); } catch { return {}; } })() : {}), regressions });
-
-    // Set priority to P1 if it was lower
-    const currentPriority = defect.priority ?? "P4";
-    const newPriority = (currentPriority === "P1" || currentPriority === "P2") ? currentPriority : "P1";
-
-    const updateData: Record<string, unknown> = {
-      status: "REGRESSED",
-      regression_index: newRegressionIndex,
-      rejection_log: rejectionLog,
-      priority: newPriority,
-      updated_at: new Date(),
-    };
-
-    const [updated] = await db.update(schema.defects)
-      .set(updateData)
-      .where(eq(schema.defects.id, defectId))
-      .returning();
-
     // Create a comment/note with full regression details
-    const regressionNote = [
-      `Regression reported: ${data.reason}`,
-      `Incident type: ${data.incidentType}`,
-      data.customerReference ? `Customer reference: ${data.customerReference}` : null,
-      `Severity impact: ${data.severity ?? "Not specified"}`,
-    ].filter(Boolean).join("\n");
+    const regressionNote = txn.regressionNote;
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "REGRESSED", reason: data.reason });
-    await logSystemNote(defectId, oldStatus, "REGRESSED", req.user!.userId, regressionNote);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: txn.oldStatus, toStatus: "REGRESSED", reason: data.reason });
+    await logSystemNote(defectId, txn.oldStatus, "REGRESSED", req.user!.userId, txn.regressionNote);
 
     // TODO: Notify PROJECT_LEAD and TEST_LEAD urgently (escalation required)
     // To be implemented when notification infrastructure is available
 
     res.json({
-      id: updated.id,
-      status: updated.status,
-      updated_at: updated.updated_at,
-      regression_index: updated.regression_index,
+      id: txn.updated.id,
+      status: txn.updated.status,
+      updated_at: txn.updated.updated_at,
+      regression_index: txn.updated.regression_index,
     });
   } catch (err) { next(err); }
 });

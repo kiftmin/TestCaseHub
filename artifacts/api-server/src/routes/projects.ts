@@ -472,8 +472,6 @@ router.get("/code/:projectCode", async (req: AuthenticatedRequest, res, next) =>
 router.post("/:projectId/sign-off", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
-    const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD", "BUSINESS_OWNER"]);
-    if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
     const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
     if (!project) { res.status(404).json({ message: "Project not found" }); return; }
@@ -481,18 +479,16 @@ router.post("/:projectId/sign-off", async (req: AuthenticatedRequest, res, next)
     let signOffData: any = {};
     try { signOffData = JSON.parse(project.sign_off_data || "{}"); } catch { signOffData = {}; }
 
-    // Fix sign-off role key assignment (spec §8.15)
-    // ADMIN or TEST_LEAD → "testLead", BUSINESS_OWNER → "businessOwner"
-    const isAdminOrTestLead = req.user!.role === "ADMIN" || (await checkProjectRole(req, projectId, ["TEST_LEAD"]));
-    const isBusinessOwner = await checkProjectRole(req, projectId, ["BUSINESS_OWNER"]);
+    const isTestLead = await checkProjectRole(req, projectId, ["TEST_LEAD"], { allowAdminBypass: false });
+    const isBusinessOwner = await checkProjectRole(req, projectId, ["BUSINESS_OWNER"], { allowAdminBypass: false });
 
     let key: string;
-    if (isAdminOrTestLead) {
+    if (isTestLead) {
       key = "testLead";
     } else if (isBusinessOwner) {
       key = "businessOwner";
     } else {
-      res.status(403).json({ message: "Forbidden" });
+      res.status(403).json({ message: "Only the assigned Test Lead or Business Owner can sign this certificate." });
       return;
     }
 

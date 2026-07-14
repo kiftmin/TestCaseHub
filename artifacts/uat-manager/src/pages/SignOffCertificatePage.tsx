@@ -42,8 +42,9 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
     if (signOff?.sign_off_data) signOffData = JSON.parse(signOff.sign_off_data);
   } catch { /* ignore */ }
 
-  const canSignTL = role === "TEST_LEAD" || user?.role === "ADMIN";
-  const canSignBO = role === "BUSINESS_OWNER" || user?.role === "ADMIN";
+  const isAdminViewer = user?.role === "ADMIN";
+  const canSignTL = role === "TEST_LEAD";
+  const canSignBO = role === "BUSINESS_OWNER";
 
   const tlSigned = !!signOffData.testLead;
   const boSigned = !!signOffData.businessOwner;
@@ -302,6 +303,8 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
                 onSave={(data) => signMut.mutate(data)}
                 loading={signMut.isPending}
               />
+            ) : isAdminViewer ? (
+              <p className="text-body-sm text-on-surface-variant italic">Only the assigned Test Lead can sign this certificate.</p>
             ) : (
               <p className="text-body-sm text-on-surface-variant italic">Awaiting Test Lead signature</p>
             )}
@@ -346,6 +349,8 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
                 onSave={(data) => signMut.mutate(data)}
                 loading={signMut.isPending}
               />
+            ) : isAdminViewer ? (
+              <p className="text-body-sm text-on-surface-variant italic">Only the assigned Business Owner can sign this certificate.</p>
             ) : (
               <p className="text-body-sm text-on-surface-variant italic">Awaiting Business Owner signature</p>
             )}

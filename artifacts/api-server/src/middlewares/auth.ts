@@ -55,10 +55,12 @@ export function authorize(roles: string[]) {
 export async function checkProjectRole(
   req: AuthenticatedRequest,
   projectId: number,
-  allowedRoles: string[]
+  allowedRoles: string[],
+  options: { allowAdminBypass?: boolean } = {},
 ): Promise<boolean> {
+  const { allowAdminBypass = true } = options;
   if (!req.user) return false;
-  if (req.user.role === "ADMIN") return true;
+  if (allowAdminBypass && req.user.role === "ADMIN") return true;
 
   const assignment = await db.query.projectAssignments.findFirst({
     where: (pa, { and }) =>

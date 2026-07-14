@@ -970,7 +970,7 @@ function DefectRow({
   const isPendingBiz = defect.status === "PENDING_BIZ_ACCEPTANCE";
   const isRegressedStatus = defect.status === "REGRESSED";
 
-  const canRetestFromAnyState = canManage && !isResolved && !isClosed && !isPendingBiz;
+  const canRetestFromAnyState = canManage && !isResolved && !isClosed && !isPendingBiz && !isReady;
 
   const invalidateProject = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["project-defects"] });

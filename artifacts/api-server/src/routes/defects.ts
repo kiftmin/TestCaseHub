@@ -325,7 +325,7 @@ router.patch("/defects/:defectId/flag-retest-from-new", async (req: Authenticate
 
     const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    const blockedStatuses = ["CLOSED", "PASSED_BY_AGREEMENT", "PENDING_BIZ_ACCEPTANCE", "RESOLVED_DEV"];
+    const blockedStatuses = ["CLOSED", "PASSED_BY_AGREEMENT", "PENDING_BIZ_ACCEPTANCE", "RESOLVED_DEV", "READY_FOR_VERIFICATION"];
     if (blockedStatuses.includes(defect.status)) {
       res.status(409).json({ message: "Defect must pass QA review before it can be sent for verification. A resolved (but not QA-reviewed) defect cannot be retested directly." });
       return;

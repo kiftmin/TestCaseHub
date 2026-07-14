@@ -8,6 +8,20 @@ import { logAudit, logSystemNote } from "../utils/project.js";
 
 const router = express.Router();
 
+/** Look up the status a defect held immediately before it entered READY_FOR_VERIFICATION. */
+async function getPreviousStatus(defectId: number): Promise<string> {
+  const prevLog = await db.query.statusAuditLog.findFirst({
+    where: and(
+      eq(schema.statusAuditLog.entity_id, defectId),
+      eq(schema.statusAuditLog.entity_type, "defect"),
+      eq(schema.statusAuditLog.to_status, "READY_FOR_VERIFICATION"),
+    ),
+    orderBy: [desc(schema.statusAuditLog.changed_at)],
+    columns: { from_status: true },
+  });
+  return prevLog?.from_status ?? "TRIAGED";
+}
+
 // ---------------------------------------------------------------------------
 // GET endpoints (open to all authenticated)
 // ---------------------------------------------------------------------------
@@ -407,7 +421,7 @@ router.patch("/defects/:defectId/submit-for-business-decision", async (req: Auth
 
 
 // PATCH /defects/:defectId/quick-verify — TEST_LEAD | TESTER
-// READY_FOR_VERIFICATION ────────────────────────────────────> CLOSED (pass) | REGRESSED (fail + regression bump)
+// READY_FOR_VERIFICATION ─────────────> CLOSED (pass) | REGRESSED (fail, if assigned) | previous status (fail, if unassigned)
 // Auto-generates a hidden verification test run, logs a completed Retest record, and immediately transitions status.
 router.patch("/defects/:defectId/quick-verify", async (req: AuthenticatedRequest, res, next) => {
   try {
@@ -507,17 +521,22 @@ router.patch("/defects/:defectId/quick-verify", async (req: AuthenticatedRequest
       await logSystemNote(defectId, oldStatus, "CLOSED", req.user!.userId, `Quick verification passed. ${data.notes ?? ""}`);
       res.json({ defect: updated, verificationRun, retestId: retestRecord.id });
     } else {
+      const nextStatus = defect.assigned_to_user_id
+        ? "REGRESSED"
+        : await getPreviousStatus(defectId);
+
+      const updateData: Record<string, any> = { status: nextStatus, updated_at: new Date() };
+      if (nextStatus === "REGRESSED") {
+        updateData.regression_index = sql`${schema.defects.regression_index} + 1`;
+      }
+
       const [updated] = await db.update(schema.defects)
-        .set({
-          status: "REGRESSED",
-          regression_index: sql`${schema.defects.regression_index} + 1`,
-          updated_at: new Date(),
-        })
+        .set(updateData)
         .where(eq(schema.defects.id, defectId))
         .returning();
 
-      await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "REGRESSED", reason: data.notes ?? "Quick verify failed" });
-      await logSystemNote(defectId, oldStatus, "REGRESSED", req.user!.userId, `Quick verification failed. Regression counter incremented. ${data.notes ?? ""}`);
+      await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: nextStatus, reason: data.notes ?? "Quick verify failed" });
+      await logSystemNote(defectId, oldStatus, nextStatus, req.user!.userId, `Quick verification failed. ${data.notes ?? ""}`.trim());
       res.json({ defect: updated, verificationRun, retestId: retestRecord.id });
     }
   } catch (err) { next(err); }
@@ -988,10 +1007,8 @@ router.patch("/defects/:defectId/resume-work", async (req: AuthenticatedRequest,
 });
 
 // PATCH /defects/:defectId/reschedule-retest — TEST_LEAD only
-// READY_FOR_VERIFICATION ──────────────────────────────────────> QA_PASSED
+// READY_FOR_VERIFICATION ─────────────> previous status (from audit log)
 // Level 1 rollback (quick undo of "sent for verification", no approval).
-// Returns to QA_PASSED (not RESOLVED_DEV): the defect already passed QA, so it
-// should not have to go through the QA gate again — only the verification send is undone.
 router.patch("/defects/:defectId/reschedule-retest", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
@@ -1012,16 +1029,18 @@ router.patch("/defects/:defectId/reschedule-retest", async (req: AuthenticatedRe
     }
 
     const oldStatus = defect.status;
+    const nextStatus = await getPreviousStatus(defectId);
+
     const [updated] = await db.update(schema.defects)
-      .set({ status: "QA_PASSED", updated_at: new Date() })
+      .set({ status: nextStatus, updated_at: new Date() })
       .where(eq(schema.defects.id, defectId))
       .returning();
 
     await db.delete(schema.defectRetests)
       .where(eq(schema.defectRetests.defect_id, defectId));
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "QA_PASSED", reason: data.reason });
-    await logSystemNote(defectId, oldStatus, "QA_PASSED", req.user!.userId, data.reason);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: nextStatus, reason: data.reason });
+    await logSystemNote(defectId, oldStatus, nextStatus, req.user!.userId, data.reason);
     res.json({
       id: updated.id,
       status: updated.status,
@@ -1031,7 +1050,7 @@ router.patch("/defects/:defectId/reschedule-retest", async (req: AuthenticatedRe
 });
 
 // PATCH /defects/:defectId/reject-verification — BUSINESS_OWNER or TEST_LEAD
-// READY_FOR_VERIFICATION ──────────────────────────────────────> ASSIGNED
+// READY_FOR_VERIFICATION ─────────────> ASSIGNED (if developer assigned) | previous status (if unassigned)
 // Level 2 rollback (escalation, requires reason + analytics)
 router.patch("/defects/:defectId/reject-verification", async (req: AuthenticatedRequest, res, next) => {
   try {
@@ -1055,12 +1074,11 @@ router.patch("/defects/:defectId/reject-verification", async (req: Authenticated
       return;
     }
 
-    if (!defect.assigned_to_user_id) {
-      res.status(422).json({ message: "Defect has no assigned developer. Assign a developer before rejecting verification." });
-      return;
-    }
-
     const oldStatus = defect.status;
+    const nextStatus = defect.assigned_to_user_id
+      ? "ASSIGNED"
+      : await getPreviousStatus(defectId);
+
     const newRegressionIndex = (defect.regression_index ?? 0) + 1;
 
     // Append to rejection_log as JSON array
@@ -1084,7 +1102,7 @@ router.patch("/defects/:defectId/reject-verification", async (req: Authenticated
 
     const [updated] = await db.update(schema.defects)
       .set({
-        status: "ASSIGNED",
+        status: nextStatus,
         regression_index: newRegressionIndex,
         rejection_log: rejectionLog,
         updated_at: new Date(),
@@ -1095,8 +1113,8 @@ router.patch("/defects/:defectId/reject-verification", async (req: Authenticated
     await db.delete(schema.defectRetests)
       .where(eq(schema.defectRetests.defect_id, defectId));
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "ASSIGNED", reason: data.reason });
-    await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, data.reason);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: nextStatus, reason: data.reason });
+    await logSystemNote(defectId, oldStatus, nextStatus, req.user!.userId, data.reason);
 
     // TODO: Notify developer (in-app notification + optional email)
     // To be implemented when notification infrastructure is available

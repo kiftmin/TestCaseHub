@@ -1441,22 +1441,30 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">approval</span>
               </button>
             )}
-            {/* Business Owner | TEST_LEAD: Reject (READY_FOR_VERIFICATION → ASSIGNED) */}
+            {/* Business Owner | TEST_LEAD: Reject (READY_FOR_VERIFICATION → ASSIGNED | previous status) */}
             {(isBusinessOwner || canManage) && isReady && (
               <button
                 onClick={() => setRejectOpen(true)}
                 className="action-btn action-btn-red"
-                title="Reject — Escalate to ASSIGNED (regression +1, formal rejection, retest traces cleared)"
+                title={
+                  defect.assigned_to_user_id
+                    ? "Reject — Escalate to ASSIGNED (regression +1, formal rejection, retest traces cleared)"
+                    : "Reject — Return to previous status (formal rejection, retest traces cleared)"
+                }
               >
                 <span className="material-symbols-outlined text-sm">thumb_down</span>
               </button>
             )}
-            {/* Reschedule Retest (READY_FOR_VERIFICATION → QA_PASSED) */}
+            {/* Reschedule Retest (READY_FOR_VERIFICATION → previous status) */}
             {canManage && isReady && (
               <button
                 onClick={() => setRescheduleOpen(true)}
                 className="action-btn action-btn-orange"
-                title="Reschedule — Soft return to QA_PASSED (no regression penalty; QA review does not need to be redone)"
+                title={
+                  defect.assigned_to_user_id
+                    ? "Reschedule — Soft return to QA_PASSED (no regression penalty; QA review does not need to be redone)"
+                    : "Reschedule — Soft return to previous status (no regression penalty)"
+                }
               >
                 <span className="material-symbols-outlined text-sm">schedule</span>
               </button>
@@ -1921,8 +1929,12 @@ function DefectRow({
           <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-lg p-md mb-sm">
             <span className="material-symbols-outlined text-orange-700 text-xl flex-shrink-0">schedule</span>
             <p className="font-body-sm text-orange-900">
-              Level 1 rollback — sends the defect back to <strong>QA_PASSED</strong> without a regression penalty.
-              The developer can make adjustments and re-submit. Use this when the fix mostly works but needs minor changes.
+              Level 1 rollback — sends the defect back to{' '}
+              <strong>{defect.assigned_to_user_id ? "QA_PASSED" : "its previous status"}</strong>
+              {' '}without a regression penalty.
+              {defect.assigned_to_user_id
+                ? " The developer can make adjustments and re-submit. Use this when the fix mostly works but needs minor changes."
+                : " The defect can be reviewed, assigned, and re-accelerated once ready."}
             </p>
           </div>
           <SimpleReasonForm

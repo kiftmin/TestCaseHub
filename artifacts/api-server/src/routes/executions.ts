@@ -190,15 +190,32 @@ router.post(
         return;
       }
 
-      // Guard: Must be assigned as tester to this scenario
+      // Guard: Must have project access (TESTER or higher)
       const testerAllowed = await checkProjectRole(req, testRun.project_id, ["TESTER", "TEST_LEAD"]);
       if (!testerAllowed) {
-        res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
+        res.status(403).json({ message: "Forbidden — only TESTER role or higher can view this test case" });
         return;
       }
+
       const assigned = await isAssignedTester(testRunId, testCaseId, req.user!.userId);
+
+      // Check for existing execution (works for both assigned and unassigned)
+      const existingExecution = await db.query.executions.findFirst({
+        where: and(
+          eq(schema.executions.test_run_id, testRunId),
+          eq(schema.executions.test_case_id, testCaseId),
+        ),
+        with: { stepResults: true },
+      });
+
+      // Not assigned — read-only view
       if (!assigned) {
-        res.status(403).json({ message: "Forbidden — you are not assigned to this scenario" });
+        if (existingExecution) {
+          res.json({ ...existingExecution, resumed: true });
+          return;
+        }
+        // No existing execution — return read-only mode
+        res.json({ readOnly: true, message: "Viewing in read-only mode — you are not assigned to this scenario" });
         return;
       }
 
@@ -226,13 +243,6 @@ router.post(
       }
 
       // Allow re-execution: return existing execution if found
-      const existingExecution = await db.query.executions.findFirst({
-        where: and(
-          eq(schema.executions.test_run_id, testRunId),
-          eq(schema.executions.test_case_id, testCaseId),
-        ),
-        with: { stepResults: true },
-      });
       if (existingExecution) {
         res.json({ ...existingExecution, resumed: true });
         return;

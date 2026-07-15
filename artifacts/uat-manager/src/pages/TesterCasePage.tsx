@@ -216,10 +216,14 @@ function ExecutionEngine({
       const run = await customFetch<{ executions?: Execution[] }>(`/test-runs/${testRunId}`);
       const existing = run.executions?.find((e) => e.test_case_id === testCaseId);
       if (existing) return existing;
-      return customFetch<Execution>(`/test-runs/${testRunId}/test-cases/${testCaseId}/execute`, {
+      const result = await customFetch<Execution | { readOnly: boolean }>(`/test-runs/${testRunId}/test-cases/${testCaseId}/execute`, {
         method: "POST",
         body: JSON.stringify({ tester_id: user!.userId, tester_name: user!.username }),
       });
+      if (result && typeof result === "object" && "readOnly" in result && (result as any).readOnly === true) {
+        return undefined;
+      }
+      return result as Execution;
     },
     enabled: !!testCaseId && !!user,
   });

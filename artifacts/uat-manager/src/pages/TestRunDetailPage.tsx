@@ -925,6 +925,7 @@ function ExecutionModal({
   const [proofImages, setProofImages] = useState<Record<number, string>>({});
   const [initialLoading, setInitialLoading] = useState(true);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [readOnlyOverride, setReadOnlyOverride] = useState(false);
 
   const handleClose = useCallback(() => {
     executionSessionCache.delete(testCase.id);
@@ -988,11 +989,28 @@ function ExecutionModal({
         const user = getStoredUser();
         if (!user) { toast.error("User not found"); setInitialLoading(false); return; }
 
-        const created = await customFetch<Execution>(`/test-runs/${testRunId}/test-cases/${testCase.id}/execute`, {
+        const result = await customFetch<Execution | { readOnly: boolean; message: string }>(`/test-runs/${testRunId}/test-cases/${testCase.id}/execute`, {
           method: "POST",
           body: JSON.stringify({ tester_id: user.userId }),
         });
-        if (!cancelled) setExecution(created);
+        if (!cancelled) {
+          if (result && typeof result === "object" && "readOnly" in result && (result as any).readOnly === true) {
+            setReadOnlyOverride(true);
+            setInitialLoading(false);
+            return;
+          }
+          const exec = result as Execution;
+          setExecution(exec);
+          if (exec.stepResults) {
+            const map: Record<number, { passed: boolean | null; actual_result: string; comments: string }> = {};
+            [...exec.stepResults].sort((a, b) => a.id - b.id).forEach((sr) => {
+              map[sr.step_id] = { passed: sr.passed, actual_result: sr.actual_result ?? "", comments: sr.comments ?? "" };
+            });
+            setResults(map);
+          }
+          if (exec.overall_result) setOverallResult(exec.overall_result);
+          if (exec.notes) setTesterNotes(exec.notes);
+        }
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
         console.log(`[exec] initExec error: "${errMsg}"`);
@@ -1287,6 +1305,8 @@ function ConfirmDialog({
   );
 }
 
+  const effectiveReadOnly = readOnly || readOnlyOverride;
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={handleClose}
@@ -1369,7 +1389,7 @@ function ConfirmDialog({
             }
             return (
               <div className="contents">
-              {readOnly && !execution && totalSteps > 0 && (
+              {effectiveReadOnly && !execution && totalSteps > 0 && (
                 <div className="mb-md bg-surface-container-high border border-outline-variant rounded-lg p-md flex items-center gap-md">
                   <span className="material-symbols-outlined text-on-surface-variant">info</span>
                   <p className="text-body-sm text-on-surface-variant">This test case was not executed during this run.</p>
@@ -1380,56 +1400,56 @@ function ConfirmDialog({
                   step={stepList[currentStep]}
                   totalSteps={totalSteps}
                   result={results[stepList[currentStep]?.id] ?? { passed: null, actual_result: "", comments: "" }}
-                  readOnly={readOnly}
-                  onResult={(r) => {
-                    const s = stepList[currentStep];
-                    if (!s) return;
-                    setResults((prev) => ({ ...prev, [s.id]: { ...prev[s.id], ...r } }));
-                    if (r.passed !== undefined && r.passed !== null) {
-                      submitStepResult(s.id, r.passed, r.actual_result ?? "", r.comments ?? "");
-                    }
-                  }}
-                  onSubmit={(passed, actual_result, comments) => {
-                    const s = stepList[currentStep];
-                    if (!s) return;
-                    submitStepResult(s.id, passed, actual_result, comments);
-                  }}
-                  proofImage={stepList[currentStep] ? proofImages[stepList[currentStep].id] : undefined}
-                  onProofUpload={(file) => {
-                    if (stepList[currentStep]) {
-                      handleProofUpload(stepList[currentStep].id, file);
-                    }
-                  }}
-                />
-              ) : (
-                <QuickMode
-                  steps={stepList}
-                  results={results}
-                  readOnly={readOnly}
-                  onResult={(stepId, r) => {
-                    // Always merge the partial update into local state first
-                    setResults((prev) => {
-                      const merged = { ...prev[stepId], ...r };
-                      // Only call the API when passed is explicitly being set —
-                      // not on every textarea keystroke. This prevents spurious
-                      // passed=false writes when the tester is just typing an
-                      // actual result, and ensures actual_result is always sent
-                      // alongside the pass/fail value (not separately).
-                      if (r.passed !== undefined && r.passed !== null) {
-                        submitStepResult(
-                          stepId,
-                          r.passed,
-                          merged.actual_result ?? "",
-                          merged.comments ?? "",
-                        );
-                      }
-                      return { ...prev, [stepId]: merged };
-                    });
-                  }}
-                  overallResult={overallResult}
-                  onOverallResult={readOnly ? undefined : setOverallResult}
-                  testerNotes={testerNotes}
-                  onTesterNotes={readOnly ? undefined : setTesterNotes}
+                   readOnly={effectiveReadOnly}
+                   onResult={(r) => {
+                     const s = stepList[currentStep];
+                     if (!s) return;
+                     setResults((prev) => ({ ...prev, [s.id]: { ...prev[s.id], ...r } }));
+                     if (r.passed !== undefined && r.passed !== null) {
+                       submitStepResult(s.id, r.passed, r.actual_result ?? "", r.comments ?? "");
+                     }
+                   }}
+                   onSubmit={(passed, actual_result, comments) => {
+                     const s = stepList[currentStep];
+                     if (!s) return;
+                     submitStepResult(s.id, passed, actual_result, comments);
+                   }}
+                   proofImage={stepList[currentStep] ? proofImages[stepList[currentStep].id] : undefined}
+                   onProofUpload={(file) => {
+                     if (stepList[currentStep]) {
+                       handleProofUpload(stepList[currentStep].id, file);
+                     }
+                   }}
+                 />
+               ) : (
+                 <QuickMode
+                   steps={stepList}
+                   results={results}
+                   readOnly={effectiveReadOnly}
+                   onResult={(stepId, r) => {
+                     // Always merge the partial update into local state first
+                     setResults((prev) => {
+                       const merged = { ...prev[stepId], ...r };
+                       // Only call the API when passed is explicitly being set —
+                       // not on every textarea keystroke. This prevents spurious
+                       // passed=false writes when the tester is just typing an
+                       // actual result, and ensures actual_result is always sent
+                       // alongside the pass/fail value (not separately).
+                       if (r.passed !== undefined && r.passed !== null) {
+                         submitStepResult(
+                           stepId,
+                           r.passed,
+                           merged.actual_result ?? "",
+                           merged.comments ?? "",
+                         );
+                       }
+                       return { ...prev, [stepId]: merged };
+                     });
+                   }}
+                   overallResult={overallResult}
+                   onOverallResult={effectiveReadOnly ? undefined : setOverallResult}
+                   testerNotes={testerNotes}
+                   onTesterNotes={effectiveReadOnly ? undefined : setTesterNotes}
                 />
               )}
               </div>
@@ -1438,7 +1458,7 @@ function ConfirmDialog({
         </div>
 
         {/* Guided mode footer */}
-        {mode === "guided" && !readOnly && (
+        {mode === "guided" && !effectiveReadOnly && (
           <div className="border-t border-outline-variant bg-surface-container-low">
             <div className="px-lg pt-md pb-sm">
               <label className="font-label-sm text-label-sm text-on-surface-variant">Execution Notes</label>
@@ -1509,7 +1529,7 @@ function ConfirmDialog({
         )}
 
         {/* Guided mode footer — read-only navigation */}
-        {mode === "guided" && readOnly && totalSteps > 1 && (
+        {mode === "guided" && effectiveReadOnly && totalSteps > 1 && (
           <div className="px-lg py-md border-t border-outline-variant flex items-center justify-between bg-surface-container-low">
             <button
               disabled={currentStep === 0}
@@ -1534,7 +1554,7 @@ function ConfirmDialog({
         )}
 
         {/* Quick mode footer */}
-        {mode === "quick" && !readOnly && (
+        {mode === "quick" && !effectiveReadOnly && (
           <div className="px-lg py-md border-t border-outline-variant flex items-center justify-between bg-surface-container-low">
             <div />
             <button

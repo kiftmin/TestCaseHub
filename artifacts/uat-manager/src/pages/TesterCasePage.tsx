@@ -45,7 +45,7 @@ export interface ExecutionEntry {
 
 const EMPTY_ENTRY: ExecutionEntry = { passed: null, actual_result: "", comments: "" };
 
-type CaseFilter = "all" | "not_started" | "in_progress" | "completed";
+type CaseFilter = "all" | "not_started" | "in_progress" | "completed" | "blocked";
 
 const PROGRESS_LABELS: Record<CaseProgress, string> = {
   "Not Started": "Not Started",
@@ -58,6 +58,10 @@ const PROGRESS_ICONS: Record<CaseProgress, string> = {
   "In Progress": "autorenew",
   Completed: "check_circle",
 };
+
+function isCaseBlocked(tc: TestCase): boolean {
+  return tc.retestRole === "blocked" || tc.retestExecutable === false;
+}
 
 /* ────────────────────────────────────────────────────────────────────
    Utilities
@@ -210,10 +214,54 @@ function ExecutionEngine({
     staleTime: 0,
   });
 
+  // Retest scope for this case (blocked / verify / regression)
+  const retestCaseMeta = useMemo(() => {
+    if (!testRun || testRun.run_type !== "retest") return null;
+    const fromItems = testRun.verificationItems?.find((i) => i.testCaseId === testCaseId);
+    if (fromItems) {
+      return {
+        role: fromItems.role,
+        executable: fromItems.executable,
+        blockingReason:
+          fromItems.role === "blocked"
+            ? `Blocked — open defect${fromItems.bugNumber != null ? ` #${fromItems.bugNumber}` : ""} still in development`
+            : null,
+      };
+    }
+    const fromTree = testRun.useCases
+      ?.flatMap((u) => u.useCase?.testCases ?? [])
+      .find((tc) => tc.id === testCaseId);
+    if (fromTree?.retestRole) {
+      return {
+        role: fromTree.retestRole,
+        executable: fromTree.retestExecutable !== false && fromTree.retestRole !== "blocked",
+        blockingReason: fromTree.retestBlockingReason ?? null,
+      };
+    }
+    if (testRun.blockedCaseIds?.includes(testCaseId)) {
+      return { role: "blocked" as const, executable: false, blockingReason: "This test case is blocked and cannot be executed" };
+    }
+    return null;
+  }, [testRun, testCaseId]);
+
+  const isBlockedRetestCase =
+    retestCaseMeta?.role === "blocked" || retestCaseMeta?.executable === false;
+
   const { data: execution } = useQuery({
     queryKey: ["tester-execution", testRunId, testCaseId],
     queryFn: async () => {
-      const run = await customFetch<{ executions?: Execution[] }>(`/test-runs/${testRunId}`);
+      const run = await customFetch<TestRun>(`/test-runs/${testRunId}`);
+      // Never create an execution for blocked retest cases
+      if (run.run_type === "retest") {
+        const blocked =
+          run.blockedCaseIds?.includes(testCaseId) ||
+          run.verificationItems?.find((i) => i.testCaseId === testCaseId)?.role === "blocked" ||
+          run.useCases
+            ?.flatMap((u) => u.useCase?.testCases ?? [])
+            .find((tc) => tc.id === testCaseId)?.retestRole === "blocked" ||
+          run.verificationItems?.find((i) => i.testCaseId === testCaseId)?.executable === false;
+        if (blocked) return undefined;
+      }
       const existing = run.executions?.find((e) => e.test_case_id === testCaseId);
       if (existing) return existing;
       const result = await customFetch<Execution | { readOnly: boolean }>(`/test-runs/${testRunId}/test-cases/${testCaseId}/execute`, {
@@ -225,17 +273,21 @@ function ExecutionEngine({
       }
       return result as Execution;
     },
-    enabled: !!testCaseId && !!user,
+    // Wait for test-run (scope) before attempting execute — avoids creating
+    // an execution for a blocked retest case during the initial load race.
+    enabled: !!testCaseId && !!user && !!testRun && !isBlockedRetestCase,
+    retry: false,
   });
 
   const steps = useMemo(() => testCase?.steps ?? [], [testCase]);
 
-  // Is the current scenario locked because the tester already signed off?
+  // Read-only: tester signed off, or retest-blocked case
   const isReadOnly = useMemo(() => {
+    if (isBlockedRetestCase) return true;
     if (!testRun?.useCases) return false;
     const uc = testRun.useCases.find(u => u.use_case_id === scenarioId);
     return uc?.tester_sign_off === true;
-  }, [testRun, scenarioId]);
+  }, [testRun, scenarioId, isBlockedRetestCase]);
 
   const persistedStepResults = useMemo(() => {
     const map = new Map<number, StepResult>();
@@ -251,41 +303,60 @@ function ExecutionEngine({
   // Tracks in-flight step-result mutations so we can block navigation while saves are pending.
   const pendingMutations = useRef(0);
 
-  // Hydrate entries once from sessionStorage drafts (today only),
-  // then from the persisted step results in the API response.
+  // Hydrate entries from sessionStorage drafts (today only) and API step results.
+  // MERGE only — never wipe in-progress local edits when queries refetch
+  // (invalidate after Pass/Fail used to replace the whole Map and blank
+  // "What actually happened" until the server response caught up).
   useEffect(() => {
     if (steps.length === 0) return;
-    const hydrated = new Map<number, ExecutionEntry>();
-    steps.forEach((s) => {
-      const key = draftKey(testRunId, testCaseId, s.id);
-      const stored = sessionStorage.getItem(key);
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored) as Draft;
-          if (parsed.savedAt && isFromToday(parsed.savedAt)) {
-            hydrated.set(s.id, {
-              passed: parsed.passed,
-              actual_result: parsed.actual_result,
-              comments: parsed.comments,
-            });
-            return;
-          }
-          sessionStorage.removeItem(key);
-        } catch {
-          sessionStorage.removeItem(key);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- merge hydrate from session + API
+    setEntries((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      steps.forEach((s) => {
+        const existing = next.get(s.id);
+        // Keep any local content the user already has for this step
+        if (
+          existing &&
+          (existing.passed != null ||
+            (existing.actual_result && existing.actual_result.trim() !== "") ||
+            (existing.comments && existing.comments.trim() !== ""))
+        ) {
+          return;
         }
-      }
-      const persisted = persistedStepResults.get(s.id);
-      if (persisted) {
-        hydrated.set(s.id, {
-          passed: persisted.passed,
-          actual_result: persisted.actual_result ?? "",
-          comments: persisted.comments ?? "",
-        });
-      }
+
+        const key = draftKey(testRunId, testCaseId, s.id);
+        const stored = sessionStorage.getItem(key);
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored) as Draft;
+            if (parsed.savedAt && isFromToday(parsed.savedAt)) {
+              next.set(s.id, {
+                passed: parsed.passed,
+                actual_result: parsed.actual_result,
+                comments: parsed.comments,
+              });
+              changed = true;
+              return;
+            }
+            sessionStorage.removeItem(key);
+          } catch {
+            sessionStorage.removeItem(key);
+          }
+        }
+
+        const persisted = persistedStepResults.get(s.id);
+        if (persisted) {
+          next.set(s.id, {
+            passed: persisted.passed,
+            actual_result: persisted.actual_result ?? "",
+            comments: persisted.comments ?? "",
+          });
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
     });
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate from session storage and persisted step results
-    setEntries(hydrated);
   }, [steps, testRunId, testCaseId, persistedStepResults]);
 
   // Persist drafts to sessionStorage (debounced, but writes happen
@@ -382,6 +453,10 @@ function ExecutionEngine({
     onModeChange,
     pendingMutations,
     isReadOnly,
+    blockReason: isBlockedRetestCase
+      ? (retestCaseMeta?.blockingReason ??
+        "This test case is blocked and cannot be executed in this verification run")
+      : null,
   };
 
   if (mode === "quick") {
@@ -414,13 +489,13 @@ function TestCaseSelector({
     sessionStorage.setItem(`tester_mode_${getStoredUser()?.userId}`, mode);
   }, [mode]);
 
-  const { data: testRun } = useQuery({
+  const { data: testRun, isLoading: testRunLoading } = useQuery({
     queryKey: ["test-run", testRunId],
     queryFn: () => customFetch<TestRun>(`/test-runs/${testRunId}`),
     staleTime: 0, // always refetch on mount so progress reflects latest submissions
   });
 
-  const { data: useCase, isLoading } = useQuery({
+  const { data: useCase, isLoading: useCaseLoading } = useQuery({
     queryKey: ["use-case", scenarioId],
     queryFn: () =>
       customFetch<{ id: number; name: string; code: string; testCases: (TestCase & { steps?: TestStep[]; stepResults?: StepResult[] })[] }>(
@@ -429,7 +504,46 @@ function TestCaseSelector({
     staleTime: 0,
   });
 
-  const testCases = useMemo(() => useCase?.testCases ?? [], [useCase]);
+  const isLoading = testRunLoading || useCaseLoading;
+
+  // For retest runs, only show scoped cases (verify/regression/blocked) with roles.
+  // Never fall back to the full plan — that would re-enable blocked siblings.
+  const testCases = useMemo(() => {
+    if (testRun?.run_type === "retest") {
+      const fromRun =
+        testRun.useCases?.find((u) => u.use_case_id === scenarioId)?.useCase?.testCases ?? [];
+      if (fromRun.length > 0) return fromRun;
+
+      const items = (testRun.verificationItems ?? []).filter((i) => i.useCaseId === scenarioId);
+      if (items.length === 0) return [];
+      const byId = new Map((useCase?.testCases ?? []).map((tc) => [tc.id, tc]));
+      return items.map((item) => {
+        const base = byId.get(item.testCaseId);
+        return {
+          ...(base ?? {
+            id: item.testCaseId,
+            use_case_id: scenarioId,
+            case_number: item.caseNumber ?? String(item.testCaseId),
+            title: item.caseTitle ?? `Test Case #${item.testCaseId}`,
+            test_type: null,
+            estimated_minutes: null,
+            acceptance_criteria: null,
+            precondition: null,
+            created_at: "",
+          }),
+          retestRole: item.role,
+          retestExecutable: item.executable,
+          retestDefectId: item.defectId,
+          retestBugNumber: item.bugNumber,
+          retestBlockingReason:
+            item.role === "blocked"
+              ? `Open defect${item.bugNumber != null ? ` #${item.bugNumber}` : ""} still in development`
+              : null,
+        } as TestCase & { steps?: TestStep[]; stepResults?: StepResult[] };
+      });
+    }
+    return useCase?.testCases ?? [];
+  }, [testRun, useCase, scenarioId]);
 
   // Build a reliable testCaseId → progress map.
   // If the execution has been submitted (overall_result set), use that directly.
@@ -458,17 +572,34 @@ function TestCaseSelector({
   );
   const summary = useMemo(() => {
     const total = testCases.length;
-    const completed = caseProgresses.filter((s) => s === "Completed").length;
-    const inProgress = caseProgresses.filter((s) => s === "In Progress").length;
-    const notStarted = caseProgresses.filter((s) => s === "Not Started").length;
-    return { total, completed, inProgress, notStarted, progress: total > 0 ? Math.round((completed / total) * 100) : 0 };
+    let completed = 0;
+    let inProgress = 0;
+    let notStarted = 0;
+    let blocked = 0;
+    testCases.forEach((tc, i) => {
+      if (isCaseBlocked(tc)) {
+        blocked++;
+        return;
+      }
+      const p = caseProgresses[i];
+      if (p === "Completed") completed++;
+      else if (p === "In Progress") inProgress++;
+      else notStarted++;
+    });
+    const executable = total - blocked;
+    // Progress only counts cases that can be executed (exclude blocked)
+    const progress = executable > 0 ? Math.round((completed / executable) * 100) : 0;
+    return { total, completed, inProgress, notStarted, blocked, executable, progress };
   }, [testCases, caseProgresses]);
 
   const filteredIndices = useMemo(() => {
     return testCases
       .map((tc, i) => ({ tc, progress: caseProgresses[i], index: i }))
-      .filter(({ progress }) => {
+      .filter(({ tc, progress }) => {
+        const blocked = isCaseBlocked(tc);
         if (filter === "all") return true;
+        if (filter === "blocked") return blocked;
+        if (blocked) return false; // blocked only under All / Blocked filters
         if (filter === "not_started") return progress === "Not Started";
         if (filter === "in_progress") return progress === "In Progress";
         if (filter === "completed") return progress === "Completed";
@@ -481,6 +612,9 @@ function TestCaseSelector({
     { key: "not_started", label: "Not Started", count: summary.notStarted, icon: "radio_button_unchecked" },
     { key: "in_progress", label: "In Progress", count: summary.inProgress, icon: "autorenew" },
     { key: "completed", label: "Completed", count: summary.completed, icon: "check_circle" },
+    ...(summary.blocked > 0
+      ? [{ key: "blocked" as const, label: "Blocked", count: summary.blocked, icon: "block" }]
+      : []),
   ];
 
   return (
@@ -500,16 +634,24 @@ function TestCaseSelector({
           <h1 className="font-display-md text-display-md text-primary leading-tight">
             {useCase?.name ?? "Test Scenario"}
           </h1>
-          <div className="flex items-center gap-sm pt-sm">
+          <div className="flex items-center gap-sm pt-sm flex-wrap">
             <Stat label="Total" value={summary.total} />
             <Stat label="Completed" value={summary.completed} tone="success" />
             <Stat label="In Progress" value={summary.inProgress} tone="warning" />
             <Stat label="Not Started" value={summary.notStarted} tone="neutral" />
+            {summary.blocked > 0 && (
+              <Stat label="Blocked" value={summary.blocked} tone="error" />
+            )}
           </div>
           <div className="space-y-xs pt-sm">
             <div className="flex items-center justify-between text-label-sm">
               <span className="font-bold uppercase tracking-wider text-on-surface-variant">Progress</span>
-              <span>{summary.completed} / {summary.total} cases</span>
+              <span>
+                {summary.completed} / {summary.executable} executable
+                {summary.blocked > 0 ? (
+                  <span className="text-on-surface-variant"> · {summary.blocked} blocked</span>
+                ) : null}
+              </span>
             </div>
             <div className="w-full bg-surface-container-high rounded-full h-2 overflow-hidden">
               <div
@@ -579,15 +721,36 @@ function TestCaseSelector({
           ) : (
             <div className="space-y-sm">
               {filteredIndices.map(({ tc, progress }) => {
-                const actionLabel = progress === "Completed" ? "Review" : progress === "In Progress" ? "Continue" : "Start";
+                const blocked =
+                  tc.retestRole === "blocked" || tc.retestExecutable === false;
+                const actionLabel = blocked
+                  ? "Blocked"
+                  : progress === "Completed"
+                    ? "Review"
+                    : progress === "In Progress"
+                      ? "Continue"
+                      : "Start";
                 return (
                   <article
                     key={tc.id}
-                    className="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden hover:shadow-md transition-all"
+                    className={`bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden transition-all ${
+                      blocked ? "opacity-70" : "hover:shadow-md"
+                    }`}
                   >
                     <button
-                      onClick={() => navigate(`/tester/run/${testRunId}/scenario/${scenarioId}/case/${tc.id}`)}
-                      className="w-full p-md flex items-start gap-md text-left"
+                      onClick={() => {
+                        if (blocked) {
+                          toast.error(
+                            tc.retestBlockingReason ||
+                              "This test case is blocked and cannot be executed in this verification run",
+                          );
+                          return;
+                        }
+                        navigate(`/tester/run/${testRunId}/scenario/${scenarioId}/case/${tc.id}`);
+                      }}
+                      className={`w-full p-md flex items-start gap-md text-left ${
+                        blocked ? "cursor-not-allowed" : ""
+                      }`}
                     >
                       <div className="flex-1 min-w-0 space-y-xs">
                         <div className="flex items-center gap-sm flex-wrap">
@@ -605,14 +768,36 @@ function TestCaseSelector({
                               ~{tc.estimated_minutes}m
                             </span>
                           )}
-                          <StatusChip variant={progressStatusVariant[progress]} icon={PROGRESS_ICONS[progress]}>
-                            {PROGRESS_LABELS[progress]}
-                          </StatusChip>
+                          {blocked ? (
+                            <StatusChip variant="error" icon="block">
+                              Blocked
+                            </StatusChip>
+                          ) : (
+                            <StatusChip variant={progressStatusVariant[progress]} icon={PROGRESS_ICONS[progress]}>
+                              {PROGRESS_LABELS[progress]}
+                            </StatusChip>
+                          )}
+                          {tc.retestRole === "verify" && (
+                            <span className="text-[10px] uppercase tracking-wider font-bold text-green-800 bg-green-100 px-2 py-0.5 rounded-full">
+                              Verify
+                              {tc.retestBugNumber != null ? ` #${tc.retestBugNumber}` : ""}
+                            </span>
+                          )}
+                          {tc.retestRole === "regression" && (
+                            <span className="text-[10px] uppercase tracking-wider font-bold text-blue-800 bg-blue-100 px-2 py-0.5 rounded-full">
+                              Regression
+                            </span>
+                          )}
                         </div>
                         <p className="font-title-sm text-title-sm text-on-surface leading-snug">
                           {tc.title}
                         </p>
-                        {tc.acceptance_criteria && (
+                        {blocked && tc.retestBlockingReason && (
+                          <p className="text-body-sm text-red-700">
+                            {tc.retestBlockingReason}
+                          </p>
+                        )}
+                        {!blocked && tc.acceptance_criteria && (
                           <p className="text-body-sm text-on-surface-variant line-clamp-2">
                             <span className="font-bold uppercase tracking-wider text-[10px]">Acceptance: </span>
                             {tc.acceptance_criteria}
@@ -620,11 +805,17 @@ function TestCaseSelector({
                         )}
                       </div>
                       <div className="shrink-0 flex items-center gap-sm">
-                        <span className="hidden sm:inline-flex items-center gap-xs px-md py-1.5 rounded-lg bg-primary text-on-primary text-label-sm font-label-md hover:opacity-90 transition-all">
-                          {actionLabel}
-                          <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
-                        </span>
-                        <span className="material-symbols-outlined text-on-surface-variant sm:hidden">chevron_right</span>
+                        {!blocked && (
+                          <span className="hidden sm:inline-flex items-center gap-xs px-md py-1.5 rounded-lg bg-primary text-on-primary text-label-sm font-label-md hover:opacity-90 transition-all">
+                            {actionLabel}
+                            <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
+                          </span>
+                        )}
+                        {blocked ? (
+                          <span className="material-symbols-outlined text-red-600">block</span>
+                        ) : (
+                          <span className="material-symbols-outlined text-on-surface-variant sm:hidden">chevron_right</span>
+                        )}
                       </div>
                     </button>
                   </article>
@@ -672,6 +863,7 @@ function StepWizard({
   onModeChange,
   pendingMutations,
   isReadOnly,
+  blockReason,
 }: {
   testRunId: number;
   scenarioId: number;
@@ -689,6 +881,7 @@ function StepWizard({
   onModeChange: (next: "guided" | "quick") => void;
   pendingMutations: React.MutableRefObject<number>;
   isReadOnly: boolean;
+  blockReason?: string | null;
 }) {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
@@ -734,7 +927,10 @@ function StepWizard({
       return { stepId, previous };
     },
     onSuccess: (_data, vars) => {
-      removeDraft(currentStep!.id);
+      // Clear sessionStorage draft only — keep entries so the textarea
+      // does not blank while queries refetch (see merge hydrate above).
+      const stepId = currentStep!.id;
+      sessionStorage.removeItem(draftKey(testRunId, testCaseId, stepId));
       toast.success(`Step ${stepIndex + 1} recorded as ${vars.passed ? "Pass" : "Fail"}`);
       queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
       queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
@@ -820,14 +1016,19 @@ function StepWizard({
 
   return (
     <div className="space-y-md max-w-7xl mx-auto w-full">
-      {isReadOnly && (
+      {blockReason ? (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-md flex items-center gap-sm">
+          <span className="material-symbols-outlined text-red-600">block</span>
+          <span className="text-label-md text-red-800">{blockReason}</span>
+        </div>
+      ) : isReadOnly ? (
         <div className="bg-gray-100 border border-gray-300 rounded-xl p-md flex items-center gap-sm">
           <span className="material-symbols-outlined text-gray-500">lock</span>
           <span className="text-label-md text-gray-600">
             This test case is read-only — you have already submitted this test run.
           </span>
         </div>
-      )}
+      ) : null}
       <BackBar
         back={{ label: "Cases", href: `/tester/run/${testRunId}/scenario/${scenarioId}` }}
         current={`[${testCase.case_number}] ${testCase.title}`}
@@ -1270,6 +1471,7 @@ function QuickWizard({
   onModeChange,
   pendingMutations,
   isReadOnly,
+  blockReason,
 }: {
   testRunId: number;
   scenarioId: number;
@@ -1287,6 +1489,7 @@ function QuickWizard({
   onModeChange: (next: "guided" | "quick") => void;
   pendingMutations: React.MutableRefObject<number>;
   isReadOnly: boolean;
+  blockReason?: string | null;
 }) {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
@@ -1482,14 +1685,19 @@ function QuickWizard({
 
   return (
     <div className="space-y-md max-w-4xl mx-auto w-full pb-32">
-      {isReadOnly && (
+      {blockReason ? (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-md flex items-center gap-sm">
+          <span className="material-symbols-outlined text-red-600">block</span>
+          <span className="text-label-md text-red-800">{blockReason}</span>
+        </div>
+      ) : isReadOnly ? (
         <div className="bg-gray-100 border border-gray-300 rounded-xl p-md flex items-center gap-sm">
           <span className="material-symbols-outlined text-gray-500">lock</span>
           <span className="text-label-md text-gray-600">
             This test case is read-only — you have already submitted this test run.
           </span>
         </div>
-      )}
+      ) : null}
       <BackBar
         back={{ label: "Cases", href: `/tester/run/${testRunId}/scenario/${scenarioId}` }}
         current={`[${testCase.case_number}] ${testCase.title}`}

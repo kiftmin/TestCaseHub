@@ -152,6 +152,21 @@ function getFailedSteps(defect: Defect): { stepNumber: string; instruction: stri
   return matches.map((m) => ({ stepNumber: m[1], instruction: m[2] }));
 }
 
+function scenarioKey(defect: Defect): string {
+  const ucId = defect.testCase?.use_case_id ?? defect.testCase?.useCase?.id;
+  return ucId != null ? String(ucId) : "unknown";
+}
+
+function scenarioLabel(defect: Defect): string {
+  const code = defect.testCase?.useCase?.code;
+  const name = defect.testCase?.useCase?.name;
+  if (code && name) return `${code} — ${name}`;
+  if (name) return name;
+  if (code) return code;
+  const ucId = defect.testCase?.use_case_id;
+  return ucId != null ? `Scenario #${ucId}` : "Unknown Scenario";
+}
+
 function TabContent({
   statusDist,
   statusFilter,
@@ -191,6 +206,40 @@ function TabContent({
   handleSort: (field: string) => void;
   activeTab: string;
 }) {
+  const scenarioGroups = useMemo(() => {
+    const map = new Map<string, { key: string; label: string; defects: Defect[] }>();
+    for (const defect of sorted) {
+      const key = scenarioKey(defect);
+      const existing = map.get(key);
+      if (existing) {
+        existing.defects.push(defect);
+      } else {
+        map.set(key, { key, label: scenarioLabel(defect), defects: [defect] });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [sorted]);
+
+  const [collapsedScenarios, setCollapsedScenarios] = useState<Set<string>>(() => new Set());
+  const [groupByScenario, setGroupByScenario] = useState(true);
+
+  // When filters change, expand all groups so matches are visible
+  useEffect(() => {
+    setCollapsedScenarios(new Set());
+  }, [sorted]);
+
+  const toggleScenario = (key: string) => {
+    setCollapsedScenarios((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const expandAll = () => setCollapsedScenarios(new Set());
+  const collapseAll = () => setCollapsedScenarios(new Set(scenarioGroups.map((g) => g.key)));
+
   return (
     <>
       {/* Status Distribution */}
@@ -209,58 +258,205 @@ function TabContent({
         ))}
       </div>
 
-      {/* Defect Table */}
-      <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-surface-container-low border-b border-outline-variant">
-                <SortTh field="id" label="ID" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="test_case" label="Test Case / Step" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="severity" label="Sev" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="priority" label="Pri" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <SortTh field="created_at" label="Created" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-                <th className="px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider text-right whitespace-nowrap">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-outline-variant/60">
-              {sorted.map((defect) => (
-                 <DefectRow
-                  key={defect.id}
-                  defect={defect}
-                  expanded={expandedId === defect.id}
-                  onToggle={() => setExpandedId(expandedId === defect.id ? null : defect.id)}
-                  role={role}
-                  canManage={canManage}
-                  isBusinessOwner={isBusinessOwner}
-                  isTester={isTester}
-                  isDeveloper={isDeveloper}
-                  isQa={isQa}
-                  projectId={projectId}
-                  onMutated={() => {}}
-                  activeTab={activeTab}
-                />
-              ))}
-                {sorted.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="p-lg text-center text-on-surface-variant font-body-sm">
-                    <div className="flex flex-col items-center gap-2 py-lg">
-                      <span className="material-symbols-outlined text-3xl text-outline-variant">search_off</span>
-                      <p className="text-on-surface-variant">No defects match the current filters</p>
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-        <div className="px-md py-sm bg-surface-container-low border-t border-outline-variant flex items-center justify-between">
-          <p className="text-xs text-on-surface-variant">
-            Showing <span className="font-semibold">{sorted.length}</span> of <span className="font-semibold">{total}</span> defects
-          </p>
+      {/* Group toggle */}
+      <div className="flex items-center justify-end">
+        <div className="inline-flex items-center bg-surface-container-high rounded-lg p-0.5" role="radiogroup" aria-label="View mode">
+          <button
+            role="radio"
+            aria-checked={!groupByScenario}
+            onClick={() => setGroupByScenario(false)}
+            className={`px-md py-1.5 rounded-md text-label-sm font-label-md transition-all ${
+              !groupByScenario
+                ? "bg-surface-container-lowest text-on-surface shadow-sm"
+                : "text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px] align-middle mr-1">view_list</span>
+            Flat
+          </button>
+          <button
+            role="radio"
+            aria-checked={groupByScenario}
+            onClick={() => setGroupByScenario(true)}
+            className={`px-md py-1.5 rounded-md text-label-sm font-label-md transition-all ${
+              groupByScenario
+                ? "bg-surface-container-lowest text-on-surface shadow-sm"
+                : "text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px] align-middle mr-1">account_tree</span>
+            Group by Scenario
+          </button>
         </div>
       </div>
+
+      {/* Flat table */}
+      {!groupByScenario ? (
+        <div className="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-surface-container-low border-b border-outline-variant">
+                  <SortTh field="id" label="ID" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortTh field="test_case" label="Test Case / Step" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortTh field="severity" label="Sev" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortTh field="priority" label="Pri" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortTh field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortTh field="created_at" label="Created" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <th className="px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider text-right whitespace-nowrap">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-outline-variant/60">
+                {sorted.map((defect) => (
+                  <DefectRow
+                    key={defect.id}
+                    defect={defect}
+                    expanded={expandedId === defect.id}
+                    onToggle={() => setExpandedId(expandedId === defect.id ? null : defect.id)}
+                    role={role}
+                    canManage={canManage}
+                    isBusinessOwner={isBusinessOwner}
+                    isTester={isTester}
+                    isDeveloper={isDeveloper}
+                    isQa={isQa}
+                    projectId={projectId}
+                    onMutated={() => {}}
+                    activeTab={activeTab}
+                  />
+                ))}
+                {sorted.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="p-lg text-center text-on-surface-variant font-body-sm">
+                      <div className="flex flex-col items-center gap-2 py-lg">
+                        <span className="material-symbols-outlined text-3xl text-outline-variant">search_off</span>
+                        <p className="text-on-surface-variant">No defects match the current filters</p>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-md py-sm bg-surface-container-low border-t border-outline-variant flex items-center justify-between">
+            <p className="text-xs text-on-surface-variant">
+              Showing <span className="font-semibold">{sorted.length}</span> of <span className="font-semibold">{total}</span> defects
+            </p>
+          </div>
+        </div>
+      ) : (
+        /* Grouped by Test Scenario */
+        <div className="space-y-sm">
+          {scenarioGroups.length > 0 && (
+            <div className="flex items-center justify-between gap-md">
+              <p className="text-xs text-on-surface-variant">
+                Showing <span className="font-semibold">{sorted.length}</span> of{" "}
+                <span className="font-semibold">{total}</span> defects in{" "}
+                <span className="font-semibold">{scenarioGroups.length}</span> scenario
+                {scenarioGroups.length === 1 ? "" : "s"}
+              </p>
+              <div className="flex items-center gap-xs">
+                <button
+                  type="button"
+                  onClick={expandAll}
+                  className="text-[11px] font-bold uppercase tracking-wider text-secondary hover:underline px-sm py-1"
+                >
+                  Expand all
+                </button>
+                <span className="text-outline-variant">|</span>
+                <button
+                  type="button"
+                  onClick={collapseAll}
+                  className="text-[11px] font-bold uppercase tracking-wider text-secondary hover:underline px-sm py-1"
+                >
+                  Collapse all
+                </button>
+              </div>
+            </div>
+          )}
+
+          {scenarioGroups.length === 0 ? (
+            <div className="bg-surface border border-outline-variant rounded-xl p-lg text-center">
+              <div className="flex flex-col items-center gap-2 py-lg">
+                <span className="material-symbols-outlined text-3xl text-outline-variant">search_off</span>
+                <p className="text-on-surface-variant font-body-sm">No defects match the current filters</p>
+              </div>
+            </div>
+          ) : (
+            scenarioGroups.map((group) => {
+              const isOpen = !collapsedScenarios.has(group.key);
+              return (
+                <div
+                  key={group.key}
+                  className="bg-surface border border-outline-variant rounded-xl overflow-hidden shadow-sm"
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleScenario(group.key)}
+                    className="w-full px-lg py-md flex items-center gap-md text-left hover:bg-surface-container-low transition-colors"
+                  >
+                    <div className="w-9 h-9 rounded-lg bg-secondary-container text-on-secondary-container flex items-center justify-center shrink-0">
+                      <span className="material-symbols-outlined text-[20px]">account_tree</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="font-body-base font-semibold text-on-surface truncate">
+                        {group.label}
+                      </h4>
+                      <p className="text-label-sm text-on-surface-variant mt-0.5">
+                        {group.defects.length} defect{group.defects.length === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                    <span
+                      className="material-symbols-outlined text-on-surface-variant transition-transform shrink-0"
+                      style={{ transform: isOpen ? "rotate(180deg)" : "" }}
+                    >
+                      expand_more
+                    </span>
+                  </button>
+
+                  {isOpen && (
+                    <div className="border-t border-outline-variant overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-surface-container-low border-b border-outline-variant">
+                            <SortTh field="id" label="ID" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                            <SortTh field="test_case" label="Test Case" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                            <SortTh field="severity" label="Sev" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                            <SortTh field="priority" label="Pri" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                            <SortTh field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                            <SortTh field="created_at" label="Created" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                            <th className="px-md py-sm text-[10px] font-bold text-outline uppercase tracking-wider text-right whitespace-nowrap">
+                              Actions
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-outline-variant/60">
+                          {group.defects.map((defect) => (
+                            <DefectRow
+                              key={defect.id}
+                              defect={defect}
+                              expanded={expandedId === defect.id}
+                              onToggle={() => setExpandedId(expandedId === defect.id ? null : defect.id)}
+                              role={role}
+                              canManage={canManage}
+                              isBusinessOwner={isBusinessOwner}
+                              isTester={isTester}
+                              isDeveloper={isDeveloper}
+                              isQa={isQa}
+                              projectId={projectId}
+                              onMutated={() => {}}
+                              activeTab={activeTab}
+                            />
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
     </>
   );
 }

@@ -326,6 +326,31 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
       return;
     }
 
+    // Retest: blocked / out-of-scope cases cannot be completed or updated
+    if (execution.testRun?.run_type === "retest" && execution.test_run_id) {
+      const blockReason = await getRetestCaseBlockReason(
+        execution.test_run_id,
+        execution.test_case_id,
+        execution.testRun.run_type,
+      );
+      if (blockReason) {
+        res.status(403).json({ message: blockReason });
+        return;
+      }
+      const inScope = await isTestCaseInRetestScope(
+        execution.test_run_id,
+        execution.test_case_id,
+        execution.testRun.run_type,
+      );
+      if (!inScope) {
+        res.status(403).json({
+          message:
+            "This test case is not in retest scope. Only Verify or opted-in Regression cases can be executed.",
+        });
+        return;
+      }
+    }
+
     // Check lock BEFORE write so post-sign-off edits cannot stick
     const execTc = await db.query.testCases.findFirst({
       where: eq(schema.testCases.id, execution.test_case_id),
@@ -409,6 +434,31 @@ router.post(
       if (!assigned) {
         res.status(403).json({ message: "Forbidden — you are not assigned to this scenario" });
         return;
+      }
+
+      // Retest: blocked / out-of-scope cases cannot record step results
+      if (execution.testRun?.run_type === "retest" && execution.test_run_id) {
+        const blockReason = await getRetestCaseBlockReason(
+          execution.test_run_id,
+          execution.test_case_id,
+          execution.testRun.run_type,
+        );
+        if (blockReason) {
+          res.status(403).json({ message: blockReason });
+          return;
+        }
+        const inScope = await isTestCaseInRetestScope(
+          execution.test_run_id,
+          execution.test_case_id,
+          execution.testRun.run_type,
+        );
+        if (!inScope) {
+          res.status(403).json({
+            message:
+              "This test case is not in retest scope. Only Verify or opted-in Regression cases can be executed.",
+          });
+          return;
+        }
       }
 
       // Check if scenario is locked (tester has signed off)
@@ -541,6 +591,31 @@ router.put(
       if (!assigned) {
         res.status(403).json({ message: "Forbidden — you are not assigned to this scenario" });
         return;
+      }
+
+      // Retest: blocked / out-of-scope cases cannot update step results
+      if (exec.testRun?.run_type === "retest" && exec.test_run_id) {
+        const blockReason = await getRetestCaseBlockReason(
+          exec.test_run_id,
+          exec.test_case_id,
+          exec.testRun.run_type,
+        );
+        if (blockReason) {
+          res.status(403).json({ message: blockReason });
+          return;
+        }
+        const inScope = await isTestCaseInRetestScope(
+          exec.test_run_id,
+          exec.test_case_id,
+          exec.testRun.run_type,
+        );
+        if (!inScope) {
+          res.status(403).json({
+            message:
+              "This test case is not in retest scope. Only Verify or opted-in Regression cases can be executed.",
+          });
+          return;
+        }
       }
 
       // Check if scenario is locked (tester has signed off)
@@ -924,6 +999,7 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
           const result: "passed" | "failed" =
             executionResultByTestCaseId.get(defect.test_case_id) ?? "passed";
 
+          const oldStatus = "READY_FOR_VERIFICATION";
           if (result === "passed") {
             await tx
               .update(schema.defects)
@@ -939,6 +1015,8 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
                   eq(schema.defects.status, "READY_FOR_VERIFICATION"),
                 ),
               );
+            await logAudit({ entityType: "defect", entityId: defect.id, changedByUserId: userId, fromStatus: oldStatus, toStatus: "CLOSED" });
+            await logSystemNote(defect.id, oldStatus, "CLOSED", userId);
           } else {
             await tx
               .update(schema.defects)
@@ -953,6 +1031,8 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
                   eq(schema.defects.status, "READY_FOR_VERIFICATION"),
                 ),
               );
+            await logAudit({ entityType: "defect", entityId: defect.id, changedByUserId: userId, fromStatus: oldStatus, toStatus: "REGRESSED" });
+            await logSystemNote(defect.id, oldStatus, "REGRESSED", userId);
           }
 
           // Record result on the enrollment row

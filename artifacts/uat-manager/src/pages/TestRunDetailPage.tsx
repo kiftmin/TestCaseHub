@@ -684,7 +684,11 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
           testCase={execModal.testCase}
           testRunUseCase={execModal.testRunUseCase}
           entryConfirmed={testRun.entry_confirmed}
-          readOnly={isCompleted}
+          readOnly={
+            isCompleted ||
+            execModal.testCase.retestRole === "blocked" ||
+            execModal.testCase.retestExecutable === false
+          }
           onClose={() => setExecModal(null)}
         />
       )}
@@ -982,6 +986,18 @@ function ExecutionModal({
     }
 
     if (!entryConfirmed) { setInitialLoading(false); return; }
+
+    // Blocked retest cases: never create an execution
+    if (
+      readOnly ||
+      testCase.retestRole === "blocked" ||
+      testCase.retestExecutable === false
+    ) {
+      setReadOnlyOverride(true);
+      setInitialLoading(false);
+      return;
+    }
+
     let cancelled = false;
 
     const initExec = async () => {
@@ -1014,6 +1030,16 @@ function ExecutionModal({
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
         console.log(`[exec] initExec error: "${errMsg}"`);
+        // Blocked / out-of-scope retest cases — stay read-only, no toast spam
+        if (
+          errMsg.toLowerCase().includes("blocked") ||
+          errMsg.toLowerCase().includes("not in retest scope") ||
+          errMsg.toLowerCase().includes("cannot be executed")
+        ) {
+          setReadOnlyOverride(true);
+          setInitialLoading(false);
+          return;
+        }
         if (errMsg.toLowerCase().includes("already been executed") || errMsg.toLowerCase().includes("completed test run")) {
           try {
             const fullReport = await customFetch<TestRunFullReport>(`/test-runs/${testRunId}/full-report`, {

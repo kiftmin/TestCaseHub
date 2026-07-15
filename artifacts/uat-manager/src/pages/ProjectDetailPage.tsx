@@ -14,6 +14,7 @@ import type {
   ProjectAssignment,
   User,
   RetestPreview,
+  RetestPreviewCase,
 } from "../types/api";
 
 /* ───────────── Page component ───────────── */
@@ -960,6 +961,38 @@ function NewTestRunDialog({
 
 /* ───────────── Retest Run Dialog (Phase A+B) ───────────── */
 
+function groupPreviewByScenario(cases: RetestPreviewCase[]) {
+  const map = new Map<
+    number,
+    { useCaseId: number; useCaseCode: string | null; useCaseName: string | null; cases: RetestPreviewCase[] }
+  >();
+  for (const c of cases) {
+    const existing = map.get(c.useCaseId);
+    if (existing) {
+      existing.cases.push(c);
+    } else {
+      map.set(c.useCaseId, {
+        useCaseId: c.useCaseId,
+        useCaseCode: c.useCaseCode,
+        useCaseName: c.useCaseName,
+        cases: [c],
+      });
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    const la = `${a.useCaseCode ?? ""} ${a.useCaseName ?? ""}`.trim();
+    const lb = `${b.useCaseCode ?? ""} ${b.useCaseName ?? ""}`.trim();
+    return la.localeCompare(lb);
+  });
+}
+
+function scenarioHeading(code: string | null, name: string | null, useCaseId: number) {
+  if (code && name) return `${code} — ${name}`;
+  if (name) return name;
+  if (code) return code;
+  return `Scenario #${useCaseId}`;
+}
+
 function RetestRunDialog({
   projectId,
   preview,
@@ -986,6 +1019,10 @@ function RetestRunDialog({
   const regressionCases = preview.cases.filter((c) => c.role === "regression");
   const verifyCases = preview.cases.filter((c) => c.role === "verify");
   const blockedCases = preview.cases.filter((c) => c.role === "blocked");
+
+  const verifyGroups = groupPreviewByScenario(verifyCases);
+  const blockedGroups = groupPreviewByScenario(blockedCases);
+  const regressionGroups = groupPreviewByScenario(regressionCases);
 
   // When enabling regression, select all candidates by default
   const handleToggleRegression = (on: boolean) => {
@@ -1015,93 +1052,177 @@ function RetestRunDialog({
         style={{ backgroundColor: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)" }}
         onClick={onClose}
       />
-      <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-lg mx-4 p-lg space-y-lg max-h-[90vh] overflow-y-auto">
-        <h3 className="font-headline-md text-headline-md text-primary">Create Verification Run</h3>
-        <p className="font-body-sm text-on-surface-variant">
-          Schedules only test cases linked to <strong>Ready for Verification</strong> defects.
-          Sibling cases that are still in development are shown as blocked and cannot be executed.
-        </p>
+      <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-2xl mx-4 p-lg space-y-lg max-h-[90vh] overflow-y-auto">
+        <div>
+          <h3 className="font-headline-md text-headline-md text-primary">Create Verification Run</h3>
+          <p className="font-body-sm text-on-surface-variant mt-xs">
+            Includes test cases for <strong>Ready for Verification</strong> defects.
+            Sibling cases still in development are blocked and cannot be executed.
+          </p>
+        </div>
 
-        <div className="space-y-sm">
-            <div className="flex flex-wrap gap-2 text-[11px] font-bold uppercase">
-              <span className="px-2 py-1 rounded bg-green-100 text-green-800">
-                {preview.summary.verify} Verify
-              </span>
-              <span className="px-2 py-1 rounded bg-red-100 text-red-800">
-                {preview.summary.blocked} Blocked
-              </span>
-              <span className="px-2 py-1 rounded bg-blue-100 text-blue-800">
-                {preview.summary.regression} Regression candidates
-              </span>
-              {preview.summary.skippedAlreadyEnrolled > 0 && (
-                <span className="px-2 py-1 rounded bg-amber-100 text-amber-800">
-                  {preview.summary.skippedAlreadyEnrolled} already in active run
-                </span>
-              )}
-            </div>
+        {/* Summary chips */}
+        <div className="flex flex-wrap gap-2 text-[11px] font-bold uppercase">
+          <span className="px-2 py-1 rounded bg-green-100 text-green-800">
+            {preview.summary.verify} Verify
+          </span>
+          <span className="px-2 py-1 rounded bg-red-100 text-red-800">
+            {preview.summary.blocked} Blocked
+          </span>
+          <span className="px-2 py-1 rounded bg-blue-100 text-blue-800">
+            {preview.summary.regression} Regression candidates
+          </span>
+          <span className="px-2 py-1 rounded bg-surface-container-high text-on-surface-variant">
+            {preview.summary.scenarios} scenario{preview.summary.scenarios === 1 ? "" : "s"}
+          </span>
+          {preview.summary.skippedAlreadyEnrolled > 0 && (
+            <span className="px-2 py-1 rounded bg-amber-100 text-amber-800">
+              {preview.summary.skippedAlreadyEnrolled} already in active run
+            </span>
+          )}
+        </div>
 
-            {verifyCases.length > 0 && (
-              <div className="border border-outline-variant rounded-lg p-sm max-h-32 overflow-y-auto">
-                <p className="text-[10px] font-bold uppercase text-green-700 mb-1">Verify (always included)</p>
-                {verifyCases.map((c) => (
-                  <div key={c.testCaseId} className="text-xs text-on-surface py-0.5">
-                    [{c.caseNumber}] {c.caseTitle}
-                    <span className="text-on-surface-variant">
-                      {" "}— defect #{c.bugNumber ?? c.defectId} · {c.useCaseCode}
-                    </span>
+        <div className="space-y-md">
+          {/* ── VERIFY ── */}
+          {verifyCases.length > 0 && (
+            <section className="border border-green-200 rounded-xl overflow-hidden">
+              <header className="px-md py-sm bg-green-50 border-b border-green-200 flex items-center justify-between gap-sm">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-green-700 text-[18px]">fact_check</span>
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-green-800">
+                      Verify — always included
+                    </p>
+                    <p className="text-[11px] text-green-700/80">
+                      Ready for Verification defects ({verifyCases.length} test case
+                      {verifyCases.length === 1 ? "" : "s"})
+                    </p>
+                  </div>
+                </div>
+              </header>
+              <div className="max-h-48 overflow-y-auto divide-y divide-outline-variant/50">
+                {verifyGroups.map((g) => (
+                  <div key={g.useCaseId} className="px-md py-sm">
+                    <p className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[14px]">account_tree</span>
+                      {scenarioHeading(g.useCaseCode, g.useCaseName, g.useCaseId)}
+                    </p>
+                    <ul className="space-y-1.5 pl-1">
+                      {g.cases.map((c) => (
+                        <li key={c.testCaseId} className="text-sm text-on-surface flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                          <span className="font-semibold text-secondary shrink-0">
+                            DEF-{c.defectId}
+                            {c.bugNumber != null ? ` (#${c.bugNumber})` : ""}
+                          </span>
+                          <span className="text-on-surface-variant">·</span>
+                          <span>
+                            <span className="font-medium">[{c.caseNumber ?? "—"}]</span>{" "}
+                            {c.caseTitle ?? `Test Case #${c.testCaseId}`}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 ))}
               </div>
-            )}
+            </section>
+          )}
 
-            {blockedCases.length > 0 && (
-              <div className="border border-red-200 bg-red-50/50 rounded-lg p-sm max-h-28 overflow-y-auto">
-                <p className="text-[10px] font-bold uppercase text-red-700 mb-1">
-                  Blocked (visible, not executable)
-                </p>
-                {blockedCases.map((c) => (
-                  <div key={c.testCaseId} className="text-xs text-on-surface py-0.5">
-                    [{c.caseNumber}] {c.caseTitle}
-                    <span className="text-red-700"> — {c.blockingReason}</span>
+          {/* ── BLOCKED ── */}
+          {blockedCases.length > 0 && (
+            <section className="border border-red-200 rounded-xl overflow-hidden">
+              <header className="px-md py-sm bg-red-50 border-b border-red-200 flex items-center gap-2">
+                <span className="material-symbols-outlined text-red-700 text-[18px]">block</span>
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-red-800">
+                    Blocked — visible, not executable
+                  </p>
+                  <p className="text-[11px] text-red-700/80">
+                    Sibling cases still in development ({blockedCases.length})
+                  </p>
+                </div>
+              </header>
+              <div className="max-h-40 overflow-y-auto divide-y divide-red-100">
+                {blockedGroups.map((g) => (
+                  <div key={g.useCaseId} className="px-md py-sm">
+                    <p className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[14px]">account_tree</span>
+                      {scenarioHeading(g.useCaseCode, g.useCaseName, g.useCaseId)}
+                    </p>
+                    <ul className="space-y-1.5 pl-1">
+                      {g.cases.map((c) => (
+                        <li key={c.testCaseId} className="text-sm text-on-surface">
+                          <span className="font-medium">[{c.caseNumber ?? "—"}]</span>{" "}
+                          {c.caseTitle ?? `Test Case #${c.testCaseId}`}
+                          {c.blockingReason && (
+                            <span className="block text-[11px] text-red-700 mt-0.5">
+                              {c.blockingReason}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 ))}
               </div>
-            )}
+            </section>
+          )}
 
-            {regressionCases.length > 0 && (
-              <div className="border border-outline-variant rounded-lg p-sm space-y-sm">
-                <label className="flex items-center gap-2 cursor-pointer">
+          {/* ── REGRESSION ── */}
+          {regressionCases.length > 0 && (
+            <section className="border border-blue-200 rounded-xl overflow-hidden">
+              <header className="px-md py-sm bg-blue-50 border-b border-blue-200">
+                <label className="flex items-start gap-2 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={includeRegression}
                     onChange={(e) => handleToggleRegression(e.target.checked)}
-                    className="rounded border-outline-variant"
+                    className="rounded border-outline-variant mt-0.5"
                   />
-                  <span className="text-sm font-label-md">
-                    Include regression candidates ({regressionCases.length})
-                  </span>
-                </label>
-                {includeRegression && (
-                  <div className="max-h-28 overflow-y-auto pl-md space-y-0.5">
-                    {regressionCases.map((c) => (
-                      <label key={c.testCaseId} className="flex items-center gap-2 text-xs cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={selectedRegression.has(c.testCaseId)}
-                          onChange={() => toggleRegCase(c.testCaseId)}
-                        />
-                        <span>
-                          [{c.caseNumber}] {c.caseTitle}
-                          <span className="text-on-surface-variant"> · {c.useCaseCode}</span>
-                        </span>
-                      </label>
-                    ))}
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-blue-800 flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[16px]">replay</span>
+                      Regression candidates — optional
+                    </p>
+                    <p className="text-[11px] text-blue-700/80">
+                      Safe sibling cases with no open defects ({regressionCases.length}). Check to include.
+                    </p>
                   </div>
-                )}
-              </div>
-            )}
-
-          </div>
+                </label>
+              </header>
+              {includeRegression && (
+                <div className="max-h-40 overflow-y-auto divide-y divide-blue-100">
+                  {regressionGroups.map((g) => (
+                    <div key={g.useCaseId} className="px-md py-sm">
+                      <p className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-[14px]">account_tree</span>
+                        {scenarioHeading(g.useCaseCode, g.useCaseName, g.useCaseId)}
+                      </p>
+                      <ul className="space-y-1 pl-1">
+                        {g.cases.map((c) => (
+                          <li key={c.testCaseId}>
+                            <label className="flex items-start gap-2 text-sm cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={selectedRegression.has(c.testCaseId)}
+                                onChange={() => toggleRegCase(c.testCaseId)}
+                                className="mt-0.5"
+                              />
+                              <span>
+                                <span className="font-medium">[{c.caseNumber ?? "—"}]</span>{" "}
+                                {c.caseTitle ?? `Test Case #${c.testCaseId}`}
+                              </span>
+                            </label>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+        </div>
 
         <div className="space-y-sm">
           <label className="block font-label-md text-on-surface">Run Name</label>

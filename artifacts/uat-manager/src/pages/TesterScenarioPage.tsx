@@ -27,6 +27,10 @@ type CaseProgress = "Not Started" | "In Progress" | "Completed";
    Helpers
    ──────────────────────────────────────────────────────────────────── */
 
+function isCaseBlocked(tc: TestCase): boolean {
+  return tc.retestRole === "blocked" || tc.retestExecutable === false;
+}
+
 function computeCaseProgress(
   steps: { id: number }[],
   stepResults: { step_id: number; passed: boolean | null; actual_result?: string | null }[],
@@ -53,9 +57,13 @@ function computeScenarioProgress(
   testCases: (TestCase & { steps?: TestStep[] })[],
   executions: Execution[],
 ): CaseProgress {
-  if (!testCases || testCases.length === 0) return "Not Started";
-  if (!executions || executions.length === 0) return "Not Started";
-  const progresses = testCases.map(tc => {
+  // Exclude blocked retest cases from progress (they are not executable)
+  const executable = testCases.filter((tc) => !isCaseBlocked(tc));
+  if (executable.length === 0) {
+    // Scenario only has blocked cases (or is empty) — treat as Completed so it doesn't block submit
+    return testCases.length > 0 ? "Completed" : "Not Started";
+  }
+  const progresses = executable.map(tc => {
     const exec = executions.find(e => e && e.test_case_id === tc.id);
     if (!exec) return "Not Started" as CaseProgress;
     // If execution was submitted (overall_result set) it is definitively Completed
@@ -202,8 +210,43 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
       (scenarioProgresses.get(uc.use_case_id) ?? "Not Started") === "Not Started"
     ).length;
     const progress_val = total > 0 ? Math.round((completed / total) * 100) : 0;
-    return { total, completed, inProgress, notStarted, progress: progress_val };
-  }, [useCases, scenarioProgresses]);
+
+    // Case-level breakdown (includes blocked for retest runs)
+    let caseTotal = 0;
+    let caseBlocked = 0;
+    let caseExecutable = 0;
+    let caseCompleted = 0;
+    for (const uc of useCases) {
+      const tcs = uc.useCase?.testCases ?? [];
+      for (const tc of tcs) {
+        caseTotal++;
+        if (isCaseBlocked(tc)) {
+          caseBlocked++;
+          continue;
+        }
+        caseExecutable++;
+        const exec = allExecutions.find((e) => e.test_case_id === tc.id);
+        if (exec?.overall_result != null) {
+          caseCompleted++;
+        } else if (exec) {
+          const p = computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);
+          if (p === "Completed") caseCompleted++;
+        }
+      }
+    }
+
+    return {
+      total,
+      completed,
+      inProgress,
+      notStarted,
+      progress: progress_val,
+      caseTotal,
+      caseBlocked,
+      caseExecutable,
+      caseCompleted,
+    };
+  }, [useCases, scenarioProgresses, allExecutions]);
 
   const submitTestRunMut = useMutation({
     mutationFn: () =>
@@ -295,12 +338,22 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
               </StatusChip>
             )}
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-sm">
+          <div className={`grid grid-cols-2 gap-sm ${summary.caseBlocked > 0 ? "sm:grid-cols-5" : "sm:grid-cols-4"}`}>
             <SummaryStat label="Total" value={summary.total} />
             <SummaryStat label="Completed" value={summary.completed} />
             <SummaryStat label="In Progress" value={summary.inProgress} />
             <SummaryStat label="Not Started" value={summary.notStarted} />
+            {summary.caseBlocked > 0 && (
+              <SummaryStat label="Blocked cases" value={summary.caseBlocked} />
+            )}
           </div>
+          {summary.caseBlocked > 0 && (
+            <p className="text-label-sm opacity-80">
+              {summary.caseExecutable} executable test case{summary.caseExecutable === 1 ? "" : "s"}
+              {" · "}
+              {summary.caseBlocked} blocked (not executable)
+            </p>
+          )}
           <div className="space-y-xs">
             <div className="flex items-center justify-between text-label-sm opacity-90">
               <span className="font-bold uppercase tracking-wider">Progress</span>

@@ -3,7 +3,7 @@ import { eq, and, inArray, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { checkProjectRole, denyUnlessProjectAccess, AuthenticatedRequest } from "../middlewares/auth.js";
 
 const router = express.Router();
 
@@ -11,9 +11,23 @@ const router = express.Router();
 router.get("/projects/:projectId/users", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
     const assignments = await db.query.projectAssignments.findMany({
       where: eq(schema.projectAssignments.project_id, projectId),
-      with: { user: true },
+      with: {
+        user: {
+          columns: {
+            id: true,
+            username: true,
+            name: true,
+            email: true,
+            role: true,
+            is_active: true,
+            created_at: true,
+            password_hash: false,
+          },
+        },
+      },
     });
     res.json(assignments);
   } catch (err) { next(err); }
@@ -174,6 +188,11 @@ router.delete("/projects/:projectId/users/:userId", async (req: AuthenticatedReq
 router.get("/users/:userId/projects", async (req: AuthenticatedRequest, res, next) => {
   try {
     const userId = Number(req.params.userId);
+    // Only self or ADMIN may list another user's project memberships
+    if (req.user!.role !== "ADMIN" && req.user!.userId !== userId) {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
     const assignments = await db.query.projectAssignments.findMany({
       where: eq(schema.projectAssignments.user_id, userId),
       with: { project: true },
@@ -206,6 +225,12 @@ router.get("/users/:userId/projects", async (req: AuthenticatedRequest, res, nex
 router.get("/projects/:projectId/my-role", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
+    // my-role is safe to call without membership (returns null) so the UI can decide;
+    // still require a real project id to avoid probing noise
+    if (!projectId || Number.isNaN(projectId)) {
+      res.status(400).json({ message: "projectId is required" });
+      return;
+    }
 
     const assignment = await db.query.projectAssignments.findFirst({
       where: and(

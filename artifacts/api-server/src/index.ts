@@ -32,12 +32,19 @@ app.use(
   cors({
     origin: process.env.CORS_ORIGIN?.split(",") ?? ["http://localhost:5173", "http://localhost:3001"],
     credentials: true,
+    maxAge: 86400,
   }),
 );
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-app.use(express.json());
-app.use(pinoHttp({ logger }));
-app.use("/uploads", express.static("uploads"));
+app.use(express.json({ limit: "1mb" }));
+app.use((pinoHttp as unknown as (opts: object) => express.RequestHandler)({
+  logger,
+  redact: {
+    paths: ["req.headers.authorization", "req.body.password", "req.body.signature"],
+    remove: true,
+  },
+}));
+// Uploads are served only via authenticated GET /api/uploads/:filename
 
 const api = express.Router();
 
@@ -50,9 +57,19 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 2000,
+  message: { message: "Too many requests, please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === "OPTIONS",
+});
+
 // Public
 api.use("/auth", authLimiter, authRoutes);
 api.use("/health", healthRoutes);
+api.use(apiLimiter);
 
 // Protected — specific mounts first
 api.use("/users", authenticate, userRoutes);

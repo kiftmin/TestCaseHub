@@ -13,6 +13,7 @@ import type {
   UseCase,
   ProjectAssignment,
   User,
+  RetestPreview,
 } from "../types/api";
 
 /* ───────────── Page component ───────────── */
@@ -684,6 +685,12 @@ function TestRunsTab({ projectId }: { projectId: number }) {
     queryFn: () => customFetch<(import("../types/api").TestRun)[]>(`/projects/${projectId}/test-runs`),
   });
 
+  const { data: retestPreview } = useQuery({
+    queryKey: ["retest-preview", projectId],
+    queryFn: () => customFetch<RetestPreview>(`/projects/${projectId}/test-runs/retest-preview`),
+  });
+  const showRetestButton = (retestPreview?.summary.rfvDefects ?? 0) > 0;
+
   const { data: useCases } = useQuery({
     queryKey: ["use-cases", projectId],
     queryFn: () => customFetch<UseCase[]>(`/use-cases?projectId=${projectId}`),
@@ -714,15 +721,31 @@ function TestRunsTab({ projectId }: { projectId: number }) {
   });
 
   const createRetestMutation = useMutation({
-    mutationFn: (d: { name: string; scheduled_at?: string }) =>
+    mutationFn: (d: {
+      name: string;
+      scheduled_at?: string;
+      includeRegression?: boolean;
+      regressionTestCaseIds?: number[];
+    }) =>
       customFetch(`/projects/${projectId}/test-runs/retest`, {
         method: "POST",
         body: JSON.stringify(d),
       }),
-    onSuccess: () => {
+    onSuccess: (data: {
+      verify_case_count?: number;
+      regression_case_count?: number;
+      blocked_case_count?: number;
+    }) => {
       invalidate();
       setRetestDialog(false);
-      toast.success("Retest run created");
+      const v = data.verify_case_count ?? 0;
+      const r = data.regression_case_count ?? 0;
+      const b = data.blocked_case_count ?? 0;
+      toast.success(
+        `Verification run created: ${v} verify` +
+          (r ? `, ${r} regression` : "") +
+          (b ? `, ${b} blocked (not executable)` : ""),
+      );
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -750,14 +773,16 @@ function TestRunsTab({ projectId }: { projectId: number }) {
     <div className="space-y-sm">
       <div className="flex items-center justify-between">
         <h3 className="font-title-sm text-title-sm">Test Runs</h3>
-        {canCreate && (
+          {canCreate && (
           <div className="flex items-center gap-sm">
-            <button
-              onClick={() => setRetestDialog(true)}
-              className="border border-outline-variant font-label-sm text-label-sm px-md py-1 rounded-lg hover:bg-surface-container-low transition-all"
-            >
-              Create Retest Run
-            </button>
+            {showRetestButton && (
+              <button
+                onClick={() => setRetestDialog(true)}
+                className="border border-outline-variant font-label-sm text-label-sm px-md py-1 rounded-lg hover:bg-surface-container-low transition-all"
+              >
+                Create Verification Run
+              </button>
+            )}
             <button
               onClick={() => setNewDialog(true)}
               className="bg-secondary text-on-secondary font-label-sm text-label-sm px-md py-1 rounded-lg hover:brightness-110 transition-all"
@@ -779,7 +804,7 @@ function TestRunsTab({ projectId }: { projectId: number }) {
               <h4 className="font-label-md text-label-md">{r.name}</h4>
               {r.run_type === "retest" && (
                 <span className="text-[10px] px-sm py-0.5 rounded bg-amber-100 text-amber-700 font-bold uppercase">
-                  Retest
+                  Verification
                 </span>
               )}
             </div>
@@ -808,6 +833,8 @@ function TestRunsTab({ projectId }: { projectId: number }) {
       {/* Retest Run Dialog */}
       {retestDialog && (
         <RetestRunDialog
+          projectId={projectId}
+          preview={retestPreview!}
           onSave={(d) => createRetestMutation.mutate(d)}
           onClose={() => setRetestDialog(false)}
           saving={createRetestMutation.isPending}
@@ -931,19 +958,55 @@ function NewTestRunDialog({
   );
 }
 
-/* ───────────── Retest Run Dialog ───────────── */
+/* ───────────── Retest Run Dialog (Phase A+B) ───────────── */
 
 function RetestRunDialog({
+  projectId,
+  preview,
   onSave,
   onClose,
   saving,
 }: {
-  onSave: (d: { name: string; scheduled_at?: string }) => void;
+  projectId: number;
+  preview: RetestPreview;
+  onSave: (d: {
+    name: string;
+    scheduled_at?: string;
+    includeRegression?: boolean;
+    regressionTestCaseIds?: number[];
+  }) => void;
   onClose: () => void;
   saving: boolean;
 }) {
-  const [name, setName] = useState("Retest Run");
+  const [name, setName] = useState("Verification Run");
   const [scheduledAt, setScheduledAt] = useState("");
+  const [includeRegression, setIncludeRegression] = useState(false);
+  const [selectedRegression, setSelectedRegression] = useState<Set<number>>(new Set());
+
+  const regressionCases = preview.cases.filter((c) => c.role === "regression");
+  const verifyCases = preview.cases.filter((c) => c.role === "verify");
+  const blockedCases = preview.cases.filter((c) => c.role === "blocked");
+
+  // When enabling regression, select all candidates by default
+  const handleToggleRegression = (on: boolean) => {
+    setIncludeRegression(on);
+    if (on) {
+      setSelectedRegression(new Set(regressionCases.map((c) => c.testCaseId)));
+    } else {
+      setSelectedRegression(new Set());
+    }
+  };
+
+  const toggleRegCase = (id: number) => {
+    setSelectedRegression((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const canCreate = !!name && preview.summary.rfvDefects > 0;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
@@ -952,13 +1015,94 @@ function RetestRunDialog({
         style={{ backgroundColor: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)" }}
         onClick={onClose}
       />
-      <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-md mx-4 p-lg space-y-lg">
-        <h3 className="font-headline-md text-headline-md text-primary">Create Retest Run</h3>
+      <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-lg mx-4 p-lg space-y-lg max-h-[90vh] overflow-y-auto">
+        <h3 className="font-headline-md text-headline-md text-primary">Create Verification Run</h3>
         <p className="font-body-sm text-on-surface-variant">
-          Automatically creates a test run containing the scenarios linked to all
-          defects currently at <strong>Ready for Verification</strong>. Business
-          testers will see this run in their dashboard.
+          Schedules only test cases linked to <strong>Ready for Verification</strong> defects.
+          Sibling cases that are still in development are shown as blocked and cannot be executed.
         </p>
+
+        <div className="space-y-sm">
+            <div className="flex flex-wrap gap-2 text-[11px] font-bold uppercase">
+              <span className="px-2 py-1 rounded bg-green-100 text-green-800">
+                {preview.summary.verify} Verify
+              </span>
+              <span className="px-2 py-1 rounded bg-red-100 text-red-800">
+                {preview.summary.blocked} Blocked
+              </span>
+              <span className="px-2 py-1 rounded bg-blue-100 text-blue-800">
+                {preview.summary.regression} Regression candidates
+              </span>
+              {preview.summary.skippedAlreadyEnrolled > 0 && (
+                <span className="px-2 py-1 rounded bg-amber-100 text-amber-800">
+                  {preview.summary.skippedAlreadyEnrolled} already in active run
+                </span>
+              )}
+            </div>
+
+            {verifyCases.length > 0 && (
+              <div className="border border-outline-variant rounded-lg p-sm max-h-32 overflow-y-auto">
+                <p className="text-[10px] font-bold uppercase text-green-700 mb-1">Verify (always included)</p>
+                {verifyCases.map((c) => (
+                  <div key={c.testCaseId} className="text-xs text-on-surface py-0.5">
+                    [{c.caseNumber}] {c.caseTitle}
+                    <span className="text-on-surface-variant">
+                      {" "}— defect #{c.bugNumber ?? c.defectId} · {c.useCaseCode}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {blockedCases.length > 0 && (
+              <div className="border border-red-200 bg-red-50/50 rounded-lg p-sm max-h-28 overflow-y-auto">
+                <p className="text-[10px] font-bold uppercase text-red-700 mb-1">
+                  Blocked (visible, not executable)
+                </p>
+                {blockedCases.map((c) => (
+                  <div key={c.testCaseId} className="text-xs text-on-surface py-0.5">
+                    [{c.caseNumber}] {c.caseTitle}
+                    <span className="text-red-700"> — {c.blockingReason}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {regressionCases.length > 0 && (
+              <div className="border border-outline-variant rounded-lg p-sm space-y-sm">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeRegression}
+                    onChange={(e) => handleToggleRegression(e.target.checked)}
+                    className="rounded border-outline-variant"
+                  />
+                  <span className="text-sm font-label-md">
+                    Include regression candidates ({regressionCases.length})
+                  </span>
+                </label>
+                {includeRegression && (
+                  <div className="max-h-28 overflow-y-auto pl-md space-y-0.5">
+                    {regressionCases.map((c) => (
+                      <label key={c.testCaseId} className="flex items-center gap-2 text-xs cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedRegression.has(c.testCaseId)}
+                          onChange={() => toggleRegCase(c.testCaseId)}
+                        />
+                        <span>
+                          [{c.caseNumber}] {c.caseTitle}
+                          <span className="text-on-surface-variant"> · {c.useCaseCode}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+          </div>
+
         <div className="space-y-sm">
           <label className="block font-label-md text-on-surface">Run Name</label>
           <input
@@ -984,11 +1128,20 @@ function RetestRunDialog({
             Cancel
           </button>
           <button
-            disabled={!name || saving}
-            onClick={() => onSave({ name, scheduled_at: scheduledAt || undefined })}
+            disabled={!canCreate || saving}
+            onClick={() =>
+              onSave({
+                name,
+                scheduled_at: scheduledAt || undefined,
+                includeRegression: includeRegression && selectedRegression.size > 0,
+                regressionTestCaseIds: includeRegression
+                  ? Array.from(selectedRegression)
+                  : undefined,
+              })
+            }
             className="px-lg py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 transition-all disabled:opacity-50"
           >
-            {saving ? "Creating\u2026" : "Create Retest Run"}
+            {saving ? "Creating\u2026" : "Create Verification Run"}
           </button>
         </div>
       </div>

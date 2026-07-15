@@ -3,9 +3,10 @@ import { eq, desc, and, sql, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { checkProjectRole, denyUnlessProjectAccess, projectIdFromTestRun, AuthenticatedRequest } from "../middlewares/auth.js";
 import { logAudit, logSystemNote } from "../utils/project.js";
 import { syncUseCaseStatus } from "./test-runs.js";
+import { getRetestScope, isTestCaseInRetestScope, getRetestCaseBlockReason } from "../utils/retest-scope.js";
 
 const router = express.Router();
 
@@ -127,19 +128,22 @@ async function computeTestRunProgress(testRunId: number): Promise<"Not Started" 
 }
 
 // GET /api/dashboard/tester/:userId/test-runs
-router.get("/dashboard/tester/:userId/test-runs", async (req, res, next) => {
+router.get("/dashboard/tester/:userId/test-runs", async (req: AuthenticatedRequest, res, next) => {
   try {
     const userId = Number(req.params.userId);
+    // Only self or ADMIN may view another user's tester dashboard
+    if (req.user!.role !== "ADMIN" && req.user!.userId !== userId) {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
 
     // Return ONLY scenarios explicitly assigned to this tester.
-    // This enforces that testers can only see and act on their own work.
     const myUseCases = await db.query.testRunUseCases.findMany({
       where: eq(schema.testRunUseCases.assigned_tester_id, userId),
       with: {
         testRun: {
           with: {
             project: true,
-            // Only fetch executions for this tester's test cases
             executions: {
               with: { stepResults: true },
             },
@@ -198,6 +202,23 @@ router.post(
         return;
       }
 
+      // Phase A+B: retest — only verify/regression; blocked cases hard-stop
+      if (testRun.run_type === "retest") {
+        const blockReason = await getRetestCaseBlockReason(testRunId, testCaseId, testRun.run_type);
+        if (blockReason) {
+          res.status(403).json({ message: blockReason });
+          return;
+        }
+        const inScope = await isTestCaseInRetestScope(testRunId, testCaseId, testRun.run_type);
+        if (!inScope) {
+          res.status(403).json({
+            message:
+              "This test case is not in retest scope. Only Verify or opted-in Regression cases can be executed.",
+          });
+          return;
+        }
+      }
+
       // Guard: Cannot execute on a completed run
       if (testRun.status === "completed") {
         res.status(403).json({ message: "Cannot execute on a completed test run" });
@@ -217,13 +238,14 @@ router.post(
         return;
       }
 
+      // Always attribute execution to the authenticated user (ignore client spoofing)
       const [execution] = await db
         .insert(schema.executions)
         .values({
           test_case_id: testCaseId,
           test_run_id: testRunId,
-          tester_id: parsed.tester_id,
-          tester_name: parsed.tester_name,
+          tester_id: req.user!.userId,
+          tester_name: parsed.tester_name ?? req.user!.username,
           status: "in_progress",
         })
         .returning();
@@ -294,14 +316,7 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
       return;
     }
 
-    const oldStatus = execution.status;
-    const [updated] = await db
-      .update(schema.executions)
-      .set({ ...parsed, executed_at: new Date() })
-      .where(eq(schema.executions.id, executionId))
-      .returning();
-
-    // Check if scenario is locked (tester has signed off) — no further edits allowed
+    // Check lock BEFORE write so post-sign-off edits cannot stick
     const execTc = await db.query.testCases.findFirst({
       where: eq(schema.testCases.id, execution.test_case_id),
       columns: { use_case_id: true },
@@ -320,14 +335,17 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
       }
     }
 
+    const oldStatus = execution.status;
+    const [updated] = await db
+      .update(schema.executions)
+      .set({ ...parsed, executed_at: new Date() })
+      .where(eq(schema.executions.id, executionId))
+      .returning();
+
     await logAudit({ entityType: "execution", entityId: executionId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: parsed.status });
 
-    // Sync the parent use case's status so dashboard KPIs stay accurate
-    const tc = execTc || await db.query.testCases.findFirst({
-      where: eq(schema.testCases.id, execution.test_case_id),
-    });
-    if (tc && execution.test_run_id) {
-      await syncUseCaseStatus(execution.test_run_id, tc.use_case_id);
+    if (execTc && execution.test_run_id) {
+      await syncUseCaseStatus(execution.test_run_id, execTc.use_case_id);
     }
 
     res.json(updated);
@@ -568,6 +586,7 @@ router.put(
 router.get("/test-runs/:testRunId/progress", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromTestRun(testRunId)))) return;
     const testRun = await db.query.testRuns.findFirst({
       where: eq(schema.testRuns.id, testRunId),
       with: {
@@ -580,19 +599,34 @@ router.get("/test-runs/:testRunId/progress", async (req: AuthenticatedRequest, r
       return;
     }
 
-    const allExecutions = testRun.executions ?? [];
+    const retestScope =
+      testRun.run_type === "retest" ? await getRetestScope(testRunId) : null;
+    const allowedCaseIds = retestScope ? new Set(retestScope.testCaseIds) : null;
+
+    const allExecutions = (testRun.executions ?? []).filter(
+      (e) => !allowedCaseIds || allowedCaseIds.has(e.test_case_id),
+    );
 
     // Test case progress
     const caseProgressMap = new Map<number, string>();
     for (const exec of allExecutions) {
       caseProgressMap.set(exec.test_case_id, await computeExecutionProgress(exec.id));
     }
+    // Ensure enrolled cases with no execution show as Not Started
+    if (allowedCaseIds) {
+      for (const tcId of allowedCaseIds) {
+        if (!caseProgressMap.has(tcId)) caseProgressMap.set(tcId, "Not Started");
+      }
+    }
 
-    // Scenario progress
+    // Scenario progress (retest: only enrolled cases count)
     const scenarioProgressMap = new Map<number, string>();
     for (const truc of testRun.useCases ?? []) {
       if (!truc.useCase) continue;
-      const cases = truc.useCase.testCases ?? [];
+      let cases = truc.useCase.testCases ?? [];
+      if (allowedCaseIds) {
+        cases = cases.filter((tc) => allowedCaseIds.has(tc.id));
+      }
       const progresses: string[] = [];
       for (const tc of cases) {
         const p = caseProgressMap.get(tc.id) ?? "Not Started";
@@ -673,10 +707,19 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
       with: { useCase: { with: { testCases: true } } },
     });
 
-    // Collect test case IDs scoped to the user's assigned use cases
-    const userTcIds = allUseCases.flatMap(
-      truc => truc.useCase?.testCases.map(tc => tc.id) ?? [],
+    // Phase A+B: retest runs only require executable cases (verify + regression)
+    const retestScope =
+      testRun.run_type === "retest" ? await getRetestScope(testRunId) : null;
+    const retestCaseIdSet = retestScope ? new Set(retestScope.testCaseIds) : null;
+    const retestVerifyCaseIds = retestScope ? new Set(retestScope.verifyCaseIds) : null;
+
+    // Collect test case IDs scoped to the user's assigned use cases (and retest scope)
+    let userTcIds = allUseCases.flatMap(
+      (truc) => truc.useCase?.testCases.map((tc) => tc.id) ?? [],
     );
+    if (retestCaseIdSet) {
+      userTcIds = userTcIds.filter((id) => retestCaseIdSet.has(id));
+    }
 
     const allExecutions = userTcIds.length > 0
       ? await db.query.executions.findMany({
@@ -696,7 +739,9 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
     for (const truc of allUseCases) {
       if (!truc.useCase) continue;
       for (const tc of truc.useCase.testCases) {
-        const exec = allExecutions.find(e => e.test_case_id === tc.id);
+        // Skip out-of-scope cases on retest runs
+        if (retestCaseIdSet && !retestCaseIdSet.has(tc.id)) continue;
+        const exec = allExecutions.find((e) => e.test_case_id === tc.id);
         if (!exec) {
           incompleteCases.push(`${tc.case_number} — ${tc.title} (Not Started)`);
           continue;
@@ -729,17 +774,33 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
       if (anyStepFailed) break;
     }
 
-    // Set overall_result on each execution based on its step results
-    for (const exec of allExecutions) {
-      const stepResults = exec.stepResults ?? [];
-      const steps = exec.testCase?.steps ?? [];
-      if (steps.length === 0) continue;
-      const hasFailed = stepResults.some(sr => sr.passed === false);
-      const overallResult = hasFailed ? "failed" : "passed";
+    const projectId = testRun.project_id;
+    const userId = req.user!.userId;
 
-      // Only update if not already set
-      if (exec.overall_result !== overallResult) {
-        await db.update(schema.executions)
+    const submitResult = await db.transaction(async (tx) => {
+      // Lock the run row so concurrent submits serialize
+      const [lockedRun] = await tx
+        .select()
+        .from(schema.testRuns)
+        .where(eq(schema.testRuns.id, testRunId))
+        .for("update");
+      if (!lockedRun) {
+        throw Object.assign(new Error("Test run not found"), { status: 404 });
+      }
+      if (lockedRun.status === "completed") {
+        throw Object.assign(new Error("Test run is already completed"), { status: 403 });
+      }
+
+      // Set overall_result on each execution based on its step results
+      for (const exec of allExecutions) {
+        const stepResults = exec.stepResults ?? [];
+        const steps = exec.testCase?.steps ?? [];
+        if (steps.length === 0) continue;
+        const hasFailed = stepResults.some((sr) => sr.passed === false);
+        const overallResult = hasFailed ? "failed" : "passed";
+        exec.overall_result = overallResult;
+        await tx
+          .update(schema.executions)
           .set({
             overall_result: overallResult,
             status: "completed",
@@ -747,196 +808,245 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
           })
           .where(eq(schema.executions.id, exec.id));
       }
-    }
 
-    // Create defects for every failed step
-    const projectId = testRun.project_id;
-    const maxBug = await db
-      .select({ max: sql`COALESCE(MAX(bug_number), 0)` })
-      .from(schema.defects)
-      .where(eq(schema.defects.project_id, projectId));
-    let nextBugNumber = (maxBug[0]?.max as number ?? 0) + 1;
+      // Serialize bug numbers for this project
+      await tx.execute(sql`SELECT id FROM defects WHERE project_id = ${projectId} FOR UPDATE`);
+      const maxBugRows = await tx
+        .select({ max: sql<number>`COALESCE(MAX(${schema.defects.bug_number}), 0)` })
+        .from(schema.defects)
+        .where(eq(schema.defects.project_id, projectId));
+      let nextBugNumber = Number(maxBugRows[0]?.max ?? 0) + 1;
 
-    const createdDefects: any[] = [];
+      const createdDefects: { id: number; bug_number: number | null }[] = [];
 
-    for (const exec of allExecutions) {
-      for (const sr of exec.stepResults ?? []) {
-        if (sr.passed === false) {
-          const step = exec.testCase?.steps?.find(s => s.id === sr.step_id);
-          const notes = [
-            `Auto-created from test run submission`,
-            `Test Case: ${exec.testCase?.case_number ?? ""} — ${exec.testCase?.title ?? ""}`,
-            step ? `Step ${step.step_number}: ${step.instruction}` : "",
-            sr.actual_result ? `Actual Result: ${sr.actual_result}` : "",
-            sr.comments ? `Comments: ${sr.comments}` : "",
-          ].filter(Boolean).join("\n");
+      // Phase A+B: retest must NOT open NEW for verify cases (auto-regress instead).
+      // Regression opt-in cases may still create NEW defects on failure.
+      const verifyCaseIds = retestVerifyCaseIds ?? new Set<number>();
 
-          const [defect] = await db.insert(schema.defects)
-            .values({
-              project_id: projectId,
-              bug_number: nextBugNumber++,
-              test_run_id: testRunId,
-              test_case_id: exec.test_case_id,
-              execution_id: exec.id,
-              status: "NEW",
-              tester_notes: notes,
-            })
-            .returning();
-
-          createdDefects.push(defect);
-          await logSystemNote(defect.id, null, "NEW", req.user!.userId);
+      // Case-level defects: one NEW defect per failed test case (not per failed step)
+      for (const exec of allExecutions) {
+        if (exec.overall_result !== "failed") continue;
+        if (lockedRun.run_type === "retest" && verifyCaseIds.has(exec.test_case_id)) {
+          continue;
         }
+
+        const failedSteps = (exec.stepResults ?? []).filter((sr) => sr.passed === false);
+        if (failedSteps.length === 0) continue;
+
+        // Idempotent: skip if a NEW defect already exists for this execution+case
+        const existing = await tx.query.defects.findFirst({
+          where: and(
+            eq(schema.defects.execution_id, exec.id),
+            eq(schema.defects.test_case_id, exec.test_case_id),
+            eq(schema.defects.status, "NEW"),
+          ),
+          columns: { id: true },
+        });
+        if (existing) continue;
+
+        const stepLines = failedSteps.map((sr) => {
+          const step = exec.testCase?.steps?.find((s) => s.id === sr.step_id);
+          const parts = [
+            step ? `Step ${step.step_number}: ${step.instruction}` : `Step #${sr.step_id}`,
+            sr.actual_result ? `Actual Result: ${sr.actual_result}` : null,
+            sr.comments ? `Comments: ${sr.comments}` : null,
+          ].filter(Boolean);
+          return parts.join("\n");
+        });
+
+        const notes = [
+          `Auto-created from test run submission`,
+          `Test Case: ${exec.testCase?.case_number ?? ""} — ${exec.testCase?.title ?? ""}`,
+          `Failed steps (${failedSteps.length}):`,
+          ...stepLines,
+        ]
+          .filter(Boolean)
+          .join("\n");
+
+        const [defect] = await tx
+          .insert(schema.defects)
+          .values({
+            project_id: projectId,
+            bug_number: nextBugNumber++,
+            test_run_id: testRunId,
+            test_case_id: exec.test_case_id,
+            execution_id: exec.id,
+            status: "NEW",
+            tester_notes: notes,
+          })
+          .returning();
+        createdDefects.push(defect);
       }
-    }
 
-    // Sync use case statuses
-    for (const truc of allUseCases) {
-      if (truc.useCase) {
-        await syncUseCaseStatus(testRunId, truc.useCase.id);
+      // Lock submitted scenarios
+      const userUseCaseIds = allUseCases.map((truc) => truc.id);
+      if (userUseCaseIds.length > 0) {
+        await tx
+          .update(schema.testRunUseCases)
+          .set({ tester_sign_off: true, tester_sign_off_at: new Date() })
+          .where(inArray(schema.testRunUseCases.id, userUseCaseIds));
       }
-    }
 
-    // Lock all submitted scenarios — no further step/execution edits allowed
-    const userUseCaseIds = allUseCases.map(truc => truc.id);
-    if (userUseCaseIds.length > 0) {
-      await db.update(schema.testRunUseCases)
-        .set({ tester_sign_off: true, tester_sign_off_at: new Date() })
-        .where(inArray(schema.testRunUseCases.id, userUseCaseIds));
-    }
-
-    // Auto-resolve defects if this is a retest run
-    const testRunFull = await db.query.testRuns.findFirst({
-      where: eq(schema.testRuns.id, testRunId),
-    });
-
-    if (testRunFull?.run_type === "retest") {
-      for (const truc of allUseCases) {
-        const useCaseId = truc.use_case_id;
-
-        // Find the test case IDs in this use case
-        const ucTestCaseIds = truc.useCase?.testCases.map(tc => tc.id) ?? [];
-
-        // Find READY_FOR_VERIFICATION defects for these test cases
-        const linkedDefects = ucTestCaseIds.length > 0
-          ? await db.query.defects.findMany({
-              where: and(
-                eq(schema.defects.project_id, testRunFull.project_id),
-                eq(schema.defects.status, "READY_FOR_VERIFICATION"),
-                inArray(schema.defects.test_case_id, ucTestCaseIds),
-              ),
-            })
-          : [];
-
-        if (linkedDefects.length === 0) continue;
-
-        // Build a lookup of test_case_id → execution result for this use case.
-        // Each defect is resolved based on its OWN test case's result — not the
-        // scenario-level overall — so that a failure in test case B does not
-        // incorrectly penalise a READY_FOR_VERIFICATION defect linked to test case A
-        // (whose fix may be correct) or bump the regression_index of a defect that
-        // is still being fixed on an unrelated test case in the same scenario.
+      // Retest auto-resolve: only defects enrolled in THIS run (via defect_retests)
+      if (lockedRun.run_type === "retest" && retestScope && retestScope.defectIds.length > 0) {
         const executionResultByTestCaseId = new Map<number, "passed" | "failed">();
         for (const e of allExecutions) {
-          if (ucTestCaseIds.includes(e.test_case_id)) {
-            executionResultByTestCaseId.set(
-              e.test_case_id,
-              e.overall_result === "failed" ? "failed" : "passed",
-            );
-          }
+          executionResultByTestCaseId.set(
+            e.test_case_id,
+            e.overall_result === "failed" ? "failed" : "passed",
+          );
         }
 
-        // Resolve each READY_FOR_VERIFICATION defect using only its own test case result.
+        const linkedDefects = await tx
+          .select()
+          .from(schema.defects)
+          .where(
+            and(
+              inArray(schema.defects.id, retestScope.defectIds),
+              eq(schema.defects.status, "READY_FOR_VERIFICATION"),
+            ),
+          )
+          .for("update");
+
         for (const defect of linkedDefects) {
+          // Only resolve if this user's submit covered the case
+          if (!userTcIds.includes(defect.test_case_id)) continue;
           const result: "passed" | "failed" =
             executionResultByTestCaseId.get(defect.test_case_id) ?? "passed";
 
           if (result === "passed") {
-            await db.update(schema.defects)
+            await tx
+              .update(schema.defects)
               .set({
                 status: "CLOSED",
                 regression_index: 0,
                 updated_at: new Date(),
                 closed_at: new Date(),
               })
-              .where(eq(schema.defects.id, defect.id));
+              .where(
+                and(
+                  eq(schema.defects.id, defect.id),
+                  eq(schema.defects.status, "READY_FOR_VERIFICATION"),
+                ),
+              );
           } else {
-            await db.update(schema.defects)
+            await tx
+              .update(schema.defects)
               .set({
                 status: "REGRESSED",
                 regression_index: sql`${schema.defects.regression_index} + 1`,
                 updated_at: new Date(),
               })
-              .where(eq(schema.defects.id, defect.id));
+              .where(
+                and(
+                  eq(schema.defects.id, defect.id),
+                  eq(schema.defects.status, "READY_FOR_VERIFICATION"),
+                ),
+              );
           }
 
-          const noteMessage = `Auto-resolved from retest run "${testRunFull.name}" — this defect's test case ${result === "passed" ? "passed" : "failed"}.`;
-          await logSystemNote(defect.id, "READY_FOR_VERIFICATION", result === "passed" ? "CLOSED" : "REGRESSED", req.user!.userId, noteMessage);
-
-          await logAudit({
-            entityType: "defect",
-            entityId: defect.id,
-            changedByUserId: req.user!.userId,
-            fromStatus: "READY_FOR_VERIFICATION",
-            toStatus: result === "passed" ? "CLOSED" : "REGRESSED",
-            reason: `Auto-resolved from retest run ${testRunId} — test case ${defect.test_case_id} ${result}`,
-          });
+          // Record result on the enrollment row
+          await tx
+            .update(schema.defectRetests)
+            .set({
+              retest_result: result,
+              retested_by_user_id: userId,
+              retested_at: new Date(),
+            })
+            .where(
+              and(
+                eq(schema.defectRetests.defect_id, defect.id),
+                eq(schema.defectRetests.target_verification_run_id, testRunId),
+              ),
+            );
         }
+      }
+
+      const allRunUseCases = await tx.query.testRunUseCases.findMany({
+        where: eq(schema.testRunUseCases.test_run_id, testRunId),
+        columns: { tester_sign_off: true },
+      });
+      const allSignedOff =
+        allRunUseCases.length > 0 && allRunUseCases.every((uc) => uc.tester_sign_off);
+
+      if (allSignedOff) {
+        const allExecs = await tx.query.executions.findMany({
+          where: eq(schema.executions.test_run_id, testRunId),
+          columns: { overall_result: true },
+        });
+        const allPassed =
+          allExecs.length > 0 &&
+          allExecs.every(
+            (e) => e.overall_result === "passed" || e.overall_result === "passed_by_agreement",
+          );
+        await tx
+          .update(schema.testRuns)
+          .set({
+            status: "completed",
+            passed: allPassed,
+            updated_at: new Date(),
+          })
+          .where(eq(schema.testRuns.id, testRunId));
+      }
+
+      return {
+        createdDefects,
+        allSignedOff,
+        signedOffCount: allRunUseCases.filter((uc) => uc.tester_sign_off).length,
+        totalUseCases: allRunUseCases.length,
+        runStatusBefore: lockedRun.status,
+        runName: lockedRun.name,
+        isRetest: lockedRun.run_type === "retest",
+      };
+    });
+
+    // Post-commit audit/notes (best-effort; data is already consistent)
+    for (const defect of submitResult.createdDefects) {
+      await logSystemNote(defect.id, null, "NEW", userId);
+    }
+    for (const truc of allUseCases) {
+      if (truc.useCase) {
+        await syncUseCaseStatus(testRunId, truc.useCase.id);
       }
     }
 
-    // Check if all use cases in the test run are signed off
-    const allRunUseCases = await db.query.testRunUseCases.findMany({
-      where: eq(schema.testRunUseCases.test_run_id, testRunId),
-      columns: { tester_sign_off: true },
-    });
-    const allSignedOff = allRunUseCases.length > 0 && allRunUseCases.every(uc => uc.tester_sign_off);
-
-    if (allSignedOff) {
-      // Determine overall pass/fail across all executions in the run
-      const allExecs = await db.query.executions.findMany({
-        where: eq(schema.executions.test_run_id, testRunId),
-        columns: { overall_result: true },
-      });
-      const anyFailed = allExecs.some(e => e.overall_result === "failed" || e.overall_result === "passed_by_agreement");
-      const allPassed = allExecs.length > 0 && allExecs.every(e => e.overall_result === "passed" || e.overall_result === "passed_by_agreement");
-
-      await db.update(schema.testRuns)
-        .set({
-          status: "completed",
-          passed: allPassed,
-          updated_at: new Date(),
-        })
-        .where(eq(schema.testRuns.id, testRunId));
-
+    if (submitResult.allSignedOff) {
       await logAudit({
         entityType: "test_run",
         entityId: testRunId,
-        changedByUserId: req.user!.userId,
-        fromStatus: testRun.status,
+        changedByUserId: userId,
+        fromStatus: submitResult.runStatusBefore,
         toStatus: "completed",
-        reason: anyFailed
-          ? `Submitted — ${createdDefects.length} defect(s) created for failed steps`
+        reason: anyStepFailed
+          ? `Submitted — ${submitResult.createdDefects.length} defect(s) created for failed test cases`
           : "Submitted — all steps passed",
       });
     } else {
       await logAudit({
         entityType: "test_run",
         entityId: testRunId,
-        changedByUserId: req.user!.userId,
-        fromStatus: testRun.status,
+        changedByUserId: userId,
+        fromStatus: submitResult.runStatusBefore,
         toStatus: "in_progress",
-        reason: `Partial submit — ${createdDefects.length} defect(s) created, ${allRunUseCases.filter(uc => uc.tester_sign_off).length}/${allRunUseCases.length} scenarios signed off`,
+        reason: `Partial submit — ${submitResult.createdDefects.length} defect(s) created, ${submitResult.signedOffCount}/${submitResult.totalUseCases} scenarios signed off`,
       });
     }
 
     res.json({
-      message: allSignedOff ? "Test run completed" : "Your scenarios submitted — waiting for other testers",
+      message: submitResult.allSignedOff
+        ? "Test run completed"
+        : "Your scenarios submitted — waiting for other testers",
       passed: !anyStepFailed,
-      defectsCreated: createdDefects.length,
+      defectsCreated: submitResult.createdDefects.length,
       testRunId,
-      allSignedOff,
+      allSignedOff: submitResult.allSignedOff,
     });
   } catch (err) {
+    const status = (err as { status?: number }).status;
+    if (status && err instanceof Error) {
+      res.status(status).json({ message: err.message });
+      return;
+    }
     next(err);
   }
 });

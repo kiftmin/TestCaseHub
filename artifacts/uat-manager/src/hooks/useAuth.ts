@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useLocation } from "wouter";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   getStoredUser,
   removeToken,
@@ -8,6 +9,7 @@ import {
 
 export function useAuth() {
   const [, navigate] = useLocation();
+  const queryClient = useQueryClient();
   const user = getStoredUser();
   const isAdmin = user?.role === "ADMIN";
   const isAuthenticated = !!user;
@@ -15,8 +17,9 @@ export function useAuth() {
   const logout = useCallback(() => {
     removeToken();
     removeStoredUser();
+    queryClient.clear();
     navigate("/login");
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   return { user, isAdmin, isAuthenticated, logout };
 }

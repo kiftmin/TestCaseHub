@@ -63,8 +63,9 @@ const PROGRESS_ICONS: Record<CaseProgress, string> = {
    Utilities
    ──────────────────────────────────────────────────────────────────── */
 
-function draftKey(testRunId: number, testCaseId: number, stepId: number) {
-  return `draft_step_${testRunId}_${testCaseId}_${stepId}`;
+function draftKey(testRunId: number, testCaseId: number, stepId: number, userId?: number) {
+  const uid = userId != null ? `u${userId}_` : "";
+  return `draft_step_${uid}${testRunId}_${testCaseId}_${stepId}`;
 }
 
 function isFromToday(savedAt: string): boolean {
@@ -719,11 +720,14 @@ function StepWizard({
       }),
     onMutate: (vars) => {
       pendingMutations.current++;
+      const stepId = currentStep!.id;
+      const previous = localResults.get(stepId) ?? null;
       setLocalResults((prev) => {
         const next = new Map(prev);
-        next.set(currentStep!.id, vars.passed);
+        next.set(stepId, vars.passed);
         return next;
       });
+      return { stepId, previous };
     },
     onSuccess: (_data, vars) => {
       removeDraft(currentStep!.id);
@@ -732,7 +736,17 @@ function StepWizard({
       queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
       queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error, _vars, ctx) => {
+      if (ctx) {
+        setLocalResults((prev) => {
+          const next = new Map(prev);
+          if (ctx.previous == null) next.delete(ctx.stepId);
+          else next.set(ctx.stepId, ctx.previous);
+          return next;
+        });
+      }
+      toast.error(e.message);
+    },
     onSettled: () => { pendingMutations.current--; },
   });
 
@@ -1286,15 +1300,27 @@ function QuickWizard({
       // Don't remove the draft from entries — that would clear the textarea's
       // "what actually happened" text on the next render.  Just clear the
       // sessionStorage copy since it has been persisted to the API.
-      const key = draftKey(testRunId, scenarioId, vars.stepId);
+      const key = draftKey(testRunId, testCaseId, vars.stepId);
       sessionStorage.removeItem(key);
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error, vars) => {
+      setLocalResults((prev) => {
+        const next = new Map(prev);
+        next.delete(vars.stepId);
+        return next;
+      });
+      toast.error(e.message);
+    },
     onSettled: () => { pendingMutations.current--; },
   });
 
   // Save a single step result when pass/fail is toggled
   const handleQuickStepResult = (stepId: number, passed: boolean, entry: ExecutionEntry) => {
+    setLocalResults((prev) => {
+      const next = new Map(prev);
+      next.set(stepId, passed);
+      return next;
+    });
     saveStepMut.mutate({
       stepId,
       data: {
@@ -1302,11 +1328,6 @@ function QuickWizard({
         actual_result: entry.actual_result,
         comments: entry.comments,
       },
-    });
-    setLocalResults((prev) => {
-      const next = new Map(prev);
-      next.set(stepId, passed);
-      return next;
     });
   };
 

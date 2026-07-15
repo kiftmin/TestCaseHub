@@ -3,7 +3,7 @@ import { eq, desc } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { checkProjectRole, denyUnlessProjectAccess, projectIdFromTestRun, AuthenticatedRequest } from "../middlewares/auth.js";
 
 const router = express.Router({ mergeParams: true });
 
@@ -12,6 +12,7 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId || req.query.testRunId);
     if (!testRunId) { res.status(400).json({ message: "testRunId is required" }); return; }
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromTestRun(testRunId)))) return;
     const data = await db.query.testRunChecklistItems.findMany({
       where: eq(schema.testRunChecklistItems.test_run_id, testRunId),
       orderBy: schema.testRunChecklistItems.sort_order,

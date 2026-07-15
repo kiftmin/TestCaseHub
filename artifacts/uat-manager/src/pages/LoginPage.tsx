@@ -20,7 +20,12 @@ export function LoginPage() {
   const [error, setError] = useState("");
 
   const params = new URLSearchParams(window.location.search);
-  const redirect = params.get("redirect") || "/dashboard";
+  const rawRedirect = params.get("redirect") || "/dashboard";
+  // Only allow same-origin relative paths (block open redirects)
+  const redirect =
+    rawRedirect.startsWith("/") && !rawRedirect.startsWith("//") && !rawRedirect.includes("://")
+      ? rawRedirect
+      : "/dashboard";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

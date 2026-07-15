@@ -1,0 +1,106 @@
+diff --git a/artifacts/api-server/src/routes/test-runs.ts b/artifacts/api-server/src/routes/test-runs.ts
+index d8ee6a3..221295b 100644
+--- a/artifacts/api-server/src/routes/test-runs.ts
++++ b/artifacts/api-server/src/routes/test-runs.ts
+@@ -132,7 +132,7 @@ router.get("/:testRunId", async (req: AuthenticatedRequest, res, next) => {
+       where: eq(schema.testRuns.id, testRunId),
+       with: {
+         checklistItems: { orderBy: [asc(schema.testRunChecklistItems.sort_order)] },
+-        executions: { with: { stepResults: { orderBy: [desc(schema.stepResults.recorded_at)] } } },
++        executions: { with: { stepResults: { orderBy: [asc(schema.stepResults.id)] } } },
+         useCases: {
+           with: {
+             useCase: {
+diff --git a/artifacts/uat-manager/src/lib/pdf-documents.tsx b/artifacts/uat-manager/src/lib/pdf-documents.tsx
+index 20b9820..8f7c693 100644
+--- a/artifacts/uat-manager/src/lib/pdf-documents.tsx
++++ b/artifacts/uat-manager/src/lib/pdf-documents.tsx
+@@ -1107,7 +1107,11 @@ export function TestRunResultReportPDF({
+                           <Text style={[rpt.stepHeaderCell, { width: STEP_COL.result }]}>Result</Text>
+                         </View>
+                         {(tc.steps ?? []).map((step, i) => {
+-                          const sr = exec?.stepResults?.find(r => r.step_id === step.id);
++                          // Take highest-ID result per step — matches execution engine deduplication
++                          const matchingSrs = exec?.stepResults?.filter(r => r.step_id === step.id) ?? [];
++                          const sr = matchingSrs.length > 0
++                            ? matchingSrs.reduce((best, r) => (r.step_id > best.step_id ? r : best), matchingSrs[0])
++                            : undefined;
+                           // Infer when passed is null (runs recorded before the onResult fix):
+                           // passed TC → all steps pass; failed TC + step has actual_result → that step failed.
+                           const inferredPassed =
+diff --git a/artifacts/uat-manager/src/pages/TestRunDetailPage.tsx b/artifacts/uat-manager/src/pages/TestRunDetailPage.tsx
+index 42ea3b8..2e5d614 100644
+--- a/artifacts/uat-manager/src/pages/TestRunDetailPage.tsx
++++ b/artifacts/uat-manager/src/pages/TestRunDetailPage.tsx
+@@ -1379,7 +1379,18 @@ function ConfirmDialog({
+ 
+         {/* Guided mode footer */}
+         {mode === "guided" && !readOnly && (
+-          <div className="px-lg py-md border-t border-outline-variant flex items-center justify-between bg-surface-container-low">
++          <div className="border-t border-outline-variant bg-surface-container-low">
++            <div className="px-lg pt-md pb-sm">
++              <label className="font-label-sm text-label-sm text-on-surface-variant">Execution Notes</label>
++              <textarea
++                className="w-full mt-xs bg-surface border border-outline-variant rounded-lg px-md py-sm font-body-sm text-body-sm resize-none"
++                rows={2}
++                placeholder="General observations about this test case execution..."
++                value={testerNotes}
++                onChange={(e) => setTesterNotes(e.target.value)}
++              />
++            </div>
++            <div className="px-lg py-md flex items-center justify-between">
+             <button
+               disabled={currentStep === 0}
+               onClick={() => {
+@@ -1433,6 +1444,7 @@ function ConfirmDialog({
+                 </button>
+               )}
+             </div>
++            </div>
+           </div>
+         )}
+ 
+@@ -1757,25 +1769,17 @@ function QuickMode({
+       <div className="border-t border-outline-variant pt-md space-y-sm">
+         <div>
+           <label className="font-label-md text-label-md text-on-surface">Overall Result</label>
+-          {readOnly ? (
+-            <p className="mt-xs bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm font-body-base">
+-              {overallResult || <span className="text-on-surface-variant italic">Not set</span>}
+-            </p>
+-          ) : (
+-            <select
+-              className="w-full mt-xs bg-surface border border-outline-variant rounded-lg px-md py-sm font-body-base"
+-              value={overallResult}
+-              onChange={(e) => onOverallResult?.(e.target.value)}
+-            >
+-              <option value="">Select result...</option>
+-              <option value="passed">Passed</option>
+-              <option value="failed">Failed</option>
+-              <option value="passed_by_agreement">Passed by Agreement</option>
+-            </select>
+-          )}
++          <p className="mt-xs bg-surface-container-low border border-outline-variant rounded-lg px-md py-sm font-body-base">
++            {overallResult
++              ? <span className={overallResult === "passed" ? "text-green-700 font-semibold" : overallResult === "failed" ? "text-red-700 font-semibold" : "text-purple-700 font-semibold"}>
++                  {overallResult === "passed" ? "Passed" : overallResult === "failed" ? "Failed" : "Passed by Agreement"}
++                </span>
++              : <span className="text-on-surface-variant italic">Calculated from step results on completion</span>
++            }
++          </p>
+         </div>
+         <div>
+-          <label className="font-label-md text-label-md text-on-surface">Notes</label>
++          <label className="font-label-md text-label-md text-on-surface">Execution Notes</label>
+           {readOnly ? (
+             <p className="w-full mt-xs bg-surface-container-low border border-outline-variant rounded-lg p-md font-body-sm text-body-sm">
+               {testerNotes || <span className="text-on-surface-variant italic">No notes</span>}
+@@ -1784,7 +1788,7 @@ function QuickMode({
+             <textarea
+               className="w-full mt-xs bg-surface border border-outline-variant rounded-lg p-md font-body-sm text-body-sm resize-none"
+               rows={3}
+-              placeholder="Execution notes..."
++              placeholder="General observations about this test case execution..."
+               value={testerNotes}
+               onChange={(e) => onTesterNotes?.(e.target.value)}
+             />

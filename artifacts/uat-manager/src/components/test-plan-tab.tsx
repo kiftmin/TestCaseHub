@@ -5,7 +5,7 @@ import { PDFDownloadLink } from "@react-pdf/renderer";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { EmptyState } from "./ui/empty-state";
-import { customFetch, API_ORIGIN } from "../lib/api-client";
+import { customFetch, uploadUrl } from "../lib/api-client";
 import { useProjectRole } from "../hooks/useProjectRole";
 import { useConfirmDialog } from "../hooks/use-confirm-dialog";
 import {
@@ -1017,10 +1017,10 @@ function StepItem({
               {images.map((url, i) => (
                 <img
                   key={i}
-                  src={`${API_ORIGIN}${url}`}
+                   src={uploadUrl(url)}
                   alt="Step reference"
                   className="w-12 h-12 object-cover rounded border border-outline-variant cursor-pointer hover:opacity-80"
-                  onClick={() => window.open(`${API_ORIGIN}${url}`, "_blank")}
+                   onClick={() => window.open(uploadUrl(url), "_blank")}
                 />
               ))}
             </div>

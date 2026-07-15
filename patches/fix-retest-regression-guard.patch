@@ -1,0 +1,109 @@
+diff --git a/artifacts/api-server/src/routes/defects.ts b/artifacts/api-server/src/routes/defects.ts
+index 8fbe55d..e87e27b 100644
+--- a/artifacts/api-server/src/routes/defects.ts
++++ b/artifacts/api-server/src/routes/defects.ts
+@@ -414,13 +414,41 @@ router.patch("/defects/:defectId/quick-verify", async (req: AuthenticatedRequest
+     const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD", "TESTER"]);
+     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
+ 
+-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
++    const defect = await db.query.defects.findFirst({
++      where: eq(schema.defects.id, defectId),
++      with: { testCase: { with: { useCase: true } } },
++    });
+     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+     if (defect.status !== "READY_FOR_VERIFICATION") {
+       res.status(400).json({ message: "Defect must be READY_FOR_VERIFICATION to verify." });
+       return;
+     }
+ 
++    // Block Quick Verify when the defect is enrolled in an active retest run.
++    // In that case the retest run's execution results will auto-resolve the defect
++    // using test-case-level attribution, which is more accurate than a manual verdict.
++    const useCaseId = defect.testCase?.useCase?.id;
++    if (useCaseId) {
++      const activeRetestRun = await db.query.testRuns.findFirst({
++        where: and(
++          eq(schema.testRuns.project_id, projectId),
++          eq(schema.testRuns.run_type, "retest"),
++          ne(schema.testRuns.status, "completed"),
++        ),
++        with: { useCases: { columns: { use_case_id: true } } },
++      });
++      const enrolledInActiveRun = activeRetestRun?.useCases.some(
++        (uc) => uc.use_case_id === useCaseId,
++      );
++      if (enrolledInActiveRun) {
++        res.status(409).json({
++          message:
++            "This defect is part of an active retest run and will be resolved automatically when testers complete that run. Quick Verify is disabled to prevent a conflicting manual verdict.",
++        });
++        return;
++      }
++    }
++
+     const oldStatus = defect.status;
+ 
+     // Look up the test_case to find the parent use_case_id for scenario injection
+diff --git a/artifacts/api-server/src/routes/executions.ts b/artifacts/api-server/src/routes/executions.ts
+index dec203b..af119a5 100644
+--- a/artifacts/api-server/src/routes/executions.ts
++++ b/artifacts/api-server/src/routes/executions.ts
+@@ -829,15 +829,27 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
+ 
+         if (linkedDefects.length === 0) continue;
+ 
+-        // Determine result for this use case from executions
+-        const ucExecutions = allExecutions.filter(e =>
+-          ucTestCaseIds.includes(e.test_case_id),
+-        );
+-        const anyFailed = ucExecutions.some(e => e.overall_result === "failed");
+-        const result: "passed" | "failed" = anyFailed ? "failed" : "passed";
++        // Build a lookup of test_case_id → execution result for this use case.
++        // Each defect is resolved based on its OWN test case's result — not the
++        // scenario-level overall — so that a failure in test case B does not
++        // incorrectly penalise a READY_FOR_VERIFICATION defect linked to test case A
++        // (whose fix may be correct) or bump the regression_index of a defect that
++        // is still being fixed on an unrelated test case in the same scenario.
++        const executionResultByTestCaseId = new Map<number, "passed" | "failed">();
++        for (const e of allExecutions) {
++          if (ucTestCaseIds.includes(e.test_case_id)) {
++            executionResultByTestCaseId.set(
++              e.test_case_id,
++              e.overall_result === "failed" ? "failed" : "passed",
++            );
++          }
++        }
+ 
+-        // Resolve each linked defect
++        // Resolve each READY_FOR_VERIFICATION defect using only its own test case result.
+         for (const defect of linkedDefects) {
++          const result: "passed" | "failed" =
++            executionResultByTestCaseId.get(defect.test_case_id) ?? "passed";
++
+           if (result === "passed") {
+             await db.update(schema.defects)
+               .set({
+@@ -863,7 +875,7 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
+             changedByUserId: req.user!.userId,
+             fromStatus: "READY_FOR_VERIFICATION",
+             toStatus: result === "passed" ? "CLOSED" : "ASSIGNED",
+-            reason: `Auto-resolved from retest run ${testRunId} — ${result}`,
++            reason: `Auto-resolved from retest run ${testRunId} — test case ${defect.test_case_id} ${result}`,
+           });
+         }
+       }
+diff --git a/artifacts/uat-manager/src/pages/DefectLogPage.tsx b/artifacts/uat-manager/src/pages/DefectLogPage.tsx
+index 5cb2489..ff60613 100644
+--- a/artifacts/uat-manager/src/pages/DefectLogPage.tsx
++++ b/artifacts/uat-manager/src/pages/DefectLogPage.tsx
+@@ -1261,7 +1261,8 @@ function DefectRow({
+               </button>
+             )}
+             {/* Quick Verify — immediately prompt pass/fail (READY_FOR_VERIFICATION) */}
+-            {(isTester || canManage) && isReady && (
++            {/* Hidden when the defect is enrolled in an active retest run — execution results will auto-resolve it */}
++            {(isTester || canManage) && isReady && !defect.inActiveRetestRun && (
+               <>
+                 <button
+                   onClick={() => setQuickVerifyResultAction("passed")}

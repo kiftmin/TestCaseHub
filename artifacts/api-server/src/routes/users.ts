@@ -4,7 +4,7 @@ import { z } from "zod";
 import { eq, sql } from "drizzle-orm";
 import { db, pool } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, AuthenticatedRequest } from "../middlewares/auth.js";
+import { authenticate, authorize, invalidateUserCache, AuthenticatedRequest } from "../middlewares/auth.js";
 import { logAudit } from "../utils/project.js";
 
 const router = express.Router();
@@ -23,27 +23,27 @@ router.get("/", async (req, res, next) => {
 });
 
 const createUserSchema = z.object({
-  username: z.string(),
-  password: z.string(),
-  name: z.string(),
-  email: z.string(),
-  role: z.string(),
+  username: z.string().min(1),
+  password: z.string().min(8),
+  name: z.string().min(1),
+  email: z.string().email(),
+  role: z.enum(["ADMIN", "USER"]),
 });
 
 const updateUserSchema = z.object({
-  name: z.string(),
-  email: z.string(),
-  role: z.string(),
+  name: z.string().min(1),
+  email: z.string().email(),
+  role: z.enum(["ADMIN", "USER"]),
 });
 
 const updatePasswordSchema = z.object({
-  password: z.string().min(6),
+  password: z.string().min(8),
 });
 
 router.post("/", authorize(["ADMIN"]), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { username, password, name, email, role } = createUserSchema.parse(req.body);
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 12);
     const [user] = await db
       .insert(schema.users)
       .values({ username, password_hash: hashedPassword, name, email, role })
@@ -59,11 +59,13 @@ router.post("/", authorize(["ADMIN"]), async (req: AuthenticatedRequest, res, ne
 router.put("/:userId", authorize(["ADMIN"]), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { name, email, role } = updateUserSchema.parse(req.body);
+    const userId = Number(req.params.userId);
     const [user] = await db
       .update(schema.users)
       .set({ name, email, role })
-      .where(eq(schema.users.id, Number(req.params.userId)))
+      .where(eq(schema.users.id, userId))
       .returning();
+    invalidateUserCache(userId);
     const { password_hash, ...safeUser } = user;
     await logAudit({ entityType: "user", entityId: user.id, changedByUserId: req.user!.userId, toStatus: "updated", reason: user.username });
     res.json(safeUser);
@@ -80,6 +82,7 @@ router.put("/:userId/suspend", authorize(["ADMIN"]), async (req: AuthenticatedRe
       .set({ is_active: sql`NOT is_active` })
       .where(eq(schema.users.id, userId))
       .returning();
+    invalidateUserCache(userId);
     const { password_hash, ...safeUser } = user;
     await logAudit({ entityType: "user", entityId: userId, changedByUserId: req.user!.userId, toStatus: user.is_active ? "activated" : "suspended", reason: user.username });
     res.json(safeUser);
@@ -91,7 +94,7 @@ router.put("/:userId/suspend", authorize(["ADMIN"]), async (req: AuthenticatedRe
 router.put("/:userId/password", authorize(["ADMIN"]), async (req, res, next) => {
   try {
     const { password } = updatePasswordSchema.parse(req.body);
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 12);
     const [user] = await db
       .update(schema.users)
       .set({ password_hash: hashedPassword })

@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { pdf } from "@react-pdf/renderer";
-import { customFetch, API_ORIGIN } from "../lib/api-client";
+import { customFetch, uploadUrl } from "../lib/api-client";
 import { triggerDownload } from "../lib/csv-utils";
 import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
@@ -775,17 +775,54 @@ function ScenarioPanel({
               onAssign={onAssign}
             />
           )}
-          {(truc.useCase as UseCase & { testCases?: TestCase[] })?.testCases?.map((tc) => (
-            <div
-              key={tc.id}
-              onClick={() => onExec(tc)}
-              className="px-md py-sm hover:bg-surface-container-low transition-colors flex items-center gap-md cursor-pointer rounded"
-            >
-              <span className="material-symbols-outlined text-on-surface-variant text-sm">play_circle</span>
-              <span className="flex-1 font-body-sm">[{tc.case_number}] {tc.title}</span>
-              <span className="material-symbols-outlined text-on-surface-variant text-sm">chevron_right</span>
-            </div>
-          ))}
+          {(truc.useCase as UseCase & { testCases?: TestCase[] })?.testCases?.map((tc) => {
+            const role = tc.retestRole;
+            const blocked = role === "blocked" || tc.retestExecutable === false;
+            const roleBadge =
+              role === "verify"
+                ? "bg-green-100 text-green-800"
+                : role === "regression"
+                  ? "bg-blue-100 text-blue-800"
+                  : role === "blocked"
+                    ? "bg-red-100 text-red-800"
+                    : "";
+            return (
+              <div
+                key={tc.id}
+                onClick={() => {
+                  if (blocked) {
+                    toast.error(tc.retestBlockingReason || "This case is blocked and cannot be executed");
+                    return;
+                  }
+                  onExec(tc);
+                }}
+                className={`px-md py-sm transition-colors flex items-center gap-md rounded ${
+                  blocked
+                    ? "opacity-60 cursor-not-allowed bg-red-50/40"
+                    : "hover:bg-surface-container-low cursor-pointer"
+                }`}
+                title={blocked ? (tc.retestBlockingReason ?? "Blocked") : undefined}
+              >
+                <span className="material-symbols-outlined text-on-surface-variant text-sm">
+                  {blocked ? "block" : "play_circle"}
+                </span>
+                <span className="flex-1 font-body-sm">
+                  [{tc.case_number}] {tc.title}
+                </span>
+                {role && (
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${roleBadge}`}>
+                    {role}
+                    {role === "verify" && tc.retestBugNumber != null
+                      ? ` #${tc.retestBugNumber}`
+                      : ""}
+                  </span>
+                )}
+                {!blocked && (
+                  <span className="material-symbols-outlined text-on-surface-variant text-sm">chevron_right</span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -917,7 +954,7 @@ function ExecutionModal({
         });
       }
 
-      setProofImages((prev) => ({ ...prev, [stepId]: `${API_ORIGIN}${uploadRes.fileUrl}` }));
+      setProofImages((prev) => ({ ...prev, [stepId]: uploadUrl(uploadRes.fileUrl) }));
       toast.success("Proof uploaded");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "An error occurred");
@@ -991,7 +1028,7 @@ function ExecutionModal({
                 attachments.forEach((a) => {
                   if (a.field?.startsWith("step_")) {
                     const stepId = Number(a.field.replace("step_", ""));
-                    if (!isNaN(stepId)) imgMap[stepId] = `${API_ORIGIN}${a.file_url}`;
+                    if (!isNaN(stepId)) imgMap[stepId] = uploadUrl(a.file_url);
                   }
                 });
                 if (Object.keys(imgMap).length > 0) setProofImages(imgMap);
@@ -1052,18 +1089,41 @@ function ExecutionModal({
       const stored = sessionStorage.getItem(draftKey);
       if (!stored) return;
       try {
-        const pending = JSON.parse(stored);
+        const pending = JSON.parse(stored) as Array<{
+          stepId: number;
+          passed: boolean;
+          actual_result?: string;
+          comments?: string;
+        }>;
+        const remaining: typeof pending = [];
         for (const r of pending) {
-          await customFetch(`/executions/${execution.id}/steps/${r.stepId}/result`, {
-            method: "POST",
-            body: JSON.stringify({ passed: r.passed, actual_result: r.actual_result ?? "", comments: r.comments ?? "" }),
-          });
+          try {
+            await customFetch(`/executions/${execution.id}/steps/${r.stepId}/result`, {
+              method: "POST",
+              body: JSON.stringify({
+                passed: r.passed,
+                actual_result: r.actual_result ?? "",
+                comments: r.comments ?? "",
+              }),
+            });
+          } catch {
+            remaining.push(r);
+          }
         }
-        sessionStorage.removeItem(draftKey);
-        setOfflineBanner(false);
-        toast.success("Draft submitted successfully");
+        if (remaining.length === 0) {
+          sessionStorage.removeItem(draftKey);
+          setOfflineBanner(false);
+          toast.success("Offline drafts synced successfully");
+        } else {
+          sessionStorage.setItem(draftKey, JSON.stringify(remaining));
+          toast.error(
+            `${remaining.length} offline step result(s) failed to sync — will retry when online`,
+          );
+        }
         queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
-      } catch { /* ignore */ }
+      } catch {
+        toast.error("Failed to sync offline drafts — data kept for retry");
+      }
     };
     window.addEventListener("online", handleOnline);
     return () => window.removeEventListener("online", handleOnline);

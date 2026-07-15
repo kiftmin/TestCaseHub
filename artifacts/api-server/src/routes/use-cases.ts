@@ -1,9 +1,9 @@
 import express from "express";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { checkProjectRole, denyUnlessProjectAccess, projectIdFromUseCase, AuthenticatedRequest } from "../middlewares/auth.js";
 import { bumpProjectVersion, logAudit } from "../utils/project.js";
 
 const router = express.Router();
@@ -19,6 +19,7 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
       res.status(400).json({ message: "projectId is required" });
       return;
     }
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
     const result = await db.query.useCases.findMany({
       where: eq(schema.useCases.project_id, projectId),
       orderBy: schema.useCases.sort_order,
@@ -32,6 +33,7 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
 router.get("/:useCaseId/test-cases", async (req: AuthenticatedRequest, res, next) => {
   try {
     const useCaseId = Number(req.params.useCaseId);
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromUseCase(useCaseId)))) return;
     const data = await db.query.testCases.findMany({
       where: eq(schema.testCases.use_case_id, useCaseId),
       orderBy: desc(schema.testCases.created_at),
@@ -54,6 +56,7 @@ router.get("/:useCaseId", async (req: AuthenticatedRequest, res, next) => {
       },
     });
     if (!data) { res.status(404).json({ message: "Not found" }); return; }
+    if (!(await denyUnlessProjectAccess(req, res, data.project_id))) return;
     res.json(data);
   } catch (err) { next(err); }
 });

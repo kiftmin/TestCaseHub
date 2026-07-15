@@ -1,13 +1,14 @@
 import express from "express";
-import { eq, desc, and, or, inArray, sql } from "drizzle-orm";
+import { eq, desc, and, or, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { authenticate, authorize, checkProjectRole, denyUnlessProjectAccess, AuthenticatedRequest } from "../middlewares/auth.js";
 import { bumpProjectVersion, logAudit } from "../utils/project.js";
+import { classifySiblingCases } from "../utils/retest-scope.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -166,6 +167,7 @@ router.post("/", authenticate, authorize(["ADMIN"]), async (req: AuthenticatedRe
 router.get("/:projectId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
     const project = await db.query.projects.findFirst({
       where: eq(schema.projects.id, projectId),
       with: {
@@ -197,6 +199,7 @@ router.get("/:projectId", async (req: AuthenticatedRequest, res, next) => {
 router.get("/:projectId/test-runs", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
     const data = await db.query.testRuns.findMany({
       where: eq(schema.testRuns.project_id, projectId),
       orderBy: desc(schema.testRuns.scheduled_at),
@@ -205,7 +208,58 @@ router.get("/:projectId/test-runs", async (req: AuthenticatedRequest, res, next)
   } catch (err) { next(err); }
 });
 
+// GET /api/projects/:projectId/test-runs/retest-preview — sibling classification for UI
+router.get("/:projectId/test-runs/retest-preview", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const projectId = Number(req.params.projectId);
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
+
+    const defects = await db.query.defects.findMany({
+      where: and(
+        eq(schema.defects.project_id, projectId),
+        eq(schema.defects.status, "READY_FOR_VERIFICATION"),
+      ),
+      with: { testCase: true },
+    });
+
+    const activeRetestRuns = await db.query.testRuns.findMany({
+      where: and(
+        eq(schema.testRuns.project_id, projectId),
+        eq(schema.testRuns.run_type, "retest"),
+        ne(schema.testRuns.status, "completed"),
+      ),
+      columns: { id: true },
+    });
+    const activeRunIds = activeRetestRuns.map((r) => r.id);
+    let alreadyEnrolled = new Set<number>();
+    if (activeRunIds.length > 0) {
+      const enrollments = await db.query.defectRetests.findMany({
+        where: inArray(schema.defectRetests.target_verification_run_id, activeRunIds),
+        columns: { defect_id: true },
+      });
+      alreadyEnrolled = new Set(enrollments.map((e) => e.defect_id));
+    }
+
+    const eligible = defects.filter((d) => !alreadyEnrolled.has(d.id) && d.testCase);
+    const siblings = await classifySiblingCases(projectId, eligible);
+
+    const summary = {
+      verify: siblings.filter((s) => s.role === "verify").length,
+      blocked: siblings.filter((s) => s.role === "blocked").length,
+      regression: siblings.filter((s) => s.role === "regression").length,
+      rfvDefects: eligible.length,
+      skippedAlreadyEnrolled: defects.length - eligible.length,
+      scenarios: new Set(siblings.map((s) => s.useCaseId)).size,
+    };
+
+    res.json({ summary, cases: siblings });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/projects/:projectId/test-runs/retest — TEST_LEAD / ADMIN only
+// Phase A+B: RFV cases (verify) + optional regression siblings; blocked listed but not executable.
 router.post("/:projectId/test-runs/retest", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
@@ -223,6 +277,10 @@ router.post("/:projectId/test-runs/retest", async (req: AuthenticatedRequest, re
     const parsed = z.object({
       name: z.string(),
       scheduled_at: z.string().optional(),
+      /** Phase B: include safe sibling cases as regression */
+      includeRegression: z.boolean().optional().default(false),
+      /** Optional subset of regression case IDs; if omitted and includeRegression, all regression candidates */
+      regressionTestCaseIds: z.array(z.number()).optional(),
     }).parse(req.body);
 
     // 1. Find all READY_FOR_VERIFICATION defects for this project
@@ -243,65 +301,185 @@ router.post("/:projectId/test-runs/retest", async (req: AuthenticatedRequest, re
       return;
     }
 
-    // 2. Extract unique use case IDs
-    const useCaseIdSet = new Set<number>();
-    for (const defect of defects) {
-      if (defect.testCase?.use_case_id) {
-        useCaseIdSet.add(defect.testCase.use_case_id);
-      }
+    // Skip defects already enrolled in an incomplete retest run
+    const activeRetestRuns = await db.query.testRuns.findMany({
+      where: and(
+        eq(schema.testRuns.project_id, projectId),
+        eq(schema.testRuns.run_type, "retest"),
+        ne(schema.testRuns.status, "completed"),
+      ),
+      columns: { id: true },
+    });
+    const activeRunIds = activeRetestRuns.map((r) => r.id);
+    let alreadyEnrolled = new Set<number>();
+    if (activeRunIds.length > 0) {
+      const enrollments = await db.query.defectRetests.findMany({
+        where: inArray(schema.defectRetests.target_verification_run_id, activeRunIds),
+        columns: { defect_id: true },
+      });
+      alreadyEnrolled = new Set(enrollments.map((e) => e.defect_id));
     }
-    const useCaseIds = Array.from(useCaseIdSet);
 
-    if (useCaseIds.length === 0) {
+    const eligible = defects.filter((d) => !alreadyEnrolled.has(d.id) && d.testCase);
+    if (eligible.length === 0) {
       res.status(400).json({
-        message: "Could not resolve use case IDs from the linked defects",
+        message: "All READY_FOR_VERIFICATION defects are already enrolled in an active retest run",
       });
       return;
     }
 
-    // 3. Create the retest run
-    const [newRun] = await db.insert(schema.testRuns).values({
-      project_id: projectId,
-      name: parsed.name,
-      scheduled_at: parsed.scheduled_at ? new Date(parsed.scheduled_at) : null,
-      run_type: "retest",
-    }).returning();
+    // 2. Classify siblings
+    const siblings = await classifySiblingCases(projectId, eligible);
+    const verifyCases = siblings.filter((s) => s.role === "verify");
+    const blockedCases = siblings.filter((s) => s.role === "blocked");
+    const regressionCandidates = siblings.filter((s) => s.role === "regression");
 
-    // 4. Insert test_run_use_cases
-    for (const useCaseId of useCaseIds) {
-      await db.insert(schema.testRunUseCases).values({
-        test_run_id: newRun.id,
-        use_case_id: useCaseId,
-      });
+    let regressionToInclude = regressionCandidates;
+    if (!parsed.includeRegression) {
+      regressionToInclude = [];
+    } else if (parsed.regressionTestCaseIds && parsed.regressionTestCaseIds.length > 0) {
+      const allowedIds = new Set(parsed.regressionTestCaseIds);
+      // Only allow IDs that are actual regression candidates (never blocked/verify via this path)
+      regressionToInclude = regressionCandidates.filter((c) => allowedIds.has(c.testCaseId));
     }
 
-    // 5. Seed standard entry checklist
-    const defaultItems = [
-      "Fixes have been deployed to the test environment",
-      "Test data has been refreshed as required",
-      "All testers have been notified of the retest scope",
-      "Defects to be retested have been communicated to the team",
-      "Test environment is accessible to all assigned testers",
-    ];
-    await db.insert(schema.testRunChecklistItems).values(
-      defaultItems.map((item_text, sort_order) => ({
-        test_run_id: newRun.id,
-        item_text,
-        sort_order: sort_order + 1,
-      })),
+    const useCaseIds = Array.from(
+      new Set([
+        ...verifyCases.map((c) => c.useCaseId),
+        ...regressionToInclude.map((c) => c.useCaseId),
+        // Keep blocked scenarios for visibility when they share a scenario with verify
+        ...blockedCases
+          .filter((b) => verifyCases.some((v) => v.useCaseId === b.useCaseId))
+          .map((c) => c.useCaseId),
+      ]),
     );
+
+    // 3. Create the retest run + scope + enrollments
+    const newRun = await db.transaction(async (tx) => {
+      const [run] = await tx.insert(schema.testRuns).values({
+        project_id: projectId,
+        name: parsed.name,
+        scheduled_at: parsed.scheduled_at ? new Date(parsed.scheduled_at) : null,
+        run_type: "retest",
+      }).returning();
+
+      for (const useCaseId of useCaseIds) {
+        await tx.insert(schema.testRunUseCases).values({
+          test_run_id: run.id,
+          use_case_id: useCaseId,
+        });
+      }
+
+      // Enroll RFV defects
+      for (const defect of eligible) {
+        await tx.insert(schema.defectRetests).values({
+          defect_id: defect.id,
+          test_run_id: defect.test_run_id,
+          target_verification_run_id: run.id,
+        });
+      }
+
+      // Persist case scope
+      const scopeRows: Array<{
+        test_run_id: number;
+        test_case_id: number;
+        role: "verify" | "regression" | "blocked";
+        defect_id: number | null;
+      }> = [];
+
+      for (const c of verifyCases) {
+        scopeRows.push({
+          test_run_id: run.id,
+          test_case_id: c.testCaseId,
+          role: "verify",
+          defect_id: c.defectId,
+        });
+      }
+      for (const c of regressionToInclude) {
+        scopeRows.push({
+          test_run_id: run.id,
+          test_case_id: c.testCaseId,
+          role: "regression",
+          defect_id: null,
+        });
+      }
+      // Blocked siblings in same scenarios (visibility only)
+      for (const c of blockedCases) {
+        if (!useCaseIds.includes(c.useCaseId)) continue;
+        scopeRows.push({
+          test_run_id: run.id,
+          test_case_id: c.testCaseId,
+          role: "blocked",
+          defect_id: c.defectId,
+        });
+      }
+
+      if (scopeRows.length > 0) {
+        await tx.insert(schema.testRunCaseScope).values(scopeRows);
+      }
+
+      const defaultItems = [
+        "Fixes have been deployed to the test environment",
+        "Test data has been refreshed as required",
+        "All testers have been notified of the retest scope",
+        "Verify cases: only Ready-for-Verification defects; blocked cases must not be executed",
+        "Test environment is accessible to all assigned testers",
+      ];
+      await tx.insert(schema.testRunChecklistItems).values(
+        defaultItems.map((item_text, sort_order) => ({
+          test_run_id: run.id,
+          item_text,
+          sort_order: sort_order + 1,
+        })),
+      );
+
+      return run;
+    });
 
     await logAudit({
       entityType: "test_run",
       entityId: newRun.id,
       changedByUserId: req.user!.userId,
       toStatus: "created_retest",
+      reason: `verify=${verifyCases.length} regression=${regressionToInclude.length} blocked=${blockedCases.length} scenarios=${useCaseIds.length}`,
     });
 
     res.status(201).json({
       ...newRun,
-      defect_count: defects.length,
+      defect_count: eligible.length,
+      verify_case_count: verifyCases.length,
+      regression_case_count: regressionToInclude.length,
+      blocked_case_count: blockedCases.filter((b) => useCaseIds.includes(b.useCaseId)).length,
       use_case_count: useCaseIds.length,
+      skipped_already_enrolled: defects.length - eligible.length,
+      verification_items: verifyCases.map((c) => ({
+        defect_id: c.defectId,
+        bug_number: c.bugNumber,
+        test_case_id: c.testCaseId,
+        case_number: c.caseNumber,
+        case_title: c.caseTitle,
+        use_case_id: c.useCaseId,
+        role: "verify" as const,
+      })),
+      regression_items: regressionToInclude.map((c) => ({
+        test_case_id: c.testCaseId,
+        case_number: c.caseNumber,
+        case_title: c.caseTitle,
+        use_case_id: c.useCaseId,
+        role: "regression" as const,
+      })),
+      blocked_items: blockedCases
+        .filter((b) => useCaseIds.includes(b.useCaseId))
+        .map((c) => ({
+          defect_id: c.defectId,
+          bug_number: c.bugNumber,
+          test_case_id: c.testCaseId,
+          case_number: c.caseNumber,
+          case_title: c.caseTitle,
+          use_case_id: c.useCaseId,
+          role: "blocked" as const,
+          blocking_reason: c.blockingReason,
+        })),
     });
   } catch (err) { next(err); }
 });
@@ -464,6 +642,7 @@ router.get("/code/:projectCode", async (req: AuthenticatedRequest, res, next) =>
       },
     });
     if (!project) { res.status(404).json({ message: "Project not found" }); return; }
+    if (!(await denyUnlessProjectAccess(req, res, project.id))) return;
     res.json(project);
   } catch (err) { next(err); }
 });
@@ -472,12 +651,6 @@ router.get("/code/:projectCode", async (req: AuthenticatedRequest, res, next) =>
 router.post("/:projectId/sign-off", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
-
-    const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
-    if (!project) { res.status(404).json({ message: "Project not found" }); return; }
-
-    let signOffData: any = {};
-    try { signOffData = JSON.parse(project.sign_off_data || "{}"); } catch { signOffData = {}; }
 
     const isTestLead = await checkProjectRole(req, projectId, ["TEST_LEAD"], { allowAdminBypass: false });
     const isBusinessOwner = await checkProjectRole(req, projectId, ["BUSINESS_OWNER"], { allowAdminBypass: false });
@@ -492,43 +665,71 @@ router.post("/:projectId/sign-off", async (req: AuthenticatedRequest, res, next)
       return;
     }
 
-    signOffData[key] = {
-      name: req.body.name || "",
-      role: req.body.role || "",
-      date: new Date().toISOString(),
-      signature: req.body.signature || "",
-    };
+    const result = await db.transaction(async (tx) => {
+      const [project] = await tx
+        .select()
+        .from(schema.projects)
+        .where(eq(schema.projects.id, projectId))
+        .for("update");
+      if (!project) {
+        throw Object.assign(new Error("Project not found"), { status: 404 });
+      }
 
-    // Merge any additional business decision data if provided
-    if (req.body.businessDecisions) {
-      signOffData.businessDecisions = req.body.businessDecisions;
-    }
+      let signOffData: Record<string, unknown> = {};
+      try {
+        signOffData = JSON.parse(project.sign_off_data || "{}") as Record<string, unknown>;
+      } catch {
+        signOffData = {};
+      }
 
-    const signedOff = signOffData.testLead && signOffData.businessOwner ? 1 : 0;
+      signOffData[key] = {
+        name: req.body.name || "",
+        role: req.body.role || "",
+        date: new Date().toISOString(),
+        signature: req.body.signature || "",
+      };
 
-    await db.update(schema.projects)
-      .set({
-        sign_off_data: JSON.stringify(signOffData),
-        is_signed_off: signedOff,
-        updated_at: new Date(),
-      })
-      .where(eq(schema.projects.id, projectId));
+      if (req.body.businessDecisions) {
+        signOffData.businessDecisions = req.body.businessDecisions;
+      }
+
+      const signedOff = signOffData.testLead && signOffData.businessOwner ? 1 : 0;
+
+      await tx
+        .update(schema.projects)
+        .set({
+          sign_off_data: JSON.stringify(signOffData),
+          is_signed_off: signedOff,
+          updated_at: new Date(),
+        })
+        .where(eq(schema.projects.id, projectId));
+
+      return { is_signed_off: signedOff, sign_off_data: signOffData };
+    });
 
     await logAudit({
       entityType: "project",
       entityId: projectId,
       changedByUserId: req.user!.userId,
-      toStatus: signedOff ? "fully_signed_off" : "partially_signed_off",
+      toStatus: result.is_signed_off ? "fully_signed_off" : "partially_signed_off",
     });
 
-    res.json({ is_signed_off: signedOff, sign_off_data: signOffData });
-  } catch (err) { next(err); }
+    res.json(result);
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if (status && err instanceof Error) {
+      res.status(status).json({ message: err.message });
+      return;
+    }
+    next(err);
+  }
 });
 
 // GET /api/projects/:projectId/sign-off-status
 router.get("/:projectId/sign-off-status", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
     const project = await db.query.projects.findFirst({
       where: eq(schema.projects.id, projectId),
       columns: { is_signed_off: true, sign_off_data: true },
@@ -542,6 +743,7 @@ router.get("/:projectId/sign-off-status", async (req: AuthenticatedRequest, res,
 router.get("/:projectId/uat-summary", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
 
     const testRuns = await db.query.testRuns.findMany({
       where: eq(schema.testRuns.project_id, projectId),
@@ -584,6 +786,7 @@ function escapeCsvField(value: unknown): string {
 router.get("/:projectId/audit-log/csv", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
     const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
     if (!project) { res.status(404).json({ message: "Project not found" }); return; }
 
@@ -593,6 +796,15 @@ router.get("/:projectId/audit-log/csv", async (req: AuthenticatedRequest, res, n
     const conditions: any[] = [];
     if (entityType) conditions.push(eq(schema.statusAuditLog.entity_type, entityType));
     if (entityId) {
+      // Only allow entity IDs that belong to this project (defects or the project itself)
+      const defect = await db.query.defects.findFirst({
+        where: and(eq(schema.defects.id, entityId), eq(schema.defects.project_id, projectId)),
+        columns: { id: true },
+      });
+      if (!defect && entityId !== projectId) {
+        res.status(403).json({ message: "Forbidden" });
+        return;
+      }
       conditions.push(eq(schema.statusAuditLog.entity_id, entityId));
     } else {
       conditions.push(eq(schema.statusAuditLog.entity_id, projectId));
@@ -631,6 +843,7 @@ router.get("/:projectId/audit-log/csv", async (req: AuthenticatedRequest, res, n
 router.get("/:projectId/audit-log", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
 
     const project = await db.query.projects.findFirst({ where: eq(schema.projects.id, projectId) });
     if (!project) { res.status(404).json({ message: "Project not found" }); return; }
@@ -641,8 +854,6 @@ router.get("/:projectId/audit-log", async (req: AuthenticatedRequest, res, next)
     const entityId = req.query.entityId ? Number(req.query.entityId) : undefined;
 
     // Resolve the set of entity IDs that belong to this project.
-    // Defects are linked to a project via their test execution → test run → project.
-    // We first collect all defect IDs for this project, then query audit logs for those.
     const defectRows = await db.query.defects.findMany({
       where: eq(schema.defects.project_id, projectId),
       columns: { id: true },
@@ -652,7 +863,10 @@ router.get("/:projectId/audit-log", async (req: AuthenticatedRequest, res, next)
     const conditions: any[] = [];
 
     if (entityId) {
-      // Specific entity requested — trust the caller
+      if (!projectDefectIds.includes(entityId) && entityId !== projectId) {
+        res.status(403).json({ message: "Forbidden" });
+        return;
+      }
       conditions.push(eq(schema.statusAuditLog.entity_id, entityId));
     } else if (projectDefectIds.length > 0) {
       // Filter to logs whose entity_id is one of this project's defects

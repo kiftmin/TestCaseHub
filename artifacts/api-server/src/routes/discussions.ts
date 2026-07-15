@@ -3,20 +3,45 @@ import { eq, desc, and, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { checkProjectRole, denyUnlessProjectAccess, projectIdFromTestRun, projectIdFromDiscussion, AuthenticatedRequest } from "../middlewares/auth.js";
 
 const router = express.Router();
 
-// GET /api/test-runs/:testRunId/discussions — open to authenticated
+// GET /api/test-runs/:testRunId/discussions — project members only
 router.get("/test-runs/:testRunId/discussions", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromTestRun(testRunId)))) return;
     const discussions = await db.query.teamDiscussions.findMany({
       where: eq(schema.teamDiscussions.test_run_id, testRunId),
       orderBy: desc(schema.teamDiscussions.created_at),
       with: {
-        participants: { with: { user: true } },
-        initiatedBy: true,
+        participants: {
+          with: {
+            user: {
+              columns: {
+                id: true,
+                username: true,
+                name: true,
+                email: true,
+                role: true,
+                is_active: true,
+                password_hash: false,
+              },
+            },
+          },
+        },
+        initiatedBy: {
+          columns: {
+            id: true,
+            username: true,
+            name: true,
+            email: true,
+            role: true,
+            is_active: true,
+            password_hash: false,
+          },
+        },
       },
     });
     res.json(discussions);
@@ -76,11 +101,36 @@ router.post("/test-runs/:testRunId/discussions", async (req: AuthenticatedReques
 router.get("/discussions/:discussionId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const discussionId = Number(req.params.discussionId);
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromDiscussion(discussionId)))) return;
     const discussion = await db.query.teamDiscussions.findFirst({
       where: eq(schema.teamDiscussions.id, discussionId),
       with: {
-        participants: { with: { user: true } },
-        initiatedBy: true,
+        participants: {
+          with: {
+            user: {
+              columns: {
+                id: true,
+                username: true,
+                name: true,
+                email: true,
+                role: true,
+                is_active: true,
+                password_hash: false,
+              },
+            },
+          },
+        },
+        initiatedBy: {
+          columns: {
+            id: true,
+            username: true,
+            name: true,
+            email: true,
+            role: true,
+            is_active: true,
+            password_hash: false,
+          },
+        },
       },
     });
     if (!discussion) { res.status(404).json({ message: "Not found" }); return; }

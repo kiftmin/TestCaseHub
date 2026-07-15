@@ -33,6 +33,9 @@ async function main() {
     "0010_reset_defects_to_new.sql",
     "0012_reset_defects_for_testing.sql",
     "0017_add_test_case_precondition.sql",
+    "0018_integrity_uniques_and_indexes.sql",
+    "0019_test_run_case_scope.sql",
+    "0020_clear_test_run_data.sql",
   ];
   for (const file of rawSqlFiles) {
     const rawSqlPath = join(__dirname, "..", "drizzle", file);

@@ -1,0 +1,57 @@
+diff --git a/artifacts/uat-manager/src/pages/DefectLogPage.tsx b/artifacts/uat-manager/src/pages/DefectLogPage.tsx
+index 34909d4..d0a8dca 100644
+--- a/artifacts/uat-manager/src/pages/DefectLogPage.tsx
++++ b/artifacts/uat-manager/src/pages/DefectLogPage.tsx
+@@ -866,9 +866,7 @@ function DefectRow({
+   const isClosed = defect.status === "CLOSED" || defect.status === "PASSED_BY_AGREEMENT";
+   const isPendingBiz = defect.status === "PENDING_BIZ_ACCEPTANCE";
+ 
+-  const canRetestFromAnyState =
+-    !isClosed &&
+-    !isPendingBiz;
++  const canRetestFromAnyState = false; // Removed: flag-retest is only valid from RESOLVED_DEV, handled by the dedicated Send for Verification button
+ 
+   const invalidateProject = useCallback(() => {
+     queryClient.invalidateQueries({ queryKey: ["project-defects"] });
+@@ -1267,34 +1265,25 @@ function DefectRow({
+                 </button>
+               </>
+             )}
+-            {/* Record Retest Result (READY_FOR_VERIFICATION → CLOSED | REGRESSED) */}
+-            {(isTester || canManage) && isReady && (
+-              <button
+-                onClick={() => setRetestOpen(true)}
+-                className="action-btn action-btn-blue"
+-                title="Record Retest Result"
+-              >
+-                <span className="material-symbols-outlined text-sm">fact_check</span>
+-              </button>
+-            )}
++
+             {/* Business Owner: Accept (READY_FOR_VERIFICATION → CLOSED) */}
+             {isBusinessOwner && isReady && (
+               <button
+                 onClick={() => setBizAcceptOpen(true)}
+                 className="action-btn action-btn-green"
+-                title="Accept"
++                title="Accept (Business)"
+               >
+-                <span className="material-symbols-outlined text-sm">check_circle</span>
++                <span className="material-symbols-outlined text-sm">approval</span>
+               </button>
+             )}
+-            {/* Business Owner | TEST_LEAD: Reject (READY_FOR_VERIFICATION → ASSIGNED) */}
+-            {(isBusinessOwner || canManage) && isReady && (
++            {/* Business Owner: Reject (READY_FOR_VERIFICATION → ASSIGNED) — Test Leads use Quick Verify Fail instead */}
++            {isBusinessOwner && isReady && (
+               <button
+                 onClick={() => setRejectOpen(true)}
+                 className="action-btn action-btn-red"
+-                title="Reject"
++                title="Reject (Business)"
+               >
+-                <span className="material-symbols-outlined text-sm">cancel</span>
++                <span className="material-symbols-outlined text-sm">thumb_down</span>
+               </button>
+             )}
+             {/* Reschedule Retest (READY_FOR_VERIFICATION → RESOLVED_DEV) */}

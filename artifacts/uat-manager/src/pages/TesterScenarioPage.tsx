@@ -483,7 +483,7 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
               </div>
               <p className="text-body-base text-green-700">
                 Every test case in this run has been completed. You can now submit the test run.
-                Once submitted, the run will be set to read-only and defects will be created for any failed steps.
+                Once submitted, the run will be set to read-only and defects will be created for any failed test cases.
               </p>
             </div>
             <button

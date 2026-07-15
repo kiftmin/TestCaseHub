@@ -3,7 +3,7 @@ import { eq, desc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { checkProjectRole, denyUnlessProjectAccess, projectIdFromUseCase, projectIdFromTestCase, AuthenticatedRequest } from "../middlewares/auth.js";
 import { bumpProjectVersion, logAudit } from "../utils/project.js";
 
 const router = express.Router();
@@ -13,6 +13,7 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
   try {
     const useCaseId = Number(req.params.useCaseId || req.query.useCaseId);
     if (!useCaseId) { res.status(400).json({ message: "useCaseId is required" }); return; }
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromUseCase(useCaseId)))) return;
     const data = await db.query.testCases.findMany({
       where: eq(schema.testCases.use_case_id, useCaseId),
       orderBy: schema.testCases.sort_order,
@@ -25,6 +26,7 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
 router.get("/:testCaseId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const id = Number(req.params.testCaseId);
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromTestCase(id)))) return;
     const testCase = await db.query.testCases.findFirst({
       where: eq(schema.testCases.id, id),
       with: { steps: { orderBy: sql`CAST(${schema.testSteps.step_number} AS INTEGER)` } },
@@ -38,6 +40,7 @@ router.get("/:testCaseId", async (req: AuthenticatedRequest, res, next) => {
 router.get("/:testCaseId/steps", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testCaseId = Number(req.params.testCaseId);
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromTestCase(testCaseId)))) return;
     const data = await db.query.testSteps.findMany({
       where: eq(schema.testSteps.test_case_id, testCaseId),
       orderBy: sql`CAST(${schema.testSteps.step_number} AS INTEGER)`,

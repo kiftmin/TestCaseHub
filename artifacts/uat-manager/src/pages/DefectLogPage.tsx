@@ -135,17 +135,21 @@ function StatusDistCard({
 }
 
 // ── Helper Components ──
-function extractFailedStep(defect: Defect): { stepNumber?: string; instruction?: string } {
+/** All failed steps for a defect (case-level; not a single step). */
+function getFailedSteps(defect: Defect): { stepNumber: string; instruction: string; actualResult?: string }[] {
+  const fromExec = (defect.execution?.stepResults ?? [])
+    .filter((r) => r.passed === false)
+    .map((r) => ({
+      stepNumber: String(r.step?.step_number ?? r.step_id),
+      instruction: r.step?.instruction ?? "",
+      actualResult: r.actual_result ?? undefined,
+    }));
+  if (fromExec.length > 0) return fromExec;
+
+  // Fallback: parse multi-step notes from auto-created defects
   const notes = defect.tester_notes ?? "";
-  const stepMatch = notes.match(/^Step\s+(\S+?):\s+(.+)$/m);
-  if (stepMatch) {
-    return { stepNumber: stepMatch[1], instruction: stepMatch[2] };
-  }
-  const sr = defect.execution?.stepResults?.find(r => r.passed === false);
-  if (sr?.step) {
-    return { stepNumber: sr.step.step_number, instruction: sr.step.instruction };
-  }
-  return {};
+  const matches = [...notes.matchAll(/^Step\s+(\S+?):\s+(.+)$/gm)];
+  return matches.map((m) => ({ stepNumber: m[1], instruction: m[2] }));
 }
 
 function TabContent({
@@ -301,6 +305,8 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
   const { data: projectUsers } = useQuery({
     queryKey: ["project-users", projectId],
     queryFn: () => customFetch<ProjectAssignment[]>(`/projects/${projectId}/users`),
+    retry: 2,
+    staleTime: 30_000,
   });
   const developers = projectUsers?.filter((a) => a.role === "DEVELOPER") ?? [];
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -371,7 +377,9 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
         { key: "NEW", label: "New", icon: statusIcon["NEW"], count: map["NEW"] ?? 0 },
         { key: "TRIAGED", label: "Triaged", icon: statusIcon["TRIAGED"], count: map["TRIAGED"] ?? 0 },
         { key: "WITH_DEV", label: "With Development", icon: "construction", count: devSum },
+        { key: "QA_PASSED", label: "QA Passed", icon: statusIcon["QA_PASSED"], count: map["QA_PASSED"] ?? 0 },
         { key: "READY_FOR_VERIFICATION", label: "Ready for Verification", icon: statusIcon["READY_FOR_VERIFICATION"], count: map["READY_FOR_VERIFICATION"] ?? 0 },
+        { key: "PENDING_BIZ_ACCEPTANCE", label: "Pending Business Decision", icon: statusIcon["PENDING_BIZ_ACCEPTANCE"], count: map["PENDING_BIZ_ACCEPTANCE"] ?? 0 },
         { key: "CLOSED", label: "Closed", icon: statusIcon["CLOSED"], count: map["CLOSED"] ?? 0 },
         { key: "PASSED_BY_AGREEMENT", label: "Passed by Agreement", icon: statusIcon["PASSED_BY_AGREEMENT"], count: map["PASSED_BY_AGREEMENT"] ?? 0 },
       ];
@@ -973,10 +981,20 @@ function DefectRow({
   const canRetestFromAnyState = canManage && !isResolved && !isClosed && !isPendingBiz && !isReady;
 
   const invalidateProject = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ["project-defects"] });
-    queryClient.invalidateQueries({ queryKey: ["project-runs"] });
+    // Refetch defects list only — avoid also refetching runs on every defect action
+    queryClient.invalidateQueries({ queryKey: ["project-defects", projectId] });
     onMutated();
-  }, [queryClient, onMutated]);
+  }, [queryClient, onMutated, projectId]);
+
+  /** Instant UI feedback for status-only transitions; still refetches in background. */
+  const patchDefectCache = useCallback(
+    (patch: Partial<Defect>) => {
+      queryClient.setQueryData<Defect[]>(["project-defects", projectId], (old) =>
+        old?.map((d) => (d.id === defect.id ? { ...d, ...patch } : d)),
+      );
+    },
+    [queryClient, projectId, defect.id],
+  );
 
   const classifyMut = useMutation({
     mutationFn: (data: { severity: string; priority: string; assigned_to_user_id?: number }) =>
@@ -1053,15 +1071,31 @@ function DefectRow({
       method: "PATCH",
       body: JSON.stringify({ reason: "Ready for verification", targetVerificationRunId: defect.test_run_id }),
     }),
+    onMutate: () => {
+      patchDefectCache({ status: "READY_FOR_VERIFICATION", retest_reason: "Ready for verification" });
+    },
     onSuccess: () => { invalidateProject(); toast.success("Sent for verification"); },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => {
+      invalidateProject();
+      toast.error(e.message);
+    },
   });
 
   const flagRetestFromNewMut = useMutation({
     mutationFn: (data: { reason: string; targetVerificationRunId?: number }) =>
       customFetch(`/defects/${defect.id}/flag-retest-from-new`, { method: "PATCH", body: JSON.stringify(data) }),
-    onSuccess: () => { invalidateProject(); toast.success("Defect sent for retesting"); setFlagRetestNewOpen(false); },
-    onError: (e: Error) => toast.error(e.message),
+    onMutate: (data) => {
+      patchDefectCache({
+        status: "READY_FOR_VERIFICATION",
+        retest_reason: data.reason || "Flagged for retesting",
+      });
+      setFlagRetestNewOpen(false);
+    },
+    onSuccess: () => { invalidateProject(); toast.success("Defect sent for retesting"); },
+    onError: (e: Error) => {
+      invalidateProject();
+      toast.error(e.message);
+    },
   });
 
   const flagBlockedNewMut = useMutation({
@@ -1139,7 +1173,7 @@ function DefectRow({
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const stepInfo = extractFailedStep(defect);
+  const failedSteps = getFailedSteps(defect);
 
   const { statusSteps, mainFlow, isRegressed } = useMemo(() => {
     if (activeTab === "business") {
@@ -1238,16 +1272,9 @@ function DefectRow({
           </div>
         </td>
         <td className="px-md py-sm">
-          <div className="flex flex-col gap-0.5">
-            <p className="font-label-md text-label-md text-on-surface leading-tight truncate max-w-[240px]">
-              {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
-            </p>
-            {stepInfo.instruction && (
-              <p className="text-xs text-on-surface-variant leading-tight truncate max-w-[240px]">
-                Step {stepInfo.stepNumber}: {stepInfo.instruction}
-              </p>
-            )}
-          </div>
+          <p className="font-label-md text-label-md text-on-surface leading-tight truncate max-w-[240px]">
+            {defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}
+          </p>
         </td>
         <td className={`px-md py-sm text-sm whitespace-nowrap ${severityColors[defect.severity ?? ""] ?? ""}`}>
           <span className="font-medium">{defect.severity ?? "—"}</span>
@@ -1606,13 +1633,22 @@ function DefectRow({
                         <p className="text-[10px] font-bold text-outline uppercase tracking-wider mb-xs">Test Case</p>
                         <p className="font-body-sm text-body-sm text-on-surface">{defect.testCase?.title ?? `Test Case #${defect.test_case_id}`}</p>
                       </div>
-                      {stepInfo.instruction && (
+                      {failedSteps.length > 0 && (
                         <div className="px-md py-sm bg-red-50 border border-red-100 rounded-lg">
                           <p className="text-[10px] font-bold text-red-700 uppercase tracking-wider mb-xs flex items-center gap-1">
                             <span className="material-symbols-outlined text-sm">error</span>
-                            Failed Step
+                            Failed Steps ({failedSteps.length})
                           </p>
-                          <p className="font-body-sm text-body-sm text-red-600 font-semibold">Step {stepInfo.stepNumber}: {stepInfo.instruction}</p>
+                          <ul className="space-y-1">
+                            {failedSteps.map((fs) => (
+                              <li key={fs.stepNumber} className="font-body-sm text-body-sm text-red-600 font-semibold">
+                                Step {fs.stepNumber}: {fs.instruction}
+                                {fs.actualResult && (
+                                  <span className="block font-normal text-red-500/90 text-xs mt-0.5">Actual: {fs.actualResult}</span>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
                         </div>
                       )}
                       {defect.testCase?.acceptance_criteria && (
@@ -1717,12 +1753,11 @@ function DefectRow({
                     <div className="space-y-sm">
                       {defect.execution.stepResults.map((sr) => {
                         const isFailed = sr.passed === false;
-                        const matchesDefect = stepInfo.stepNumber != null && String(sr.step?.step_number) === stepInfo.stepNumber;
                         return (
-                          <div key={sr.id} className={`rounded-lg border-l-4 p-sm text-sm transition-all ${matchesDefect ? "border-error bg-red-50 shadow-sm" : "opacity-50"}`}>
+                          <div key={sr.id} className={`rounded-lg border-l-4 p-sm text-sm transition-all ${isFailed ? "border-error bg-red-50 shadow-sm" : "border-green-200 bg-green-50/40 opacity-80"}`}>
                             <div className="flex items-center gap-sm mb-xs">
                               <span className="font-semibold text-xs">Step {sr.step?.step_number ?? sr.step_id}</span>
-                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${matchesDefect ? "bg-red-100 text-red-800" : isFailed ? "bg-red-50 text-red-400" : "bg-green-100 text-green-800"}`}>{isFailed ? "FAIL" : "PASS"}</span>
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${isFailed ? "bg-red-100 text-red-800" : "bg-green-100 text-green-800"}`}>{isFailed ? "FAIL" : "PASS"}</span>
                             </div>
                             <p className="text-on-surface mb-xs"><span className="font-medium">Instruction:</span> {sr.step?.instruction ?? "N/A"}</p>
                             {sr.step?.expected_result && <p className="text-on-surface mb-xs"><span className="font-medium">Expected:</span> {sr.step.expected_result}</p>}
@@ -1919,6 +1954,7 @@ function DefectRow({
           <RejectForm
             onSave={(reason) => bizRejectMut.mutate(reason)}
             loading={bizRejectMut.isPending}
+            assignedToUserId={defect.assigned_to_user_id}
           />
         </Dialog>
       )}
@@ -2284,17 +2320,20 @@ function ClassifyForm({ projectId, onSave, loading, isBlocked, showAssignOption 
   );
 }
 
-function RejectForm({ onSave, loading }: { onSave: (reason: string) => void; loading: boolean }) {
+function RejectForm({ onSave, loading, assignedToUserId }: { onSave: (reason: string) => void; loading: boolean; assignedToUserId?: number | null }) {
   const [reason, setReason] = useState("");
   const charsLeft = 10 - reason.trim().length;
   const isValid = reason.trim().length >= 10;
+  const hasAssignee = !!assignedToUserId;
+  const targetStatus = hasAssignee ? "ASSIGNED" : "its previous status";
+  const targetLabel = hasAssignee ? "Assigned" : "Previous Status";
   return (
     <form onSubmit={(e) => { e.preventDefault(); if (isValid) onSave(reason.trim()); }} className="space-y-md">
       <div className="flex items-start gap-3 bg-error-container/20 border border-error-container/40 rounded-lg p-md mb-sm">
         <span className="material-symbols-outlined text-error text-xl flex-shrink-0">warning</span>
         <p className="font-body-sm text-error">
-          This will return the defect to the <strong>ASSIGNED</strong> state and increment its regression counter.
-          The developer will need to rework it. A detailed reason is required for audit purposes.
+          This will return the defect to <strong>{targetStatus}</strong> and increment its regression counter.
+          {hasAssignee ? " The developer will need to rework it." : ""} A detailed reason is required for audit purposes.
         </p>
       </div>
       <div className="space-y-sm">
@@ -2305,7 +2344,7 @@ function RejectForm({ onSave, loading }: { onSave: (reason: string) => void; loa
         </p>
       </div>
       <button type="submit" disabled={loading || !isValid} className="w-full py-sm bg-error text-on-error rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
-        {loading ? "Saving..." : "Reject & Return to Assigned"}
+        {loading ? "Saving..." : `Reject & Return to ${targetLabel}`}
       </button>
     </form>
   );

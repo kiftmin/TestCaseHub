@@ -180,6 +180,25 @@ export const testRunsRelations = relations(testRuns, ({ one, many }) => ({
   defects: many(defects),
   teamDiscussions: many(teamDiscussions),
   sourceTestRun: one(testRuns, { fields: [testRuns.source_test_run_id], references: [testRuns.id] }),
+  caseScope: many(testRunCaseScope),
+}));
+
+// 8b. test_run_case_scope — Phase B: verify / regression / blocked per case in a retest run
+export const testRunCaseScope = pgTable("test_run_case_scope", {
+  id: serial("id").primaryKey(),
+  test_run_id: integer("test_run_id").notNull().references(() => testRuns.id, { onDelete: "cascade" }),
+  test_case_id: integer("test_case_id").notNull().references(() => testCases.id, { onDelete: "cascade" }),
+  role: text("role", { enum: ["verify", "regression", "blocked"] }).notNull(),
+  defect_id: integer("defect_id").references(() => defects.id, { onDelete: "set null" }),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  runCaseUnique: uniqueIndex("idx_test_run_case_scope_run_case").on(t.test_run_id, t.test_case_id),
+}));
+
+export const testRunCaseScopeRelations = relations(testRunCaseScope, ({ one }) => ({
+  testRun: one(testRuns, { fields: [testRunCaseScope.test_run_id], references: [testRuns.id] }),
+  testCase: one(testCases, { fields: [testRunCaseScope.test_case_id], references: [testCases.id] }),
+  defect: one(defects, { fields: [testRunCaseScope.defect_id], references: [defects.id] }),
 }));
 
 // 9. test_run_checklist_items

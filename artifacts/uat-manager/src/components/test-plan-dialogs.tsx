@@ -5,7 +5,7 @@ import { Dialog } from "./ui/dialog";
 import { Field, inputBaseClass, inputInvalidClass, inputValidClass } from "./ui/field";
 import { Textarea } from "./ui/textarea";
 import { Select } from "./ui/select";
-import { API_ORIGIN, customFetch } from "../lib/api-client";
+import { uploadUrl, customFetch } from "../lib/api-client";
 import type { TestStep, UseCase, TestCase } from "../types/api";
 
 /* ───────────── Scenario Dialog ───────────── */
@@ -714,10 +714,10 @@ function AttachmentManager({ stepId }: { stepId: number }) {
               className="relative group aspect-square rounded-lg overflow-hidden border border-outline-variant bg-surface-container-low"
             >
               <img
-                src={`${API_ORIGIN}${a.file_url}`}
+                 src={uploadUrl(a.file_url)}
                 alt={a.file_name ?? "Reference"}
                 className="w-full h-full object-cover cursor-pointer"
-                onClick={() => window.open(`${API_ORIGIN}${a.file_url}`, "_blank")}
+                 onClick={() => window.open(uploadUrl(a.file_url), "_blank")}
               />
               <button
                 type="button"

@@ -3,8 +3,9 @@ import { eq, asc, desc, and, sql, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { checkProjectRole, denyUnlessProjectAccess, projectIdFromTestRun, AuthenticatedRequest } from "../middlewares/auth.js";
 import { logAudit } from "../utils/project.js";
+import { getRetestScope } from "../utils/retest-scope.js";
 
 const router = express.Router();
 
@@ -116,6 +117,7 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
       res.status(400).json({ message: "projectId is required" });
       return;
     }
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
     const data = await db.query.testRuns.findMany({
       where: eq(schema.testRuns.project_id, projectId),
       orderBy: desc(schema.testRuns.scheduled_at),
@@ -128,6 +130,7 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
 router.get("/:testRunId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromTestRun(testRunId)))) return;
     const testRun = await db.query.testRuns.findFirst({
       where: eq(schema.testRuns.id, testRunId),
       with: {
@@ -153,6 +156,50 @@ router.get("/:testRunId", async (req: AuthenticatedRequest, res, next) => {
     if (testRun.useCases) {
       testRun.useCases.sort((a, b) => (a.useCase?.sort_order ?? 0) - (b.useCase?.sort_order ?? 0));
     }
+
+    // Phase A+B: retest runs expose case roles; list includes blocked (non-executable) for visibility
+    if (testRun.run_type === "retest") {
+      const scope = await getRetestScope(testRunId);
+      const visibleCaseIds = new Set(scope.allTestCaseIds);
+      const roleByCase = new Map(scope.items.map((i) => [i.testCaseId, i]));
+      if (testRun.useCases) {
+        for (const truc of testRun.useCases) {
+          if (truc.useCase?.testCases) {
+            truc.useCase.testCases = truc.useCase.testCases
+              .filter((tc) => visibleCaseIds.has(tc.id))
+              .map((tc) => {
+                const item = roleByCase.get(tc.id);
+                return {
+                  ...tc,
+                  retestRole: item?.role ?? "verify",
+                  retestExecutable: item?.executable ?? true,
+                  retestDefectId: item?.defectId ?? null,
+                  retestBugNumber: item?.bugNumber ?? null,
+                  retestBlockingReason:
+                    item?.role === "blocked"
+                      ? `Open defect${item.bugNumber != null ? ` #${item.bugNumber}` : ""} (${item.defectStatus ?? "in progress"})`
+                      : null,
+                };
+              });
+          }
+        }
+      }
+      if (testRun.executions) {
+        const executableIds = new Set(scope.testCaseIds);
+        testRun.executions = testRun.executions.filter((e) => executableIds.has(e.test_case_id));
+      }
+      res.json({
+        ...testRun,
+        verificationItems: scope.items,
+        verificationTestCaseIds: scope.testCaseIds,
+        verificationDefectIds: scope.defectIds,
+        verifyCaseIds: scope.verifyCaseIds,
+        regressionCaseIds: scope.regressionCaseIds,
+        blockedCaseIds: scope.blockedCaseIds,
+      });
+      return;
+    }
+
     res.json(testRun);
   } catch (err) { next(err); }
 });
@@ -534,6 +581,7 @@ router.get("/:testRunId/access-qr", async (req: AuthenticatedRequest, res, next)
 router.get("/:testRunId/full-report", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromTestRun(testRunId)))) return;
     const testRun = await db.query.testRuns.findFirst({
       where: eq(schema.testRuns.id, testRunId),
       with: {
@@ -558,6 +606,7 @@ router.get("/analytics", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.query.projectId);
     if (!projectId) { res.status(400).json({ message: "projectId required" }); return; }
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
 
     const runs = await db.query.testRuns.findMany({
       where: eq(schema.testRuns.project_id, projectId),

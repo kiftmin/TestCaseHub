@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useCallback } from "react";
 import { useRoute } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { customFetch, API_ORIGIN } from "../lib/api-client";
+import { customFetch } from "../lib/api-client";
 import { getToken, getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
 import { triggerDownload } from "../lib/csv-utils";
@@ -139,9 +139,12 @@ export function AuditTrailPage({ params: propParams }: { params?: { id?: string 
     try {
       const token = getToken();
       const query = entityType ? `?entityType=${entityType}` : "";
-      const res = await fetch(`${API_ORIGIN}/api/projects/${projectId}/audit-log/csv${query}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
+      const res = await fetch(
+        `${import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:3000/api"}/projects/${projectId}/audit-log/csv${query}`,
+        {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        },
+      );
       if (!res.ok) throw new Error("Download failed");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);

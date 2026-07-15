@@ -3,7 +3,7 @@ import { eq, desc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, checkProjectRole, AuthenticatedRequest } from "../middlewares/auth.js";
+import { checkProjectRole, denyUnlessProjectAccess, projectIdFromTestCase, projectIdFromTestStep, AuthenticatedRequest } from "../middlewares/auth.js";
 import { bumpProjectVersion, logAudit } from "../utils/project.js";
 
 const router = express.Router();
@@ -13,6 +13,7 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testCaseId = Number(req.params.testCaseId || req.query.testCaseId);
     if (!testCaseId) { res.status(400).json({ message: "testCaseId is required" }); return; }
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromTestCase(testCaseId)))) return;
     const data = await db.query.testSteps.findMany({
       where: eq(schema.testSteps.test_case_id, testCaseId),
       orderBy: sql`CAST(${schema.testSteps.step_number} AS INTEGER)`,
@@ -25,6 +26,7 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
 router.get("/:stepId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const id = Number(req.params.stepId);
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromTestStep(id)))) return;
     const step = await db.query.testSteps.findFirst({ where: eq(schema.testSteps.id, id) });
     if (!step) { res.status(404).json({ message: "Step not found" }); return; }
     res.json(step);

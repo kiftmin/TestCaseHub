@@ -97,6 +97,8 @@ export interface UseCase {
   testCases?: (TestCase & { steps?: TestStep[] })[];
 }
 
+export type RetestCaseRole = "verify" | "regression" | "blocked";
+
 export interface TestCase {
   id: number;
   use_case_id: number;
@@ -110,6 +112,12 @@ export interface TestCase {
   created_at: string;
   steps?: TestStep[];
   useCase?: UseCase;
+  /** Present on retest run payloads */
+  retestRole?: RetestCaseRole;
+  retestExecutable?: boolean;
+  retestDefectId?: number | null;
+  retestBugNumber?: number | null;
+  retestBlockingReason?: string | null;
 }
 
 export interface TestStep {
@@ -120,6 +128,46 @@ export interface TestStep {
   test_data: string | null;
   expected_result: string | null;
   created_at: string;
+}
+
+export interface VerificationItem {
+  defectId: number | null;
+  bugNumber: number | null;
+  testCaseId: number;
+  caseNumber: string | null;
+  caseTitle: string | null;
+  useCaseId: number | null;
+  useCaseCode: string | null;
+  useCaseName: string | null;
+  defectStatus: string | null;
+  role: RetestCaseRole;
+  executable: boolean;
+}
+
+export interface RetestPreviewCase {
+  testCaseId: number;
+  caseNumber: string | null;
+  caseTitle: string | null;
+  useCaseId: number;
+  useCaseCode: string | null;
+  useCaseName: string | null;
+  role: RetestCaseRole;
+  defectId: number | null;
+  bugNumber: number | null;
+  defectStatus: string | null;
+  blockingReason: string | null;
+}
+
+export interface RetestPreview {
+  summary: {
+    verify: number;
+    blocked: number;
+    regression: number;
+    rfvDefects: number;
+    skippedAlreadyEnrolled: number;
+    scenarios: number;
+  };
+  cases: RetestPreviewCase[];
 }
 
 export interface TestRun {
@@ -137,6 +185,13 @@ export interface TestRun {
   useCases?: TestRunUseCase[];
   executions?: Execution[];
   project?: Project;
+  /** Phase A+B: present on retest runs */
+  verificationItems?: VerificationItem[];
+  verificationTestCaseIds?: number[];
+  verificationDefectIds?: number[];
+  verifyCaseIds?: number[];
+  regressionCaseIds?: number[];
+  blockedCaseIds?: number[];
 }
 
 export interface TestRunUseCase {

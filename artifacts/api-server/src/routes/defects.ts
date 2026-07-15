@@ -1,10 +1,12 @@
 import express from "express";
-import { eq, desc, and, ne, sql } from "drizzle-orm";
+import { eq, desc, and, ne, sql, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
-import { authenticate, authorize, checkProjectRole, checkProjectQa, AuthenticatedRequest } from "../middlewares/auth.js";
+import { checkProjectRole, checkProjectQa, denyUnlessProjectAccess, projectIdFromTestRun, projectIdFromDefect, AuthenticatedRequest } from "../middlewares/auth.js";
 import { logAudit, logSystemNote } from "../utils/project.js";
+import { DEFECT_TRANSITIONS, transitionDefect } from "../utils/defect-status.js";
+import { defectIdsInActiveRetestRuns } from "../utils/retest-scope.js";
 
 const router = express.Router();
 
@@ -30,6 +32,7 @@ async function getPreviousStatus(defectId: number): Promise<string> {
 router.get("/test-runs/:testRunId/defects", async (req: AuthenticatedRequest, res, next) => {
   try {
     const testRunId = Number(req.params.testRunId);
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromTestRun(testRunId)))) return;
     let result = await db.query.defects.findMany({
       where: eq(schema.defects.test_run_id, testRunId),
       with: {
@@ -45,35 +48,111 @@ router.get("/test-runs/:testRunId/defects", async (req: AuthenticatedRequest, re
 });
 
 // GET /api/projects/:projectId/defects
+// List DTO: omit full test-case step trees (largest payload). Detail endpoint still loads full graph.
 router.get("/projects/:projectId/defects", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
     let result = await db.query.defects.findMany({
       where: eq(schema.defects.project_id, projectId),
       with: {
-        testCase: { with: { steps: true, useCase: true } },
-        execution: { with: { stepResults: { with: { step: true } }, tester: true } },
-        notes: { with: { addedBy: true } },
+        testCase: {
+          columns: {
+            id: true,
+            use_case_id: true,
+            case_number: true,
+            title: true,
+            acceptance_criteria: true,
+            precondition: true,
+          },
+          with: {
+            useCase: { columns: { id: true, code: true, name: true } },
+          },
+        },
+        execution: {
+          columns: {
+            id: true,
+            overall_result: true,
+            notes: true,
+            executed_at: true,
+            tester_name: true,
+            tester_id: true,
+            status: true,
+          },
+          with: {
+            stepResults: {
+              with: {
+                step: {
+                  columns: {
+                    id: true,
+                    step_number: true,
+                    instruction: true,
+                    expected_result: true,
+                    test_data: true,
+                  },
+                },
+              },
+            },
+            tester: {
+              columns: {
+                id: true,
+                username: true,
+                name: true,
+                password_hash: false,
+              },
+            },
+          },
+        },
+        notes: {
+          with: {
+            addedBy: {
+              columns: {
+                id: true,
+                username: true,
+                name: true,
+                password_hash: false,
+              },
+            },
+          },
+        },
         retests: true,
       },
     });
-    result = await Promise.all(result.map(enrichDecisionType));
 
-    // Flag defects that are part of a non-completed retest run
-    const activeRetestRuns = await db.query.testRuns.findMany({
-      where: and(
-        eq(schema.testRuns.project_id, projectId),
-        eq(schema.testRuns.run_type, "retest"),
-        ne(schema.testRuns.status, "completed"),
-      ),
-      with: { useCases: { columns: { use_case_id: true } } },
-    });
-    const activeRetestUseCaseIds = new Set<number>(
-      activeRetestRuns.flatMap((r) => r.useCases.map((uc) => uc.use_case_id)),
-    );
+    // Batch decision_type enrichment (avoid N+1 audit queries)
+    const pendingBizIds = result
+      .filter((d) => d.status === "PENDING_BIZ_ACCEPTANCE")
+      .map((d) => d.id);
+    if (pendingBizIds.length > 0) {
+      const audits = await db.query.statusAuditLog.findMany({
+        where: and(
+          eq(schema.statusAuditLog.entity_type, "defect"),
+          inArray(schema.statusAuditLog.entity_id, pendingBizIds),
+          eq(schema.statusAuditLog.to_status, "PENDING_BIZ_ACCEPTANCE"),
+        ),
+        orderBy: [desc(schema.statusAuditLog.changed_at)],
+        columns: { entity_id: true, reason: true },
+      });
+      const reasonByDefect = new Map<number, string>();
+      for (const a of audits) {
+        if (!reasonByDefect.has(a.entity_id)) {
+          reasonByDefect.set(a.entity_id, a.reason || "");
+        }
+      }
+      result = result.map((d) => {
+        if (d.status !== "PENDING_BIZ_ACCEPTANCE") return d;
+        const reason = reasonByDefect.get(d.id) || "";
+        return {
+          ...d,
+          decision_type: reason.startsWith("[RISK WAIVER]") ? "risk_waiver" : "business_review",
+        };
+      });
+    }
+
+    const enrolledDefectIds = await defectIdsInActiveRetestRuns(projectId);
     result = result.map((d) => ({
       ...d,
-      inActiveRetestRun: activeRetestUseCaseIds.has(d.testCase?.useCase?.id),
+      inActiveRetestRun: enrolledDefectIds.has(d.id),
     }));
 
     res.json(result);
@@ -84,6 +163,7 @@ router.get("/projects/:projectId/defects", async (req: AuthenticatedRequest, res
 router.get("/defects/:defectId", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromDefect(defectId)))) return;
     const defect = await db.query.defects.findFirst({
       where: eq(schema.defects.id, defectId),
       with: {
@@ -102,6 +182,7 @@ router.get("/defects/:defectId", async (req: AuthenticatedRequest, res, next) =>
 router.get("/defects/:defectId/retests", async (req: AuthenticatedRequest, res, next) => {
   try {
     const defectId = Number(req.params.defectId);
+    if (!(await denyUnlessProjectAccess(req, res, await projectIdFromDefect(defectId)))) return;
     const retests = await db.query.defectRetests.findMany({
       where: eq(schema.defectRetests.defect_id, defectId),
     });
@@ -115,14 +196,9 @@ router.get("/defects/:defectId/retests", async (req: AuthenticatedRequest, res, 
 async function getProjectId(defectId: number): Promise<number | null> {
   const defect = await db.query.defects.findFirst({
     where: eq(schema.defects.id, defectId),
-    columns: { id: true, test_run_id: true },
-  });
-  if (!defect) return null;
-  const tr = await db.query.testRuns.findFirst({
-    where: eq(schema.testRuns.id, defect.test_run_id),
     columns: { project_id: true },
   });
-  return tr?.project_id ?? null;
+  return defect?.project_id ?? null;
 }
 
 /**
@@ -447,29 +523,14 @@ router.patch("/defects/:defectId/quick-verify", async (req: AuthenticatedRequest
       return;
     }
 
-    // Block Quick Verify when the defect is enrolled in an active retest run.
-    // In that case the retest run's execution results will auto-resolve the defect
-    // using test-case-level attribution, which is more accurate than a manual verdict.
-    const useCaseId = defect.testCase?.useCase?.id;
-    if (useCaseId) {
-      const activeRetestRun = await db.query.testRuns.findFirst({
-        where: and(
-          eq(schema.testRuns.project_id, projectId),
-          eq(schema.testRuns.run_type, "retest"),
-          ne(schema.testRuns.status, "completed"),
-        ),
-        with: { useCases: { columns: { use_case_id: true } } },
+    // Block Quick Verify when this defect is enrolled in an active retest run.
+    const enrolledIds = await defectIdsInActiveRetestRuns(projectId);
+    if (enrolledIds.has(defectId)) {
+      res.status(409).json({
+        message:
+          "This defect is part of an active retest run and will be resolved automatically when testers complete that run. Quick Verify is disabled to prevent a conflicting manual verdict.",
       });
-      const enrolledInActiveRun = activeRetestRun?.useCases.some(
-        (uc) => uc.use_case_id === useCaseId,
-      );
-      if (enrolledInActiveRun) {
-        res.status(409).json({
-          message:
-            "This defect is part of an active retest run and will be resolved automatically when testers complete that run. Quick Verify is disabled to prevent a conflicting manual verdict.",
-        });
-        return;
-      }
+      return;
     }
 
     const oldStatus = defect.status;
@@ -707,15 +768,23 @@ router.patch("/defects/:defectId/resolve", async (req: AuthenticatedRequest, res
       }
     }
 
-    const oldStatus = defect.status;
-    const [updated] = await db.update(schema.defects)
-      .set({ status: "RESOLVED_DEV", root_cause_category: data.root_cause_category, resolved_at: new Date(), updated_at: new Date() })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS.resolve,
+      patch: {
+        status: "RESOLVED_DEV",
+        root_cause_category: data.root_cause_category,
+        resolved_at: new Date(),
+      },
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
+      return;
+    }
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "RESOLVED_DEV", reason: data.root_cause_category });
-    await logSystemNote(defectId, oldStatus, "RESOLVED_DEV", req.user!.userId, `Root cause: ${data.root_cause_category}`);
-    res.json(updated);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: result.before.status, toStatus: "RESOLVED_DEV", reason: data.root_cause_category });
+    await logSystemNote(defectId, result.before.status, "RESOLVED_DEV", req.user!.userId, `Root cause: ${data.root_cause_category}`);
+    res.json(result.after);
   } catch (err) { next(err); }
 });
 
@@ -952,18 +1021,23 @@ router.patch("/defects/:defectId/accept", async (req: AuthenticatedRequest, res,
     const allowed = await checkProjectRole(req, projectId, ["BUSINESS_OWNER"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS.accept,
+      patch: {
+        status: "CLOSED",
+        accepted_by_business_note: data.note,
+        closed_at: new Date(),
+      },
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
+      return;
+    }
 
-    const oldStatus = defect.status;
-    const [updated] = await db.update(schema.defects)
-      .set({ status: "CLOSED", accepted_by_business_note: data.note, updated_at: new Date(), closed_at: new Date() })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
-
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "CLOSED", reason: data.note });
-    await logSystemNote(defectId, oldStatus, "CLOSED", req.user!.userId, data.note);
-    res.json(updated);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: result.before.status, toStatus: "CLOSED", reason: data.note });
+    await logSystemNote(defectId, result.before.status, "CLOSED", req.user!.userId, data.note);
+    res.json(result.after);
   } catch (err) { next(err); }
 });
 
@@ -1612,6 +1686,7 @@ router.post("/defects/:defectId/notes", async (req: AuthenticatedRequest, res, n
 router.get("/projects/:projectId/defect-aging-matrix", async (req: AuthenticatedRequest, res, next) => {
   try {
     const projectId = Number(req.params.projectId);
+    if (!(await denyUnlessProjectAccess(req, res, projectId))) return;
     const result = await db.execute(sql`
       SELECT
         d.id AS "defectId",

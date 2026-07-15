@@ -1,0 +1,46 @@
+diff --git a/artifacts/uat-manager/src/pages/TestRunDetailPage.tsx b/artifacts/uat-manager/src/pages/TestRunDetailPage.tsx
+index a2c97fe..ea51b6f 100644
+--- a/artifacts/uat-manager/src/pages/TestRunDetailPage.tsx
++++ b/artifacts/uat-manager/src/pages/TestRunDetailPage.tsx
+@@ -221,18 +221,22 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
+   }, [execFormDocument, testRunId]);
+ 
+   // ── Completed results report ────────────────────────────────────────────
+-  const { data: runDefects } = useQuery({
+-    queryKey: ["test-run-defects", testRunId],
++  // Use /full-report as the single source so stepResults are guaranteed
++  // populated on every execution — the main query cache may not include them.
++  const { data: fullReport } = useQuery({
++    queryKey: ["test-run-full-report", testRunId],
+     queryFn: () =>
+-      customFetch<{ defects?: RptDefect[] }>(`/test-runs/${testRunId}/full-report`)
+-        .then((r) => r.defects ?? []),
++      customFetch<{ defects?: RptDefect[]; executions?: RptExecution[]; useCases?: RptUseCase[] }>(
++        `/test-runs/${testRunId}/full-report`,
++      ),
+     enabled: isCompleted,
+   });
+ 
+   const storedUser = getStoredUser();
+   const resultReportDocument = useMemo(() => {
+-    const allUcs   = (testRun as (TestRun & { useCases?: RptUseCase[] }) | undefined)?.useCases ?? [];
+-    const allExecs = (testRun as (TestRun & { executions?: RptExecution[] }) | undefined)?.executions ?? [];
++    const allUcs   = fullReport?.useCases   ?? (testRun as (TestRun & { useCases?: RptUseCase[] }) | undefined)?.useCases ?? [];
++    const allExecs = fullReport?.executions ?? [];
++    const allDefs  = fullReport?.defects    ?? [];
+     return (
+       <TestRunResultReportPDF
+         projectName={testRun?.project?.name ?? `Project #${testRun?.project_id ?? ""}`}
+@@ -243,10 +247,10 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
+         preparedBy={storedUser?.name ?? null}
+         useCases={allUcs}
+         executions={allExecs}
+-        defects={runDefects ?? []}
++        defects={allDefs}
+       />
+     );
+-  }, [testRun, testRunId, runDefects, storedUser?.name]);
++  }, [testRun, testRunId, fullReport, storedUser?.name]);
+ 
+   const [resultReportGenerating, setResultReportGenerating] = useState(false);
+   const handleDownloadResultReport = useCallback(async () => {

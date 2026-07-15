@@ -1,0 +1,662 @@
+diff --git a/artifacts/uat-manager/src/lib/pdf-documents.tsx b/artifacts/uat-manager/src/lib/pdf-documents.tsx
+index bf7c2da..d7a4014 100644
+--- a/artifacts/uat-manager/src/lib/pdf-documents.tsx
++++ b/artifacts/uat-manager/src/lib/pdf-documents.tsx
+@@ -629,3 +629,575 @@ export function SignOffCertificatePDF({
+     </Document>
+   );
+ }
++
++// ─────────────────────────────────────────────────────────────────────────────
++// TestRunResultReportPDF — completed test run results, corporate report quality
++// ─────────────────────────────────────────────────────────────────────────────
++
++const rpt = StyleSheet.create({
++  page: {
++    paddingTop: 52,
++    paddingBottom: 52,
++    paddingHorizontal: 44,
++    fontFamily: "Helvetica",
++    fontSize: 10,
++    color: "#1b1b1d",
++    backgroundColor: "#ffffff",
++  },
++  stripe: {
++    position: "absolute",
++    top: 0,
++    left: 0,
++    right: 0,
++    height: 6,
++    backgroundColor: "#4648d4",
++  },
++  // ── Cover page ──────────────────────────────────────────────────────────
++  coverPage: {
++    paddingTop: 0,
++    paddingBottom: 0,
++    paddingHorizontal: 0,
++    fontFamily: "Helvetica",
++    backgroundColor: "#ffffff",
++  },
++  coverAccent: {
++    backgroundColor: "#4648d4",
++    height: 220,
++    justifyContent: "flex-end",
++    paddingHorizontal: 48,
++    paddingBottom: 32,
++  },
++  coverLabel: {
++    fontSize: 9,
++    color: "rgba(255,255,255,0.7)",
++    letterSpacing: 2,
++    marginBottom: 8,
++  },
++  coverTitle: {
++    fontSize: 26,
++    fontFamily: "Helvetica-Bold",
++    color: "#ffffff",
++    marginBottom: 6,
++  },
++  coverSubtitle: {
++    fontSize: 13,
++    color: "rgba(255,255,255,0.85)",
++  },
++  coverBody: {
++    paddingHorizontal: 48,
++    paddingTop: 32,
++    paddingBottom: 48,
++    flex: 1,
++  },
++  coverMetaRow: {
++    flexDirection: "row",
++    marginBottom: 10,
++  },
++  coverMetaLabel: {
++    fontSize: 9,
++    fontFamily: "Helvetica-Bold",
++    color: "#45464d",
++    width: 120,
++  },
++  coverMetaValue: {
++    fontSize: 9,
++    color: "#1b1b1d",
++    flex: 1,
++  },
++  coverDivider: {
++    borderBottomWidth: 1,
++    borderBottomColor: "#e0e0e5",
++    marginVertical: 20,
++  },
++  // ── KPI strip ────────────────────────────────────────────────────────────
++  kpiStrip: {
++    flexDirection: "row",
++    borderWidth: 1,
++    borderColor: "#e0e0e5",
++    borderRadius: 6,
++    marginTop: 24,
++    overflow: "hidden",
++  },
++  kpiCell: {
++    flex: 1,
++    alignItems: "center",
++    paddingVertical: 14,
++    paddingHorizontal: 6,
++    borderRightWidth: 1,
++    borderRightColor: "#e0e0e5",
++  },
++  kpiCellLast: {
++    borderRightWidth: 0,
++  },
++  kpiValue: {
++    fontSize: 22,
++    fontFamily: "Helvetica-Bold",
++    color: "#4648d4",
++    marginBottom: 3,
++  },
++  kpiLabel: {
++    fontSize: 7,
++    color: "#45464d",
++    textAlign: "center",
++    letterSpacing: 0.5,
++  },
++  kpiValuePass: { fontSize: 22, fontFamily: "Helvetica-Bold", color: "#15803d", marginBottom: 3 },
++  kpiValueFail: { fontSize: 22, fontFamily: "Helvetica-Bold", color: "#b91c1c", marginBottom: 3 },
++  // ── Section heading ──────────────────────────────────────────────────────
++  sectionHeading: {
++    fontSize: 13,
++    fontFamily: "Helvetica-Bold",
++    color: "#4648d4",
++    marginTop: 22,
++    marginBottom: 10,
++    paddingBottom: 5,
++    borderBottomWidth: 1.5,
++    borderBottomColor: "#4648d4",
++  },
++  // ── Scenario block ───────────────────────────────────────────────────────
++  scenarioBlock: {
++    marginBottom: 16,
++  },
++  scenarioHeader: {
++    flexDirection: "row",
++    alignItems: "center",
++    backgroundColor: "#f0f0f8",
++    borderLeftWidth: 3,
++    borderLeftColor: "#4648d4",
++    paddingVertical: 7,
++    paddingHorizontal: 10,
++    marginBottom: 6,
++  },
++  scenarioCode: {
++    fontSize: 9,
++    fontFamily: "Helvetica-Bold",
++    color: "#4648d4",
++    marginRight: 8,
++  },
++  scenarioName: {
++    fontSize: 10,
++    fontFamily: "Helvetica-Bold",
++    color: "#1b1b1d",
++    flex: 1,
++  },
++  scenarioBadge: {
++    fontSize: 8,
++    fontFamily: "Helvetica-Bold",
++    paddingVertical: 2,
++    paddingHorizontal: 7,
++    borderRadius: 3,
++  },
++  // ── Test case block ──────────────────────────────────────────────────────
++  tcBlock: {
++    marginBottom: 10,
++    marginLeft: 8,
++  },
++  tcHeader: {
++    flexDirection: "row",
++    alignItems: "center",
++    paddingVertical: 5,
++    paddingHorizontal: 8,
++    backgroundColor: "#fafafa",
++    borderBottomWidth: 1,
++    borderBottomColor: "#e0e0e5",
++    marginBottom: 0,
++  },
++  tcNumber: {
++    fontSize: 8,
++    fontFamily: "Helvetica-Bold",
++    color: "#45464d",
++    marginRight: 6,
++    width: 28,
++  },
++  tcTitle: {
++    fontSize: 9,
++    fontFamily: "Helvetica-Bold",
++    color: "#1b1b1d",
++    flex: 1,
++  },
++  tcBadge: {
++    fontSize: 7,
++    fontFamily: "Helvetica-Bold",
++    paddingVertical: 2,
++    paddingHorizontal: 6,
++    borderRadius: 3,
++  },
++  // ── Step table ───────────────────────────────────────────────────────────
++  stepTable: {
++    borderWidth: 1,
++    borderColor: "#e0e0e5",
++    marginBottom: 0,
++  },
++  stepHeaderRow: {
++    flexDirection: "row",
++    backgroundColor: "#4648d4",
++    paddingVertical: 5,
++  },
++  stepHeaderCell: {
++    fontSize: 7,
++    fontFamily: "Helvetica-Bold",
++    color: "#ffffff",
++    paddingHorizontal: 6,
++  },
++  stepRow: {
++    flexDirection: "row",
++    borderTopWidth: 1,
++    borderTopColor: "#e0e0e5",
++    paddingVertical: 5,
++    minHeight: 22,
++  },
++  stepRowAlt: {
++    backgroundColor: "#f7f7fb",
++  },
++  stepCell: {
++    fontSize: 8,
++    color: "#1b1b1d",
++    paddingHorizontal: 6,
++  },
++  stepCellMuted: {
++    fontSize: 8,
++    color: "#45464d",
++    paddingHorizontal: 6,
++    fontStyle: "italic",
++  },
++  passText: { fontSize: 8, fontFamily: "Helvetica-Bold", color: "#15803d", paddingHorizontal: 6 },
++  failText: { fontSize: 8, fontFamily: "Helvetica-Bold", color: "#b91c1c", paddingHorizontal: 6 },
++  pbaText:  { fontSize: 8, fontFamily: "Helvetica-Bold", color: "#7c3aed", paddingHorizontal: 6 },
++  pendingText: { fontSize: 8, color: "#45464d", paddingHorizontal: 6 },
++  // ── Tester meta row ──────────────────────────────────────────────────────
++  tcMeta: {
++    flexDirection: "row",
++    paddingHorizontal: 8,
++    paddingVertical: 4,
++    gap: 20,
++    borderTopWidth: 1,
++    borderTopColor: "#e0e0e5",
++    backgroundColor: "#fafafa",
++  },
++  tcMetaLabel: { fontSize: 7, fontFamily: "Helvetica-Bold", color: "#45464d" },
++  tcMetaValue: { fontSize: 7, color: "#1b1b1d" },
++  // ── Defect summary table ─────────────────────────────────────────────────
++  defectTableHeaderRow: {
++    flexDirection: "row",
++    backgroundColor: "#1b1b1d",
++    paddingVertical: 5,
++  },
++  defectTableRow: {
++    flexDirection: "row",
++    borderTopWidth: 1,
++    borderTopColor: "#e0e0e5",
++    paddingVertical: 5,
++    minHeight: 20,
++  },
++  defectTableRowAlt: { backgroundColor: "#f7f7fb" },
++  defectTableHeaderCell: { fontSize: 7, fontFamily: "Helvetica-Bold", color: "#ffffff", paddingHorizontal: 6 },
++  defectTableCell:       { fontSize: 8, color: "#1b1b1d", paddingHorizontal: 6 },
++  // ── Page chrome ──────────────────────────────────────────────────────────
++  pageHeader: {
++    position: "absolute",
++    top: 14,
++    left: 44,
++    right: 44,
++    flexDirection: "row",
++    justifyContent: "space-between",
++    alignItems: "center",
++  },
++  pageHeaderText: { fontSize: 7, color: "#45464d" },
++  pageFooter: {
++    position: "absolute",
++    bottom: 16,
++    left: 44,
++    right: 44,
++    flexDirection: "row",
++    justifyContent: "space-between",
++    alignItems: "center",
++    borderTopWidth: 1,
++    borderTopColor: "#e0e0e5",
++    paddingTop: 5,
++  },
++  pageFooterText:    { fontSize: 7, color: "#45464d" },
++  pageFooterPageNum: { fontSize: 7, color: "#4648d4", fontFamily: "Helvetica-Bold" },
++});
++
++const STEP_COL = { num: "6%", instruction: "24%", expected: "22%", actual: "22%", notes: "18%", result: "8%" } as const;
++const DEF_COL  = { id: "10%", tc: "22%", severity: "11%", status: "13%", regression: "11%", notes: "33%" } as const;
++
++function resultBadge(result: string | null) {
++  if (result === "passed")             return { color: "#15803d", label: "PASS" };
++  if (result === "failed")             return { color: "#b91c1c", label: "FAIL" };
++  if (result === "passed_by_agreement") return { color: "#7c3aed", label: "PBA" };
++  return { color: "#45464d", label: "—" };
++}
++
++export type RptStepResult = {
++  step_id: number;
++  actual_result: string | null;
++  comments: string | null;
++  passed: boolean | null;
++  step?: { step_number: string; instruction: string; expected_result: string | null };
++};
++export type RptExecution = {
++  test_case_id: number;
++  overall_result: "passed" | "failed" | "passed_by_agreement" | null;
++  notes: string | null;
++  tester_name?: string | null;
++  executed_at?: string | null;
++  stepResults?: RptStepResult[];
++  tester?: { name?: string | null };
++};
++export type RptTestCase = {
++  id: number;
++  case_number: string;
++  title: string;
++  steps?: { id: number; step_number: string; instruction: string; expected_result: string | null }[];
++};
++export type RptUseCase = {
++  use_case_id: number;
++  status: string;
++  tester?: { name?: string | null } | null;
++  free_pass?: boolean | null;
++  free_pass_reason?: string | null;
++  useCase?: { code: string; name: string; testCases?: RptTestCase[] };
++};
++export type RptDefect = {
++  id: number;
++  status: string;
++  severity: string | null;
++  regression_index: number;
++  tester_notes: string | null;
++  testCase?: { case_number: string; title: string };
++};
++
++export function TestRunResultReportPDF({
++  projectName,
++  testRunName,
++  testRunId,
++  scheduledAt,
++  completedAt,
++  preparedBy,
++  useCases,
++  executions,
++  defects,
++}: {
++  projectName: string;
++  testRunName: string;
++  testRunId: number;
++  scheduledAt?: string | null;
++  completedAt?: string | null;
++  preparedBy?: string | null;
++  useCases: RptUseCase[];
++  executions: RptExecution[];
++  defects: RptDefect[];
++}) {
++  const generatedDate = new Date().toLocaleDateString("en-ZA", { year: "numeric", month: "long", day: "numeric" });
++  const fmt = (d: string | null | undefined) =>
++    d ? new Date(d).toLocaleDateString("en-ZA", { year: "numeric", month: "short", day: "numeric" }) : "—";
++
++  const total       = useCases.length;
++  const passed      = useCases.filter(u => u.status === "passed" || u.status === "passed_by_agreement").length;
++  const failed      = useCases.filter(u => u.status === "failed").length;
++  const pending     = useCases.filter(u => u.status === "pending" || u.status === "in_progress").length;
++  const passRate    = total > 0 ? Math.round((passed / total) * 100) : 0;
++  const openDefects = defects.filter(d => d.status !== "CLOSED" && d.status !== "PASSED_BY_AGREEMENT").length;
++
++  const execByTcId = new Map<number, RptExecution>();
++  for (const e of executions) execByTcId.set(e.test_case_id, e);
++
++  const ucResult = (truc: RptUseCase) => {
++    if (truc.status === "passed")             return "passed";
++    if (truc.status === "failed")             return "failed";
++    if (truc.status === "passed_by_agreement") return "passed_by_agreement";
++    return null;
++  };
++
++  return (
++    <Document title={`${testRunName} — UAT Results Report`} author="TestCaseHub">
++
++      {/* ── COVER PAGE ──────────────────────────────────────────────────── */}
++      <Page size="A4" style={rpt.coverPage}>
++        <View style={rpt.coverAccent}>
++          <Text style={rpt.coverLabel}>USER ACCEPTANCE TESTING</Text>
++          <Text style={rpt.coverTitle}>Test Execution Report</Text>
++          <Text style={rpt.coverSubtitle}>{testRunName}</Text>
++        </View>
++        <View style={rpt.coverBody}>
++          {[
++            ["Project",             projectName],
++            ["Test Run ID",         `#${testRunId}`],
++            ["Scheduled Date",      fmt(scheduledAt)],
++            ["Completed Date",      fmt(completedAt)],
++            ["Prepared By",         preparedBy ?? "—"],
++            ["Report Generated",    generatedDate],
++            ["Document Reference",  `TCH-TR-${testRunId}`],
++          ].map(([label, value]) => (
++            <View key={label} style={rpt.coverMetaRow}>
++              <Text style={rpt.coverMetaLabel}>{label}</Text>
++              <Text style={rpt.coverMetaValue}>{value}</Text>
++            </View>
++          ))}
++
++          <View style={rpt.coverDivider} />
++
++          <View style={rpt.kpiStrip}>
++            {[
++              { label: "Total Scenarios", value: String(total),     style: rpt.kpiValue },
++              { label: "Passed",          value: String(passed),    style: rpt.kpiValuePass },
++              { label: "Failed",          value: String(failed),    style: rpt.kpiValueFail },
++              { label: "Pending",         value: String(pending),   style: rpt.kpiValue },
++              { label: "Pass Rate",       value: `${passRate}%`,    style: passRate >= 80 ? rpt.kpiValuePass : passRate >= 50 ? rpt.kpiValue : rpt.kpiValueFail },
++              { label: "Open Defects",    value: String(openDefects), style: openDefects > 0 ? rpt.kpiValueFail : rpt.kpiValuePass },
++            ].map(({ label, value, style }, i, arr) => (
++              <View key={label} style={[rpt.kpiCell, i === arr.length - 1 ? rpt.kpiCellLast : {}]}>
++                <Text style={style}>{value}</Text>
++                <Text style={rpt.kpiLabel}>{label.toUpperCase()}</Text>
++              </View>
++            ))}
++          </View>
++        </View>
++      </Page>
++
++      {/* ── RESULTS PAGES ───────────────────────────────────────────────── */}
++      <Page size="A4" style={rpt.page} wrap>
++        <View style={rpt.stripe} fixed />
++        <View style={rpt.pageHeader} fixed>
++          <Text style={rpt.pageHeaderText}>{projectName} — {testRunName}</Text>
++          <Text style={rpt.pageHeaderText}>CONFIDENTIAL</Text>
++        </View>
++
++        <Text style={rpt.sectionHeading}>Test Execution Results</Text>
++
++        {useCases.map((truc) => {
++          const uc = truc.useCase;
++          if (!uc) return null;
++          const badge = resultBadge(ucResult(truc));
++
++          return (
++            <View key={truc.use_case_id} style={rpt.scenarioBlock} minPresenceAhead={80}>
++              <View style={rpt.scenarioHeader}>
++                <Text style={rpt.scenarioCode}>{uc.code}</Text>
++                <Text style={rpt.scenarioName}>{uc.name}</Text>
++                {truc.free_pass && (
++                  <Text style={[rpt.scenarioBadge, { color: "#7c3aed", marginRight: 6 }]}>FREE PASS</Text>
++                )}
++                <Text style={[rpt.scenarioBadge, { color: badge.color }]}>{badge.label}</Text>
++              </View>
++
++              {(uc.testCases ?? []).map((tc) => {
++                const exec    = execByTcId.get(tc.id);
++                const tcBadge = resultBadge(exec?.overall_result ?? null);
++                const testerName = exec?.tester?.name ?? exec?.tester_name ?? null;
++                const executedAt = exec?.executed_at ? fmt(exec.executed_at) : null;
++
++                return (
++                  <View key={tc.id} style={rpt.tcBlock} minPresenceAhead={60} wrap={false}>
++                    <View style={rpt.tcHeader}>
++                      <Text style={rpt.tcNumber}>{tc.case_number}</Text>
++                      <Text style={rpt.tcTitle}>{tc.title}</Text>
++                      <Text style={[rpt.tcBadge, { color: tcBadge.color }]}>{tcBadge.label}</Text>
++                    </View>
++
++                    {(tc.steps ?? []).length > 0 && (
++                      <View style={rpt.stepTable}>
++                        <View style={rpt.stepHeaderRow}>
++                          <Text style={[rpt.stepHeaderCell, { width: STEP_COL.num }]}>#</Text>
++                          <Text style={[rpt.stepHeaderCell, { width: STEP_COL.instruction }]}>Step</Text>
++                          <Text style={[rpt.stepHeaderCell, { width: STEP_COL.expected }]}>Expected</Text>
++                          <Text style={[rpt.stepHeaderCell, { width: STEP_COL.actual }]}>Actual Result</Text>
++                          <Text style={[rpt.stepHeaderCell, { width: STEP_COL.notes }]}>Notes</Text>
++                          <Text style={[rpt.stepHeaderCell, { width: STEP_COL.result }]}>Result</Text>
++                        </View>
++                        {(tc.steps ?? []).map((step, i) => {
++                          const sr       = exec?.stepResults?.find(r => r.step_id === step.id);
++                          const stepBadge = sr?.passed === true  ? { color: "#15803d", label: "✓" }
++                                          : sr?.passed === false ? { color: "#b91c1c", label: "✗" }
++                                          : { color: "#45464d", label: "—" };
++                          return (
++                            <View key={step.id} style={[rpt.stepRow, i % 2 === 1 ? rpt.stepRowAlt : {}]}>
++                              <Text style={[rpt.stepCell, { width: STEP_COL.num }]}>{step.step_number}</Text>
++                              <Text style={[rpt.stepCell, { width: STEP_COL.instruction }]}>{step.instruction}</Text>
++                              <Text style={[rpt.stepCellMuted, { width: STEP_COL.expected }]}>{step.expected_result ?? "—"}</Text>
++                              <Text style={[rpt.stepCell, { width: STEP_COL.actual }]}>{sr?.actual_result ?? "—"}</Text>
++                              <Text style={[rpt.stepCellMuted, { width: STEP_COL.notes }]}>{sr?.comments ?? "—"}</Text>
++                              <Text style={[rpt.stepCell, { width: STEP_COL.result, color: stepBadge.color, fontFamily: "Helvetica-Bold" }]}>
++                                {stepBadge.label}
++                              </Text>
++                            </View>
++                          );
++                        })}
++                      </View>
++                    )}
++
++                    {(testerName ?? executedAt ?? exec?.notes) && (
++                      <View style={rpt.tcMeta}>
++                        {testerName  && <View style={{ flexDirection: "row", gap: 4 }}><Text style={rpt.tcMetaLabel}>Tester:</Text><Text style={rpt.tcMetaValue}>{testerName}</Text></View>}
++                        {executedAt  && <View style={{ flexDirection: "row", gap: 4 }}><Text style={rpt.tcMetaLabel}>Executed:</Text><Text style={rpt.tcMetaValue}>{executedAt}</Text></View>}
++                        {exec?.notes && <View style={{ flexDirection: "row", gap: 4, flex: 1 }}><Text style={rpt.tcMetaLabel}>Notes:</Text><Text style={[rpt.tcMetaValue, { flex: 1 }]}>{exec.notes}</Text></View>}
++                      </View>
++                    )}
++                  </View>
++                );
++              })}
++
++              {truc.free_pass && truc.free_pass_reason && (
++                <View style={{ marginLeft: 8, marginTop: 2, marginBottom: 4, paddingHorizontal: 8, paddingVertical: 4, backgroundColor: "#f3f0fc", borderLeftWidth: 2, borderLeftColor: "#7c3aed" }}>
++                  <Text style={{ fontSize: 8, color: "#45464d" }}>
++                    <Text style={{ fontFamily: "Helvetica-Bold" }}>Free Pass Reason: </Text>
++                    {truc.free_pass_reason}
++                  </Text>
++                </View>
++              )}
++            </View>
++          );
++        })}
++
++        <View style={rpt.pageFooter} fixed>
++          <Text style={rpt.pageFooterText}>TestCaseHub · TCH-TR-{testRunId} · {generatedDate}</Text>
++          <Text style={rpt.pageFooterPageNum} render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
++        </View>
++      </Page>
++
++      {/* ── DEFECT SUMMARY PAGE ─────────────────────────────────────────── */}
++      {defects.length > 0 && (
++        <Page size="A4" style={rpt.page} wrap>
++          <View style={rpt.stripe} fixed />
++          <View style={rpt.pageHeader} fixed>
++            <Text style={rpt.pageHeaderText}>{projectName} — {testRunName}</Text>
++            <Text style={rpt.pageHeaderText}>CONFIDENTIAL</Text>
++          </View>
++
++          <Text style={rpt.sectionHeading}>Defect Summary</Text>
++
++          <View style={{ borderWidth: 1, borderColor: "#e0e0e5" }}>
++            <View style={rpt.defectTableHeaderRow}>
++              <Text style={[rpt.defectTableHeaderCell, { width: DEF_COL.id }]}>DEF #</Text>
++              <Text style={[rpt.defectTableHeaderCell, { width: DEF_COL.tc }]}>Test Case</Text>
++              <Text style={[rpt.defectTableHeaderCell, { width: DEF_COL.severity }]}>Severity</Text>
++              <Text style={[rpt.defectTableHeaderCell, { width: DEF_COL.status }]}>Status</Text>
++              <Text style={[rpt.defectTableHeaderCell, { width: DEF_COL.regression }]}>Regressions</Text>
++              <Text style={[rpt.defectTableHeaderCell, { width: DEF_COL.notes }]}>Tester Notes</Text>
++            </View>
++            {defects.map((d, i) => (
++              <View key={d.id} style={[rpt.defectTableRow, i % 2 === 1 ? rpt.defectTableRowAlt : {}]} wrap={false}>
++                <Text style={[rpt.defectTableCell, { width: DEF_COL.id, fontFamily: "Helvetica-Bold", color: "#4648d4" }]}>DEF-{d.id}</Text>
++                <Text style={[rpt.defectTableCell, { width: DEF_COL.tc }]}>[{d.testCase?.case_number ?? "—"}] {d.testCase?.title ?? ""}</Text>
++                <Text style={[rpt.defectTableCell, { width: DEF_COL.severity, color: d.severity === "Critical" ? "#b91c1c" : d.severity === "Major" ? "#b45309" : "#1b1b1d" }]}>
++                  {d.severity ?? "—"}
++                </Text>
++                <Text style={[rpt.defectTableCell, { width: DEF_COL.status }]}>{d.status.replace(/_/g, " ")}</Text>
++                <Text style={[rpt.defectTableCell, { width: DEF_COL.regression, textAlign: "center", color: d.regression_index > 0 ? "#b91c1c" : "#15803d" }]}>
++                  {d.regression_index}
++                </Text>
++                <Text style={[rpt.defectTableCell, { width: DEF_COL.notes, color: "#45464d" }]}>{d.tester_notes ?? "—"}</Text>
++              </View>
++            ))}
++          </View>
++
++          <View style={rpt.pageFooter} fixed>
++            <Text style={rpt.pageFooterText}>TestCaseHub · TCH-TR-{testRunId} · {generatedDate}</Text>
++            <Text style={rpt.pageFooterPageNum} render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
++          </View>
++        </Page>
++      )}
++    </Document>
++  );
++}
+diff --git a/artifacts/uat-manager/src/pages/TestRunDetailPage.tsx b/artifacts/uat-manager/src/pages/TestRunDetailPage.tsx
+index eb017f3..a2c97fe 100644
+--- a/artifacts/uat-manager/src/pages/TestRunDetailPage.tsx
++++ b/artifacts/uat-manager/src/pages/TestRunDetailPage.tsx
+@@ -8,7 +8,8 @@ import { triggerDownload } from "../lib/csv-utils";
+ import { getStoredUser } from "../lib/auth";
+ import { useProjectRole } from "../hooks/useProjectRole";
+ import { TeamDiscussionModal } from "../components/TeamDiscussionModal";
+-import { TestRunExecutionFormPDF } from "../lib/pdf-documents";
++import { TestRunExecutionFormPDF, TestRunResultReportPDF } from "../lib/pdf-documents";
++import type { RptUseCase, RptExecution, RptDefect } from "../lib/pdf-documents";
+ import type {
+   TestRun,
+   TestRunUseCase,
+@@ -219,6 +220,50 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
+     }
+   }, [execFormDocument, testRunId]);
+ 
++  // ── Completed results report ────────────────────────────────────────────
++  const { data: runDefects } = useQuery({
++    queryKey: ["test-run-defects", testRunId],
++    queryFn: () =>
++      customFetch<{ defects?: RptDefect[] }>(`/test-runs/${testRunId}/full-report`)
++        .then((r) => r.defects ?? []),
++    enabled: isCompleted,
++  });
++
++  const storedUser = getStoredUser();
++  const resultReportDocument = useMemo(() => {
++    const allUcs   = (testRun as (TestRun & { useCases?: RptUseCase[] }) | undefined)?.useCases ?? [];
++    const allExecs = (testRun as (TestRun & { executions?: RptExecution[] }) | undefined)?.executions ?? [];
++    return (
++      <TestRunResultReportPDF
++        projectName={testRun?.project?.name ?? `Project #${testRun?.project_id ?? ""}`}
++        testRunName={testRun?.name ?? ""}
++        testRunId={testRunId}
++        scheduledAt={testRun?.scheduled_at ?? null}
++        completedAt={testRun?.created_at ?? null}
++        preparedBy={storedUser?.name ?? null}
++        useCases={allUcs}
++        executions={allExecs}
++        defects={runDefects ?? []}
++      />
++    );
++  }, [testRun, testRunId, runDefects, storedUser?.name]);
++
++  const [resultReportGenerating, setResultReportGenerating] = useState(false);
++  const handleDownloadResultReport = useCallback(async () => {
++    setResultReportGenerating(true);
++    try {
++      const blob = await pdf(resultReportDocument).toBlob();
++      const url = URL.createObjectURL(blob);
++      triggerDownload(url, `test-run-${testRunId}-results-report.pdf`);
++      URL.revokeObjectURL(url);
++    } catch (e) {
++      console.error("Result report PDF generation failed:", e);
++      toast.error("Failed to generate the results report.");
++    } finally {
++      setResultReportGenerating(false);
++    }
++  }, [resultReportDocument, testRunId]);
++
+   if (isLoading) {
+     return (
+       <div className="space-y-lg animate-pulse">
+@@ -388,6 +433,16 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
+               <span className="material-symbols-outlined text-sm">file_download</span>
+               {execFormPdfGenerating ? "Preparing..." : "Download PDF"}
+             </button>
++            {isCompleted && (
++              <button
++                onClick={handleDownloadResultReport}
++                disabled={resultReportGenerating}
++                className="flex items-center gap-sm px-md py-sm border border-secondary text-secondary rounded-lg font-label-md hover:bg-secondary/10 transition-colors disabled:opacity-60 disabled:cursor-wait"
++              >
++                <span className="material-symbols-outlined text-sm">summarize</span>
++                {resultReportGenerating ? "Preparing..." : "Download Results Report"}
++              </button>
++            )}
+             {canManage && (
+               <button
+                 onClick={() => { setEditingName(true); setEditName(testRun.name); }}

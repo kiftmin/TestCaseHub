@@ -635,6 +635,60 @@ router.get("/:testRunId/full-report", async (req: AuthenticatedRequest, res, nex
       },
     });
     if (!testRun) { res.status(404).json({ message: "Not found" }); return; }
+
+    // Retest/verification runs: only include cases in scope (verify + regression + blocked).
+    // Without this the PDF/results report shows blank rows for plan siblings that were never part of the run.
+    if (testRun.run_type === "retest") {
+      const scope = await getRetestScope(testRunId);
+      const visibleCaseIds = new Set(scope.allTestCaseIds);
+      const roleByCase = new Map(scope.items.map((i) => [i.testCaseId, i]));
+      const executableIds = new Set(scope.testCaseIds);
+
+      if (testRun.useCases) {
+        for (const truc of testRun.useCases) {
+          if (truc.useCase?.testCases) {
+            truc.useCase.testCases = truc.useCase.testCases
+              .filter((tc) => visibleCaseIds.has(tc.id))
+              .map((tc) => {
+                const item = roleByCase.get(tc.id);
+                return {
+                  ...tc,
+                  retestRole: item?.role ?? "verify",
+                  retestExecutable: item?.executable ?? true,
+                  retestDefectId: item?.defectId ?? null,
+                  retestBugNumber: item?.bugNumber ?? null,
+                  retestBlockingReason:
+                    item?.role === "blocked"
+                      ? `Open defect${item.bugNumber != null ? ` #${item.bugNumber}` : ""} (${item.defectStatus ?? "in progress"})`
+                      : null,
+                };
+              });
+          }
+        }
+        // Drop scenarios that have zero in-scope cases after filtering
+        testRun.useCases = testRun.useCases.filter(
+          (truc) => (truc.useCase?.testCases?.length ?? 0) > 0,
+        );
+      }
+      if (testRun.executions) {
+        testRun.executions = testRun.executions.filter((e) => executableIds.has(e.test_case_id) || visibleCaseIds.has(e.test_case_id));
+      }
+      if (testRun.defects) {
+        testRun.defects = testRun.defects.filter((d) => visibleCaseIds.has(d.test_case_id));
+      }
+
+      res.json({
+        ...testRun,
+        verificationItems: scope.items,
+        verificationTestCaseIds: scope.testCaseIds,
+        verificationDefectIds: scope.defectIds,
+        verifyCaseIds: scope.verifyCaseIds,
+        regressionCaseIds: scope.regressionCaseIds,
+        blockedCaseIds: scope.blockedCaseIds,
+      });
+      return;
+    }
+
     res.json(testRun);
   } catch (err) { next(err); }
 });

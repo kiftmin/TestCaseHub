@@ -950,6 +950,9 @@ export type RptTestCase = {
   case_number: string;
   title: string;
   steps?: { id: number; step_number: string; instruction: string; expected_result: string | null }[];
+  retestRole?: "verify" | "regression" | "blocked" | string | null;
+  retestExecutable?: boolean | null;
+  retestBlockingReason?: string | null;
 };
 export type RptUseCase = {
   use_case_id: number;
@@ -1083,8 +1086,12 @@ export function TestRunResultReportPDF({
               </View>
 
               {(uc.testCases ?? []).map((tc) => {
+                const isBlocked =
+                  tc.retestRole === "blocked" || tc.retestExecutable === false;
                 const exec    = execByTcId.get(tc.id);
-                const tcBadge = resultBadge(exec?.overall_result ?? null);
+                const tcBadge = isBlocked
+                  ? { color: "#b91c1c", label: "BLOCKED" }
+                  : resultBadge(exec?.overall_result ?? null);
                 const testerName = exec?.tester?.name ?? exec?.tester_name ?? null;
                 const executedAt = exec?.executed_at ? fmt(exec.executed_at) : null;
 
@@ -1093,57 +1100,74 @@ export function TestRunResultReportPDF({
                     <View style={rpt.tcHeader}>
                       <Text style={rpt.tcNumber}>{tc.case_number}</Text>
                       <Text style={rpt.tcTitle}>{tc.title}</Text>
+                      {tc.retestRole === "verify" && (
+                        <Text style={[rpt.tcBadge, { color: "#15803d", marginRight: 4 }]}>VERIFY</Text>
+                      )}
+                      {tc.retestRole === "regression" && (
+                        <Text style={[rpt.tcBadge, { color: "#1d4ed8", marginRight: 4 }]}>REGRESSION</Text>
+                      )}
                       <Text style={[rpt.tcBadge, { color: tcBadge.color }]}>{tcBadge.label}</Text>
                     </View>
 
-                    {(tc.steps ?? []).length > 0 && (
-                      <View style={rpt.stepTable}>
-                        <View style={rpt.stepHeaderRow}>
-                          <Text style={[rpt.stepHeaderCell, { width: STEP_COL.num }]}>#</Text>
-                          <Text style={[rpt.stepHeaderCell, { width: STEP_COL.instruction }]}>Step</Text>
-                          <Text style={[rpt.stepHeaderCell, { width: STEP_COL.expected }]}>Expected</Text>
-                          <Text style={[rpt.stepHeaderCell, { width: STEP_COL.actual }]}>Actual Result</Text>
-                          <Text style={[rpt.stepHeaderCell, { width: STEP_COL.notes }]}>Notes</Text>
-                          <Text style={[rpt.stepHeaderCell, { width: STEP_COL.result }]}>Result</Text>
-                        </View>
-                        {(tc.steps ?? []).map((step, i) => {
-                          // Take highest-ID result per step — matches execution engine deduplication
-                          const matchingSrs = exec?.stepResults?.filter(r => r.step_id === step.id) ?? [];
-                          const sr = matchingSrs.length > 0
-                            ? matchingSrs.reduce((best, r) => (r.step_id > best.step_id ? r : best), matchingSrs[0])
-                            : undefined;
-                          // Infer when passed is null (runs recorded before the onResult fix):
-                          // passed TC → all steps pass; failed TC + step has actual_result → that step failed.
-                          const inferredPassed =
-                            sr?.passed !== null && sr?.passed !== undefined ? sr.passed :
-                            exec?.overall_result === "passed" ? true :
-                            sr?.actual_result ? false : null;
-                          const stepBadge =
-                            inferredPassed === true  ? { color: "#15803d", label: "PASS" } :
-                            inferredPassed === false ? { color: "#b91c1c", label: "FAIL" } :
-                                                       { color: "#45464d", label: "—" };
-                          return (
-                            <View key={step.id} style={[rpt.stepRow, i % 2 === 1 ? rpt.stepRowAlt : {}]}>
-                              <Text style={[rpt.stepCell, { width: STEP_COL.num }]}>{step.step_number}</Text>
-                              <Text style={[rpt.stepCell, { width: STEP_COL.instruction }]}>{step.instruction}</Text>
-                              <Text style={[rpt.stepCellMuted, { width: STEP_COL.expected }]}>{step.expected_result ?? "—"}</Text>
-                              <Text style={[rpt.stepCell, { width: STEP_COL.actual }]}>{sr?.actual_result ?? "—"}</Text>
-                              <Text style={[rpt.stepCellMuted, { width: STEP_COL.notes }]}>{sr?.comments ?? "—"}</Text>
-                              <Text style={[rpt.stepCell, { width: STEP_COL.result, color: stepBadge.color, fontFamily: "Helvetica-Bold" }]}>
-                                {stepBadge.label}
-                              </Text>
+                    {isBlocked ? (
+                      <View style={{ marginLeft: 8, marginTop: 2, marginBottom: 4, paddingHorizontal: 8, paddingVertical: 4, backgroundColor: "#fef2f2", borderLeftWidth: 2, borderLeftColor: "#b91c1c" }}>
+                        <Text style={{ fontSize: 8, color: "#7f1d1d" }}>
+                          Not executed in this verification run
+                          {tc.retestBlockingReason ? ` — ${tc.retestBlockingReason}` : " (blocked / out of executable scope)."}
+                        </Text>
+                      </View>
+                    ) : (
+                      <>
+                        {(tc.steps ?? []).length > 0 && (
+                          <View style={rpt.stepTable}>
+                            <View style={rpt.stepHeaderRow}>
+                              <Text style={[rpt.stepHeaderCell, { width: STEP_COL.num }]}>#</Text>
+                              <Text style={[rpt.stepHeaderCell, { width: STEP_COL.instruction }]}>Step</Text>
+                              <Text style={[rpt.stepHeaderCell, { width: STEP_COL.expected }]}>Expected</Text>
+                              <Text style={[rpt.stepHeaderCell, { width: STEP_COL.actual }]}>Actual Result</Text>
+                              <Text style={[rpt.stepHeaderCell, { width: STEP_COL.notes }]}>Notes</Text>
+                              <Text style={[rpt.stepHeaderCell, { width: STEP_COL.result }]}>Result</Text>
                             </View>
-                          );
-                        })}
-                      </View>
-                    )}
+                            {(tc.steps ?? []).map((step, i) => {
+                              // Take highest-ID result per step — matches execution engine deduplication
+                              const matchingSrs = exec?.stepResults?.filter(r => r.step_id === step.id) ?? [];
+                              const sr = matchingSrs.length > 0
+                                ? matchingSrs.reduce((best, r) => (r.step_id > best.step_id ? r : best), matchingSrs[0])
+                                : undefined;
+                              // Infer when passed is null (runs recorded before the onResult fix):
+                              // passed TC → all steps pass; failed TC + step has actual_result → that step failed.
+                              const inferredPassed =
+                                sr?.passed !== null && sr?.passed !== undefined ? sr.passed :
+                                exec?.overall_result === "passed" ? true :
+                                sr?.actual_result ? false : null;
+                              const stepBadge =
+                                inferredPassed === true  ? { color: "#15803d", label: "PASS" } :
+                                inferredPassed === false ? { color: "#b91c1c", label: "FAIL" } :
+                                                           { color: "#45464d", label: "—" };
+                              return (
+                                <View key={step.id} style={[rpt.stepRow, i % 2 === 1 ? rpt.stepRowAlt : {}]}>
+                                  <Text style={[rpt.stepCell, { width: STEP_COL.num }]}>{step.step_number}</Text>
+                                  <Text style={[rpt.stepCell, { width: STEP_COL.instruction }]}>{step.instruction}</Text>
+                                  <Text style={[rpt.stepCellMuted, { width: STEP_COL.expected }]}>{step.expected_result ?? "—"}</Text>
+                                  <Text style={[rpt.stepCell, { width: STEP_COL.actual }]}>{sr?.actual_result ?? "—"}</Text>
+                                  <Text style={[rpt.stepCellMuted, { width: STEP_COL.notes }]}>{sr?.comments ?? "—"}</Text>
+                                  <Text style={[rpt.stepCell, { width: STEP_COL.result, color: stepBadge.color, fontFamily: "Helvetica-Bold" }]}>
+                                    {stepBadge.label}
+                                  </Text>
+                                </View>
+                              );
+                            })}
+                          </View>
+                        )}
 
-                    {(testerName ?? executedAt ?? exec?.notes) && (
-                      <View style={rpt.tcMeta}>
-                        {testerName  && <View style={{ flexDirection: "row", gap: 4 }}><Text style={rpt.tcMetaLabel}>Tester:</Text><Text style={rpt.tcMetaValue}>{testerName}</Text></View>}
-                        {executedAt  && <View style={{ flexDirection: "row", gap: 4 }}><Text style={rpt.tcMetaLabel}>Executed:</Text><Text style={rpt.tcMetaValue}>{executedAt}</Text></View>}
-                        {exec?.notes && <View style={{ flexDirection: "row", gap: 4, flex: 1 }}><Text style={rpt.tcMetaLabel}>Notes:</Text><Text style={[rpt.tcMetaValue, { flex: 1 }]}>{exec.notes}</Text></View>}
-                      </View>
+                        {(testerName ?? executedAt ?? exec?.notes) && (
+                          <View style={rpt.tcMeta}>
+                            {testerName  && <View style={{ flexDirection: "row", gap: 4 }}><Text style={rpt.tcMetaLabel}>Tester:</Text><Text style={rpt.tcMetaValue}>{testerName}</Text></View>}
+                            {executedAt  && <View style={{ flexDirection: "row", gap: 4 }}><Text style={rpt.tcMetaLabel}>Executed:</Text><Text style={rpt.tcMetaValue}>{executedAt}</Text></View>}
+                            {exec?.notes && <View style={{ flexDirection: "row", gap: 4, flex: 1 }}><Text style={rpt.tcMetaLabel}>Notes:</Text><Text style={[rpt.tcMetaValue, { flex: 1 }]}>{exec.notes}</Text></View>}
+                          </View>
+                        )}
+                      </>
                     )}
                   </View>
                 );

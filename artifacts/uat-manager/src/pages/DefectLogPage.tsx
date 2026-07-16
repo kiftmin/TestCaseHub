@@ -515,8 +515,20 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
   const isDeveloper = role === "DEVELOPER" || user?.role === "ADMIN";
   const isQa = useIsProjectQa(projectId);
 
-  const defaultTab = role === "DEVELOPER" ? "developer" : (role === "ADMIN" || role === "TEST_LEAD") ? "full" : "business";
-  const [activeTab, setActiveTab] = useState(defaultTab);
+  const roleDefaultTab = role === "DEVELOPER" ? "developer" : (role === "ADMIN" || role === "TEST_LEAD") ? "full" : "business";
+  const [activeTab, setActiveTab] = useState(() => {
+    const saved = localStorage.getItem("tch_defect_tab") as string | null;
+    const validTabs = ["business", "developer", "full", "my"];
+    if (saved && validTabs.includes(saved)) {
+      return saved;
+    }
+    return roleDefaultTab;
+  });
+
+  // Persist tab preference across page navigations
+  useEffect(() => {
+    localStorage.setItem("tch_defect_tab", activeTab);
+  }, [activeTab]);
 
   useEffect(() => {
     setStatusFilter("all");

@@ -824,9 +824,14 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
     for (const truc of allUseCases) {
       if (!truc.useCase) continue;
       for (const tc of truc.useCase.testCases) {
-        // Skip out-of-scope cases on retest runs
+        // Skip out-of-scope / blocked cases on retest runs (not executable)
         if (retestCaseIdSet && !retestCaseIdSet.has(tc.id)) continue;
+        if (retestScope?.blockedCaseIds?.includes(tc.id)) continue;
         const exec = allExecutions.find((e) => e.test_case_id === tc.id);
+        // Already submitted terminal result — treat as complete even if step rows are sparse
+        if (exec?.overall_result === "passed" || exec?.overall_result === "failed" || exec?.overall_result === "passed_by_agreement") {
+          continue;
+        }
         if (!exec) {
           incompleteCases.push(`${tc.case_number} — ${tc.title} (Not Started)`);
           continue;
@@ -903,6 +908,10 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
       let nextBugNumber = Number(maxBugRows[0]?.max ?? 0) + 1;
 
       const createdDefects: { id: number; bug_number: number | null }[] = [];
+      // Deferred status notes — must run AFTER commit. Calling logSystemNote/logAudit
+      // inside this transaction deadlocks: they use a separate pool connection that
+      // needs FOR KEY SHARE on defects we already hold FOR UPDATE.
+      const pendingStatusNotes: Array<{ defectId: number; fromStatus: string; toStatus: string }> = [];
 
       // Phase A+B: retest must NOT open NEW for verify cases (auto-regress instead).
       // Regression opt-in cases may still create NEW defects on failure.
@@ -1000,6 +1009,7 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
             executionResultByTestCaseId.get(defect.test_case_id) ?? "passed";
 
           const oldStatus = "READY_FOR_VERIFICATION";
+          const nextStatus = result === "passed" ? "CLOSED" : "REGRESSED";
           if (result === "passed") {
             await tx
               .update(schema.defects)
@@ -1015,8 +1025,6 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
                   eq(schema.defects.status, "READY_FOR_VERIFICATION"),
                 ),
               );
-            await logAudit({ entityType: "defect", entityId: defect.id, changedByUserId: userId, fromStatus: oldStatus, toStatus: "CLOSED" });
-            await logSystemNote(defect.id, oldStatus, "CLOSED", userId);
           } else {
             await tx
               .update(schema.defects)
@@ -1031,9 +1039,8 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
                   eq(schema.defects.status, "READY_FOR_VERIFICATION"),
                 ),
               );
-            await logAudit({ entityType: "defect", entityId: defect.id, changedByUserId: userId, fromStatus: oldStatus, toStatus: "REGRESSED" });
-            await logSystemNote(defect.id, oldStatus, "REGRESSED", userId);
           }
+          pendingStatusNotes.push({ defectId: defect.id, fromStatus: oldStatus, toStatus: nextStatus });
 
           // Record result on the enrollment row
           await tx
@@ -1081,6 +1088,7 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
 
       return {
         createdDefects,
+        pendingStatusNotes,
         allSignedOff,
         signedOffCount: allRunUseCases.filter((uc) => uc.tester_sign_off).length,
         totalUseCases: allRunUseCases.length,
@@ -1090,9 +1098,21 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
       };
     });
 
-    // Post-commit audit/notes (best-effort; data is already consistent)
+    // Post-commit audit/notes (best-effort; data is already consistent).
+    // Must not run inside the transaction — separate pool connections deadlock
+    // against FOR UPDATE locks held on defects.
     for (const defect of submitResult.createdDefects) {
       await logSystemNote(defect.id, null, "NEW", userId);
+    }
+    for (const note of submitResult.pendingStatusNotes) {
+      await logAudit({
+        entityType: "defect",
+        entityId: note.defectId,
+        changedByUserId: userId,
+        fromStatus: note.fromStatus,
+        toStatus: note.toStatus,
+      });
+      await logSystemNote(note.defectId, note.fromStatus, note.toStatus, userId);
     }
     for (const truc of allUseCases) {
       if (truc.useCase) {

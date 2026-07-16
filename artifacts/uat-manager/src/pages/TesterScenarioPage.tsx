@@ -250,15 +250,21 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
 
   const submitTestRunMut = useMutation({
     mutationFn: () =>
-      customFetch(`/test-runs/${testRunId}/submit`, { method: "POST" }),
-    onSuccess: () => {
-      toast.success("Test run submitted successfully");
+      customFetch<{ message?: string; allSignedOff?: boolean }>(`/test-runs/${testRunId}/submit`, {
+        method: "POST",
+      }),
+    onSuccess: (data) => {
+      toast.success(
+        data?.allSignedOff
+          ? "Test run submitted successfully"
+          : data?.message || "Your scenarios submitted — waiting for other testers",
+      );
       queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
       queryClient.invalidateQueries({ queryKey: ["tester-runs"] });
       setShowSubmitDialog(false);
     },
     onError: (e: Error) => {
-      toast.error(e.message);
+      toast.error(e.message || "Submit failed — please try again");
       setShowSubmitDialog(false);
     },
   });
@@ -532,11 +538,12 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
             <div className="min-w-0 space-y-xs">
               <div className="flex items-center gap-xs">
                 <span className="material-symbols-outlined text-green-700 text-[20px]">check_circle</span>
-                <h2 className="font-title-md text-title-md text-green-800">All scenarios completed</h2>
+                <h2 className="font-title-md text-title-md text-green-800">Your scenarios completed</h2>
               </div>
               <p className="text-body-base text-green-700">
-                Every test case in this run has been completed. You can now submit the test run.
-                Once submitted, the run will be set to read-only and defects will be created for any failed test cases.
+                Every test case assigned to you is complete. You can submit your scenarios now.
+                Other testers can still finish their assigned scenarios. Once you submit, your
+                results become read-only and defects are created for any failed test cases.
               </p>
             </div>
             <button
@@ -562,17 +569,18 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
             <div className="bg-amber-50 border border-amber-200 rounded-xl p-md flex gap-md">
               <span className="material-symbols-outlined text-amber-700 shrink-0">warning</span>
               <div className="text-body-sm text-amber-900">
-                <p className="font-bold mb-xs">Warning: Read-only mode</p>
+                <p className="font-bold mb-xs">Warning: Read-only for your scenarios</p>
                 <p>
-                  Once you submit this test run, it will be set to <strong>read-only mode</strong>. You will not
-                  be able to make any further changes to the test case results or step data.
+                  Once you submit, <strong>your assigned scenarios</strong> become read-only.
+                  You will not be able to change results or step data for those scenarios.
+                  Other testers can still complete and submit their own scenarios.
                 </p>
               </div>
             </div>
 
             <p className="text-body-sm text-on-surface-variant">
-              Failed steps will be automatically created as <strong>Defects</strong> with status <strong>New</strong>
-              {' '}in the Defects table for triage by the Test Lead.
+              Failed test cases will be automatically created as <strong>Defects</strong> with status <strong>New</strong>
+              {' '}in the Defects table for triage by the Test Lead. The full test run completes only after every tester has submitted.
             </p>
 
             <div className="flex items-center justify-end gap-sm pt-sm border-t border-outline-variant">

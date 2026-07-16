@@ -682,11 +682,17 @@ router.post("/:projectId/sign-off", async (req: AuthenticatedRequest, res, next)
         signOffData = {};
       }
 
+      const signatureImage =
+        typeof req.body.signatureImage === "string" && req.body.signatureImage.startsWith("data:image/")
+          ? req.body.signatureImage
+          : undefined;
+
       signOffData[key] = {
         name: req.body.name || "",
         role: req.body.role || "",
         date: new Date().toISOString(),
         signature: req.body.signature || "",
+        ...(signatureImage ? { signatureImage } : {}),
       };
 
       if (req.body.businessDecisions) {
@@ -758,16 +764,40 @@ router.get("/:projectId/uat-summary", async (req: AuthenticatedRequest, res, nex
     const total = testRuns.length;
     const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
 
+    const TERMINAL = new Set(["CLOSED", "PASSED_BY_AGREEMENT", "REJECTED", "DUPLICATE"]);
     const defectsByStatus: Record<string, number> = {};
     const defectsBySeverity: Record<string, number> = {};
+    const openBySeverity: Record<string, number> = {};
+    let openDefects = 0;
+    let acceptedByAgreement = 0;
+
     for (const run of testRuns) {
       for (const defect of run.defects) {
         defectsByStatus[defect.status] = (defectsByStatus[defect.status] || 0) + 1;
-        if (defect.severity) defectsBySeverity[defect.severity] = (defectsBySeverity[defect.severity] || 0) + 1;
+        if (defect.severity) {
+          defectsBySeverity[defect.severity] = (defectsBySeverity[defect.severity] || 0) + 1;
+        }
+        if (defect.status === "PASSED_BY_AGREEMENT") {
+          acceptedByAgreement += 1;
+        }
+        if (!TERMINAL.has(defect.status)) {
+          openDefects += 1;
+          const sev = defect.severity || "Unspecified";
+          openBySeverity[sev] = (openBySeverity[sev] || 0) + 1;
+        }
       }
     }
 
-    res.json({ totalScenarios, totalTestRuns: total, passRate, defectsByStatus, defectsBySeverity });
+    res.json({
+      totalScenarios,
+      totalTestRuns: total,
+      passRate,
+      defectsByStatus,
+      defectsBySeverity,
+      openDefects,
+      openBySeverity,
+      acceptedByAgreement,
+    });
   } catch (err) { next(err); }
 });
 

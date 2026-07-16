@@ -49,19 +49,22 @@ export interface Project {
   attachmentCount?: number;
 }
 
+export interface SignOffSignature {
+  name: string;
+  role: string;
+  date: string;
+  /** Typed name used as a text signature (legacy / fallback). */
+  signature: string;
+  /**
+   * Optional drawn or uploaded signature image as a data URL
+   * (e.g. `data:image/png;base64,...`). Rendered in the PDF when present.
+   */
+  signatureImage?: string | null;
+}
+
 export interface SignOffData {
-  testLead?: {
-    name: string;
-    role: string;
-    date: string;
-    signature: string;
-  };
-  businessOwner?: {
-    name: string;
-    role: string;
-    date: string;
-    signature: string;
-  };
+  testLead?: SignOffSignature;
+  businessOwner?: SignOffSignature;
   businessDecisions?: {
     count: number;
     accepted: Array<{
@@ -276,6 +279,8 @@ export interface Defect {
   resolved_at: string | null;
   closed_at: string | null;
   testCase?: TestCase;
+  testRun?: { id: number; name: string; status?: string; run_type?: string | null } | null;
+  assignedTo?: { id: number; username: string; name: string | null } | null;
   execution?: Execution;
   retests?: DefectRetest[];
   notes?: DefectNote[];
@@ -311,6 +316,7 @@ export interface StatusAuditLog {
   reason: string | null;
   justification: string | null;
   changed_at: string;
+  changedBy?: { id?: number; username?: string; name?: string | null } | null;
 }
 
 export interface TeamDiscussion {

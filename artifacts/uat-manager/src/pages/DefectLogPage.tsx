@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { pdf } from "@react-pdf/renderer";
 import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
@@ -9,7 +10,53 @@ import { Stepper, type Step } from "../components/ui/stepper";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { DEFECT_VIEWS } from "../lib/defect-views";
 import { downloadDefectsExcel, downloadCsv } from "../lib/csv-utils";
-import type { Defect, DefectNote, TestRun, ProjectAssignment } from "../types/api";
+import {
+  DefectLogRolledUpPDF,
+  DefectHistoricalTrackingPDF,
+  type DefectLogReportRow,
+  type DefectLogScenarioGroup,
+} from "../lib/pdf-documents";
+import type { Defect, DefectNote, TestRun, ProjectAssignment, StatusAuditLog, Project } from "../types/api";
+
+function triggerPdfDownload(url: string, filename: string) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function developerName(defect: Defect, developers: ProjectAssignment[]): string | null {
+  if (defect.assignedTo?.name || defect.assignedTo?.username) {
+    return defect.assignedTo.name || defect.assignedTo.username;
+  }
+  if (defect.assigned_to_user_id == null) return null;
+  const match = developers.find((a) => a.user_id === defect.assigned_to_user_id);
+  return match?.user?.name || match?.user?.username || null;
+}
+
+function toReportRow(defect: Defect, developers: ProjectAssignment[]): DefectLogReportRow {
+  return {
+    id: defect.id,
+    bug_number: defect.bug_number,
+    status: defect.status,
+    severity: defect.severity,
+    priority: defect.priority,
+    is_blocked: defect.is_blocked,
+    blocked_reason: defect.blocked_reason,
+    regression_index: defect.regression_index,
+    created_at: defect.created_at,
+    tester_notes: defect.tester_notes,
+    case_number: defect.testCase?.case_number,
+    case_title: defect.testCase?.title,
+    scenario_code: defect.testCase?.useCase?.code,
+    scenario_name: defect.testCase?.useCase?.name,
+    developer_name: developerName(defect, developers),
+    origin_run_name: defect.testRun?.name ?? null,
+    origin_run_id: defect.test_run_id,
+  };
+}
 
 const statusBadge: Record<string, string> = {
   NEW: "bg-error-container text-on-error-container border-error/20",
@@ -180,6 +227,9 @@ function TabContent({
   isDeveloper,
   isQa,
   projectId,
+  projectName,
+  projectCode,
+  developers,
   expandedId,
   setExpandedId,
   sortField,
@@ -199,6 +249,9 @@ function TabContent({
   isDeveloper: boolean;
   isQa: boolean;
   projectId: number;
+  projectName?: string;
+  projectCode?: string;
+  developers: ProjectAssignment[];
   expandedId: number | null;
   setExpandedId: (v: number | null) => void;
   sortField: string;
@@ -320,6 +373,9 @@ function TabContent({
                     isDeveloper={isDeveloper}
                     isQa={isQa}
                     projectId={projectId}
+                    projectName={projectName}
+                    projectCode={projectCode}
+                    developers={developers}
                     onMutated={() => {}}
                     activeTab={activeTab}
                   />
@@ -443,6 +499,9 @@ function TabContent({
                               isDeveloper={isDeveloper}
                               isQa={isQa}
                               projectId={projectId}
+                              projectName={projectName}
+                              projectCode={projectCode}
+                              developers={developers}
                               onMutated={() => {}}
                               activeTab={activeTab}
                             />
@@ -537,10 +596,17 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     setDeveloperFilter("all");
   }, [activeTab]);
 
+  const { data: project } = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => customFetch<Project>(`/projects/${projectId}`),
+  });
+
   const { data: testRuns } = useQuery({
     queryKey: ["project-runs", projectId],
     queryFn: () => customFetch<TestRun[]>(`/projects/${projectId}/test-runs`),
   });
+
+  const [rolledUpPdfGenerating, setRolledUpPdfGenerating] = useState(false);
 
   const { data: allDefects } = useQuery({
     queryKey: ["project-defects", projectId],
@@ -688,6 +754,60 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     );
   }, [sorted]);
 
+  const filterSummary = useMemo(() => {
+    const parts: string[] = [];
+    if (runFilter !== "all") {
+      const run = testRuns?.find((r) => r.id === Number(runFilter));
+      parts.push(`Test run: ${run?.name ?? runFilter}`);
+    }
+    if (statusFilter !== "all") parts.push(`Status: ${statusDisplay[statusFilter] ?? statusFilter}`);
+    if (severityFilter !== "all") parts.push(`Severity: ${severityFilter}`);
+    if (developerFilter !== "all") {
+      const dev = developers.find((a) => a.user_id === Number(developerFilter));
+      parts.push(`Developer: ${dev?.user?.name || dev?.user?.username || developerFilter}`);
+    }
+    if (blockedFilter !== "all") parts.push(`Blocked: ${blockedFilter}`);
+    if (search.trim()) parts.push(`Search: “${search.trim()}”`);
+    parts.push(`View: ${activeTab}`);
+    return parts.join(" · ");
+  }, [runFilter, statusFilter, severityFilter, developerFilter, blockedFilter, search, activeTab, testRuns, developers]);
+
+  const handleDownloadRolledUpPdf = useCallback(async () => {
+    setRolledUpPdfGenerating(true);
+    try {
+      const map = new Map<string, DefectLogScenarioGroup>();
+      for (const defect of sorted) {
+        const key = scenarioKey(defect);
+        const row = toReportRow(defect, developers);
+        const existing = map.get(key);
+        if (existing) existing.defects.push(row);
+        else map.set(key, { key, label: scenarioLabel(defect), defects: [row] });
+      }
+      const groups = Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+      const doc = (
+        <DefectLogRolledUpPDF
+          projectName={project?.name ?? `Project #${projectId}`}
+          projectCode={project?.project_code}
+          preparedBy={user?.username ?? null}
+          filterSummary={filterSummary}
+          groups={groups}
+          includeLeadFields={canManage}
+          totalDefects={sorted.length}
+        />
+      );
+      const blob = await pdf(doc).toBlob();
+      const url = URL.createObjectURL(blob);
+      const date = new Date().toISOString().slice(0, 10);
+      triggerPdfDownload(url, `defect-log-rolled-up-${project?.project_code ?? projectId}-${date}.pdf`);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e);
+      toast.error("Failed to generate the rolled-up defect log PDF.");
+    } finally {
+      setRolledUpPdfGenerating(false);
+    }
+  }, [sorted, developers, project, projectId, user?.username, filterSummary, canManage]);
+
   return (
     <>
     <div className="space-y-lg print:hidden">
@@ -731,7 +851,16 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
               </TabsTrigger>
             )}
           </TabsList>
-          <div className="flex items-center gap-sm">
+          <div className="flex items-center gap-sm flex-wrap justify-end">
+            <button
+              onClick={handleDownloadRolledUpPdf}
+              disabled={rolledUpPdfGenerating || sorted.length === 0}
+              className="flex items-center gap-sm px-md py-sm bg-[#1a2744] text-white rounded-lg font-label-md hover:brightness-110 transition-colors disabled:opacity-50"
+              title="PDF: test-case level register grouped by scenario"
+            >
+              <span className="material-symbols-outlined text-sm">picture_as_pdf</span>
+              {rolledUpPdfGenerating ? "Preparing PDF…" : "PDF: Rolled-Up Report"}
+            </button>
             <button
               onClick={handleExportCsv}
               className="flex items-center gap-sm px-md py-sm border border-outline text-on-surface rounded-lg font-label-md hover:bg-surface-container-high transition-colors"
@@ -862,6 +991,9 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             isDeveloper={isDeveloper}
             isQa={isQa}
             projectId={projectId}
+            projectName={project?.name}
+            projectCode={project?.project_code}
+            developers={developers}
             expandedId={expandedId}
             setExpandedId={setExpandedId}
             sortField={sortField}
@@ -885,6 +1017,9 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             isDeveloper={isDeveloper}
             isQa={isQa}
             projectId={projectId}
+            projectName={project?.name}
+            projectCode={project?.project_code}
+            developers={developers}
             expandedId={expandedId}
             setExpandedId={setExpandedId}
             sortField={sortField}
@@ -908,6 +1043,9 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             isDeveloper={isDeveloper}
             isQa={isQa}
             projectId={projectId}
+            projectName={project?.name}
+            projectCode={project?.project_code}
+            developers={developers}
             expandedId={expandedId}
             setExpandedId={setExpandedId}
             sortField={sortField}
@@ -931,6 +1069,9 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
             isDeveloper={isDeveloper}
             isQa={isQa}
             projectId={projectId}
+            projectName={project?.name}
+            projectCode={project?.project_code}
+            developers={developers}
             expandedId={expandedId}
             setExpandedId={setExpandedId}
             sortField={sortField}
@@ -1104,6 +1245,9 @@ function DefectRow({
   isDeveloper,
   isQa,
   projectId,
+  projectName,
+  projectCode,
+  developers,
   onMutated,
   activeTab,
 }: {
@@ -1117,11 +1261,15 @@ function DefectRow({
   isDeveloper: boolean;
   isQa: boolean;
   projectId: number;
+  projectName?: string;
+  projectCode?: string;
+  developers: ProjectAssignment[];
   onMutated: () => void;
   activeTab: string;
 }) {
   const user = getStoredUser();
   const queryClient = useQueryClient();
+  const [trackingPdfGenerating, setTrackingPdfGenerating] = useState(false);
   const [classifyOpen, setClassifyOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
@@ -1465,6 +1613,80 @@ function DefectRow({
     return [...idx].sort((a, b) => a - b);
   }, [visitedFrom, currentStatusIdx, defect.status]);
 
+  const handleDownloadTrackingPdf = async () => {
+    if (!canManage) return;
+    setTrackingPdfGenerating(true);
+    try {
+      const [auditLogs, detail] = await Promise.all([
+        customFetch<StatusAuditLog[]>(
+          `/projects/${projectId}/audit-log?entityType=defect&entityId=${defect.id}`,
+        ),
+        customFetch<Defect>(`/defects/${defect.id}`).catch(() => defect),
+      ]);
+      const notesSource = detail.notes ?? defect.notes ?? [];
+      const doc = (
+        <DefectHistoricalTrackingPDF
+          projectName={projectName ?? `Project #${projectId}`}
+          projectCode={projectCode}
+          preparedBy={user?.username ?? null}
+          defect={{
+            id: defect.id,
+            bug_number: defect.bug_number,
+            status: defect.status,
+            severity: defect.severity,
+            priority: defect.priority,
+            is_blocked: defect.is_blocked,
+            blocked_reason: defect.blocked_reason,
+            regression_index: defect.regression_index,
+            created_at: defect.created_at,
+            updated_at: defect.updated_at,
+            resolved_at: defect.resolved_at,
+            closed_at: defect.closed_at,
+            tester_notes: defect.tester_notes,
+            support_ticket_number: defect.support_ticket_number,
+            root_cause_category: defect.root_cause_category,
+            case_number: defect.testCase?.case_number,
+            case_title: defect.testCase?.title,
+            scenario_code: defect.testCase?.useCase?.code,
+            scenario_name: defect.testCase?.useCase?.name,
+            developer_name: developerName(defect, developers),
+            origin_run_name: defect.testRun?.name ?? null,
+            origin_run_id: defect.test_run_id,
+            tester_name:
+              defect.execution?.tester?.name ||
+              defect.execution?.tester_name ||
+              null,
+            auditTrail: (auditLogs ?? []).map((e) => ({
+              changed_at: e.changed_at,
+              from_status: e.from_status,
+              to_status: e.to_status,
+              reason: e.reason,
+              justification: e.justification,
+              changed_by_name:
+                e.changedBy?.name || e.changedBy?.username || null,
+            })),
+            notes: notesSource.map((n) => ({
+              created_at: n.created_at,
+              note: n.note,
+              is_system_note: n.is_system_note,
+              is_internal: n.is_internal,
+              added_by_name: n.addedBy?.name || n.addedBy?.username || null,
+            })),
+          }}
+        />
+      );
+      const blob = await pdf(doc).toBlob();
+      const url = URL.createObjectURL(blob);
+      triggerPdfDownload(url, `defect-tracking-DEF-${defect.id}.pdf`);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e);
+      toast.error("Failed to generate the historical tracking PDF.");
+    } finally {
+      setTrackingPdfGenerating(false);
+    }
+  };
+
   return (
     <>
       <tr
@@ -1518,6 +1740,19 @@ function DefectRow({
         </td>
         <td className="px-md py-sm text-right" onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-end gap-0.5">
+            {/* Historical tracking PDF — Test Lead / Admin only */}
+            {canManage && (
+              <button
+                onClick={handleDownloadTrackingPdf}
+                disabled={trackingPdfGenerating}
+                className="action-btn action-btn-secondary"
+                title="Download historical tracking PDF (audit trail)"
+              >
+                <span className="material-symbols-outlined text-sm">
+                  {trackingPdfGenerating ? "hourglass_top" : "history_edu"}
+                </span>
+              </button>
+            )}
             {/* Classify / Reclassify — only before work starts */}
             {canManage && (isNew || isTriaged || isAssigned) && (
               <button

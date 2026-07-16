@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback, type MouseEvent, type TouchEvent, type FormEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PDFDownloadLink } from "@react-pdf/renderer";
 import { toast } from "sonner";
@@ -7,6 +7,8 @@ import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
 import { SignOffCertificatePDF } from "../lib/pdf-documents";
 import type { Project, SignOffData, Defect, StatusAuditLog } from "../types/api";
+
+const MAX_SIGNATURE_BYTES = 400_000; // ~300KB image after base64 expansion
 
 export function SignOffCertificatePage({ params }: { params: { id: string } }) {
   const projectId = Number(params.id);
@@ -28,6 +30,9 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
       passRate: number;
       defectsByStatus: Record<string, number>;
       defectsBySeverity: Record<string, number>;
+      openDefects?: number;
+      openBySeverity?: Record<string, number>;
+      acceptedByAgreement?: number;
     }>(`/projects/${projectId}/uat-summary`),
   });
 
@@ -50,10 +55,47 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
   const boSigned = !!signOffData.businessOwner;
   const collected = [tlSigned, boSigned].filter(Boolean).length;
 
+  const openDefects =
+    uatSummary?.openDefects ??
+    (uatSummary?.defectsByStatus
+      ? Object.entries(uatSummary.defectsByStatus)
+          .filter(([status]) => !["CLOSED", "PASSED_BY_AGREEMENT", "REJECTED", "DUPLICATE"].includes(status))
+          .reduce((sum, [, n]) => sum + n, 0)
+      : 0);
+
+  const openBySeverity = uatSummary?.openBySeverity ?? {};
+  const acceptedCount =
+    signOffData?.businessDecisions?.accepted?.length ??
+    uatSummary?.acceptedByAgreement ??
+    0;
+  const hasConditions = openDefects > 0 || acceptedCount > 0;
+
+  const severityOrder = ["Critical", "Major", "Minor", "Cosmetic", "Unspecified"];
+  const severityRows = [
+    ...severityOrder
+      .filter((s) => (openBySeverity[s] ?? 0) > 0)
+      .map((s) => ({ severity: s, count: openBySeverity[s] ?? 0 })),
+    ...Object.entries(openBySeverity)
+      .filter(([s, n]) => !severityOrder.includes(s) && n > 0)
+      .map(([severity, count]) => ({ severity, count })),
+  ];
+
+  const exitCriteriaStatus = isFullySigned
+    ? hasConditions
+      ? "Met with conditions"
+      : "Met"
+    : "Subject to confirmation by authorised signatories";
+
+  const recommendation = isFullySigned
+    ? hasConditions
+      ? "Accepted with conditions — residual risks and/or open defects are recorded below and in Annex A where applicable."
+      : "Accepted — UAT exit criteria confirmed; no open defects or residual waivers at sign-off."
+    : "Pending — formal acceptance requires authorised Business Owner and QA / Test Lead signatures.";
+
   const fetchBusinessDecisions = async () => {
     const defects = await customFetch<Defect[]>(`/projects/${projectId}/defects`);
-    const accepted: SignOffData["businessDecisions"]["accepted"] = [];
-    const rejected: SignOffData["businessDecisions"]["rejected"] = [];
+    const accepted: NonNullable<SignOffData["businessDecisions"]>["accepted"] = [];
+    const rejected: NonNullable<SignOffData["businessDecisions"]>["rejected"] = [];
 
     for (const defect of defects) {
       if (defect.status === "PASSED_BY_AGREEMENT" && defect.accepted_by_business_note) {
@@ -70,8 +112,8 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
           const reason = submissionEntry.reason || "";
           const decisionType = reason.startsWith("[RISK WAIVER]") ? ("risk_waiver" as const) : ("business_review" as const);
           const justification = reason.replace(/^\[(RISK WAIVER|BUSINESS REVIEW)\]\s*/, "");
-          const changedBy = (submissionEntry as any).changedBy;
-          const acceptedBy = (acceptanceEntry as any).changedBy;
+          const changedBy = (submissionEntry as { changedBy?: { name?: string } }).changedBy;
+          const acceptedBy = (acceptanceEntry as { changedBy?: { name?: string } }).changedBy;
 
           accepted.push({
             defectId: defect.id,
@@ -97,7 +139,7 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
   };
 
   const signMut = useMutation({
-    mutationFn: async (data: { name: string; role: string; signature: string }) => {
+    mutationFn: async (data: { name: string; role: string; signature: string; signatureImage?: string }) => {
       const businessDecisions = await fetchBusinessDecisions();
       return customFetch(`/projects/${projectId}/sign-off`, {
         method: "POST",
@@ -121,322 +163,431 @@ export function SignOffCertificatePage({ params }: { params: { id: string } }) {
     );
   }
 
+  const pdfDoc = (
+    <SignOffCertificatePDF
+      projectName={project?.name ?? ""}
+      projectCode={project?.project_code ?? ""}
+      moduleName={project?.module_name ?? ""}
+      version={project?.version != null ? String(project.version) : ""}
+      scope={project?.scope ?? ""}
+      objectives={project?.objectives ?? ""}
+      outOfScope={project?.out_of_scope ?? ""}
+      entryCriteria={project?.entry_criteria ?? ""}
+      exitCriteria={project?.exit_criteria ?? ""}
+      designedBy={project?.designed_by ?? ""}
+      designDate={project?.design_date ?? ""}
+      openDefects={openDefects}
+      openBySeverity={openBySeverity}
+      acceptedCount={acceptedCount}
+      recommendation={recommendation}
+      exitCriteriaStatus={exitCriteriaStatus}
+      tlSigned={tlSigned}
+      tlName={signOffData?.testLead?.name ?? ""}
+      tlRole={signOffData?.testLead?.role ?? ""}
+      tlDate={signOffData?.testLead?.date ?? ""}
+      tlSignature={signOffData?.testLead?.signature ?? ""}
+      tlSignatureImage={signOffData?.testLead?.signatureImage}
+      boSigned={boSigned}
+      boName={signOffData?.businessOwner?.name ?? ""}
+      boRole={signOffData?.businessOwner?.role ?? ""}
+      boDate={signOffData?.businessOwner?.date ?? ""}
+      boSignature={signOffData?.businessOwner?.signature ?? ""}
+      boSignatureImage={signOffData?.businessOwner?.signatureImage}
+      businessDecisions={signOffData?.businessDecisions}
+      isFullySigned={isFullySigned}
+    />
+  );
+
   return (
-    <div className="space-y-lg sign-off-page">
-      {/* PDF Export */}
-      <div className="flex justify-end no-print">
+    <div className="space-y-lg sign-off-page max-w-5xl mx-auto">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-md no-print">
+        <div>
+          <p className="text-label-sm text-on-surface-variant uppercase tracking-widest mb-xs">User Acceptance Testing</p>
+          <h1 className="font-display-lg text-display-lg text-primary">Final Sign-Off Certificate</h1>
+          <p className="text-body-sm text-on-surface-variant mt-xs">
+            Formal business acceptance for production readiness decisions
+          </p>
+        </div>
         <PDFDownloadLink
-          document={
-            <SignOffCertificatePDF
-              projectName={project?.name ?? ""}
-              projectCode={project?.project_code ?? ""}
-              moduleName={project?.module_name ?? ""}
-              version={project?.version ?? ""}
-              scope={project?.scope ?? ""}
-              objectives={project?.objectives ?? ""}
-              outOfScope={project?.out_of_scope ?? ""}
-              entryCriteria={project?.entry_criteria ?? ""}
-              exitCriteria={project?.exit_criteria ?? ""}
-              totalTestRuns={uatSummary?.totalTestRuns ?? 0}
-              totalScenarios={uatSummary?.totalScenarios ?? 0}
-              passRate={uatSummary?.passRate ?? 0}
-              acceptedCount={signOffData?.businessDecisions?.accepted?.length ?? 0}
-              tlSigned={tlSigned}
-              tlName={signOffData?.testLead?.name ?? ""}
-              tlDate={signOffData?.testLead?.date ?? ""}
-              boSigned={boSigned}
-              boName={signOffData?.businessOwner?.name ?? ""}
-              boDate={signOffData?.businessOwner?.date ?? ""}
-              businessDecisions={signOffData?.businessDecisions}
-              isFullySigned={isFullySigned}
-            />
-          }
-          fileName={`sign-off-certificate-${project?.project_code ?? "export"}.pdf`}
-          className="flex items-center gap-sm bg-secondary text-on-secondary px-lg py-sm rounded-lg font-label-md hover:brightness-110 transition-all"
+          document={pdfDoc}
+          fileName={`UAT-Sign-Off-${project?.project_code ?? "export"}.pdf`}
+          className="inline-flex items-center justify-center gap-sm bg-secondary text-on-secondary px-lg py-sm rounded-lg font-label-md hover:brightness-110 transition-all shrink-0"
         >
           {({ loading }) => (
             <>
-              <span className="material-symbols-outlined text-sm">file_download</span>
-              {loading ? "Preparing Certificate..." : "Download Certificate (PDF)"}
+              <span className="material-symbols-outlined text-sm">picture_as_pdf</span>
+              {loading ? "Preparing PDF…" : "Download PDF"}
             </>
           )}
         </PDFDownloadLink>
       </div>
 
-      {/* Certificate */}
-      <div className="bg-white border border-gray-200 shadow-sm relative overflow-hidden p-12 md:p-16">
-        <div className="hidden">CERTIFIED</div>
+      {/* Certificate body */}
+      <div className="bg-white border border-gray-200 shadow-sm overflow-hidden">
+        <div className="h-1.5 bg-[#1a2744]" />
 
-        {/* 1. Header */}
-        <div className="flex flex-col md:flex-row justify-between items-start border-b border-outline-variant pb-lg mb-xl">
-          <div className="mb-md md:mb-0">
-            <h1 className="font-display-lg text-display-lg text-primary mb-xs">UAT Sign-Off Certificate</h1>
-            <p className="text-secondary font-semibold font-label-md text-label-md tracking-wider">
-              {project?.name?.toUpperCase()} &bull; {project?.module_name?.toUpperCase()}
-            </p>
-          </div>
-          <div className="text-right space-y-1">
-            <div className="text-on-surface-variant font-label-sm text-label-sm uppercase tracking-tighter">Document ID</div>
-            <div className="font-mono font-bold text-on-surface">UCH-{project?.project_code}</div>
-            <div className="text-on-surface-variant font-label-sm text-label-sm uppercase tracking-tighter mt-sm">Release Version</div>
-            <div className="font-bold text-on-surface">v{project?.version}</div>
-          </div>
-        </div>
-
-        {/* 2. Objectives & Scope */}
-        <section className="mb-xl">
-          <h2 className="font-title-sm text-title-sm text-primary mb-md flex items-center gap-sm">
-            <span className="material-symbols-outlined text-secondary">target</span>
-            Objectives &amp; Scope
-          </h2>
-          <div className="grid md:grid-cols-2 gap-lg">
-            <div className="bg-surface-container-low p-md rounded-lg">
-              <h3 className="font-label-md text-label-md font-bold mb-xs">Scope</h3>
-              <p className="text-body-sm text-body-sm leading-relaxed">{project?.scope ?? "Not specified"}</p>
-            </div>
-            <div className="space-y-md">
-              <h3 className="font-label-md text-label-md font-bold mb-xs">Objectives</h3>
-              <p className="text-body-sm text-body-sm text-on-surface-variant leading-relaxed">
-                {project?.objectives ?? "Not specified"}
+        <div className="p-8 md:p-12">
+          {/* Header */}
+          <div className="flex flex-col md:flex-row justify-between gap-lg border-b-2 border-[#1a2744] pb-lg mb-xl">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.15em] text-on-surface-variant mb-1">Document</p>
+              <h2 className="text-2xl font-bold text-[#1a2744] tracking-tight">Final Sign-Off Certificate</h2>
+              <p className="text-sm text-on-surface-variant mt-1">
+                Formal acceptance of UAT deliverables
               </p>
             </div>
-          </div>
-        </section>
-
-        {/* 3. Out of Scope */}
-        <section className="mb-xl">
-          <h2 className="font-title-sm text-title-sm text-primary mb-md flex items-center gap-sm">
-            <span className="material-symbols-outlined text-outline">visibility_off</span>
-            Out of Scope
-          </h2>
-          <div className="border border-outline-variant p-md rounded-lg bg-surface-bright">
-            <p className="text-body-sm text-body-sm text-on-surface-variant">
-              {project?.out_of_scope ?? "Not specified"}
-            </p>
-          </div>
-        </section>
-
-        {/* 4. Entry & Exit Criteria */}
-        <section className="mb-xl">
-          <div className="grid md:grid-cols-2 gap-xl">
-            <div>
-              <h2 className="font-label-md text-label-md font-bold text-primary mb-sm uppercase tracking-widest">Entry Criteria</h2>
-              <div className="border border-outline-variant p-md rounded-lg">
-                <p className="text-body-sm text-body-sm">{project?.entry_criteria ?? "Not specified"}</p>
+            <div className="text-left md:text-right space-y-2 min-w-[10rem]">
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-on-surface-variant">Document ID</div>
+                <div className="font-mono font-semibold text-on-surface">UCH-{project?.project_code}</div>
               </div>
-            </div>
-            <div>
-              <h2 className="font-label-md text-label-md font-bold text-primary mb-sm uppercase tracking-widest">Exit Criteria</h2>
-              <div className="border border-outline-variant p-md rounded-lg">
-                <p className="text-body-sm text-body-sm">{project?.exit_criteria ?? "Not specified"}</p>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-on-surface-variant">Release / Version</div>
+                <div className="font-semibold text-on-surface">v{project?.version ?? "—"}</div>
               </div>
             </div>
           </div>
-        </section>
 
-        {/* 4.5 Executive Metrics */}
-        <section className="mb-xl">
-          <h2 className="font-title-sm text-title-sm text-primary mb-md flex items-center gap-sm">
-            <span className="material-symbols-outlined text-secondary">insights</span>
-            Executive Summary
-          </h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-md">
-            <div className="bg-surface-container-low p-md rounded-lg text-center">
-              <div className="text-display-lg-mobile font-bold text-primary">{uatSummary?.totalTestRuns ?? 0}</div>
-              <div className="text-label-sm text-on-surface-variant">Test Runs Executed</div>
-            </div>
-            <div className="bg-surface-container-low p-md rounded-lg text-center">
-              <div className="text-display-lg-mobile font-bold text-green-700">{uatSummary?.totalScenarios ?? 0}</div>
-              <div className="text-label-sm text-on-surface-variant">Total Scenarios</div>
-            </div>
-            <div className="bg-surface-container-low p-md rounded-lg text-center">
-              <div className="text-display-lg-mobile font-bold text-primary">{uatSummary?.passRate ?? 0}%</div>
-              <div className="text-label-sm text-on-surface-variant">Pass Rate</div>
-            </div>
-            <div className="bg-surface-container-low p-md rounded-lg text-center">
-              <div className="text-display-lg-mobile font-bold text-amber-700">
-                {signOffData?.businessDecisions?.accepted?.length ?? 0}
-              </div>
-              <div className="text-label-sm text-on-surface-variant">Accepted / Waived</div>
-            </div>
-          </div>
-        </section>
-
-        {/* 5. Dual Signature Section */}
-        <section className="mb-xl grid md:grid-cols-2 gap-lg sign-off-signatures">
-          {/* Test Lead Signature */}
-          <div className={`relative p-lg border-2 rounded-xl transition-all ${
-            tlSigned
-              ? "border-outline-variant bg-surface-container-lowest"
-              : "border-dashed border-outline-variant bg-surface-container-lowest"
-          }`}>
-            {tlSigned && (
-              <div className="absolute top-2 right-2 rotate-12 border-4 border-secondary text-secondary font-bold px-md py-sm rounded-lg opacity-80 select-none">
-                SIGNED
-              </div>
-            )}
-            <div className="mb-lg">
-              <div className="font-label-sm text-label-sm text-on-surface-variant uppercase mb-xs">Test Lead Approval</div>
-              {tlSigned ? (
-                <div className="italic font-serif text-display-lg-mobile text-primary opacity-60">{signOffData.testLead!.name}</div>
-              ) : (
-                <div className="flex items-center justify-center h-16 border-b border-on-surface">
-                  <span className="text-on-surface-variant font-label-md text-label-md">Awaiting signature</span>
-                </div>
-              )}
-              <div className="h-px bg-on-surface w-full mt-xs" />
-            </div>
-            {tlSigned ? (
-              <div className="flex justify-between items-end">
-                <div>
-                  <div className="font-label-md text-label-md font-bold">{signOffData.testLead!.name}</div>
-                  <div className="text-body-sm text-body-sm text-on-surface-variant">{signOffData.testLead!.role}</div>
-                </div>
-                <div className="text-right">
-                  <div className="text-body-sm text-body-sm text-on-surface-variant">Signed On</div>
-                  <div className="font-label-md text-label-md">{new Date(signOffData.testLead!.date).toLocaleDateString()}</div>
-                </div>
-              </div>
-            ) : canSignTL ? (
-              <SignForm
-                roleLabel="Test Lead"
-                onSave={(data) => signMut.mutate(data)}
-                loading={signMut.isPending}
-              />
-            ) : isAdminViewer ? (
-              <p className="text-body-sm text-on-surface-variant italic">Only the assigned Test Lead can sign this certificate.</p>
-            ) : (
-              <p className="text-body-sm text-on-surface-variant italic">Awaiting Test Lead signature</p>
-            )}
-          </div>
-
-          {/* Business Owner Signature */}
-          <div className={`relative p-lg border-2 rounded-xl transition-all ${
-            boSigned
-              ? "border-outline-variant bg-surface-container-lowest"
-              : "border-secondary bg-secondary-container/5"
-          }`}>
-            {boSigned && (
-              <div className="absolute top-2 right-2 rotate-12 border-4 border-secondary text-secondary font-bold px-md py-sm rounded-lg opacity-80 select-none">
-                SIGNED
-              </div>
-            )}
-            <div className="mb-lg">
-              <div className="font-label-sm text-label-sm text-on-surface-variant uppercase mb-xs">Business Owner Approval</div>
-              {boSigned ? (
-                <div className="italic font-serif text-display-lg-mobile text-primary opacity-60">{signOffData.businessOwner!.name}</div>
-              ) : (
-                <div className="flex items-center justify-center h-16 border-b border-on-surface">
-                  <span className="text-on-surface-variant font-label-md text-label-md">Awaiting signature</span>
-                </div>
-              )}
-              <div className="h-px bg-on-surface w-full mt-xs" />
-            </div>
-            {boSigned ? (
-              <div className="flex justify-between items-end">
-                <div>
-                  <div className="font-label-md text-label-md font-bold">{signOffData.businessOwner!.name}</div>
-                  <div className="text-body-sm text-body-sm text-on-surface-variant">{signOffData.businessOwner!.role}</div>
-                </div>
-                <div className="text-right">
-                  <div className="text-body-sm text-body-sm text-on-surface-variant">Signed On</div>
-                  <div className="font-label-md text-label-md">{new Date(signOffData.businessOwner!.date).toLocaleDateString()}</div>
-                </div>
-              </div>
-            ) : canSignBO ? (
-              <SignForm
-                roleLabel="Business Owner"
-                onSave={(data) => signMut.mutate(data)}
-                loading={signMut.isPending}
-              />
-            ) : isAdminViewer ? (
-              <p className="text-body-sm text-on-surface-variant italic">Only the assigned Business Owner can sign this certificate.</p>
-            ) : (
-              <p className="text-body-sm text-on-surface-variant italic">Awaiting Business Owner signature</p>
-            )}
-          </div>
-        </section>
-
-        {/* 6. Business Decisions & Risk Waivers */}
-        {signOffData?.businessDecisions && signOffData.businessDecisions.count > 0 && (
+          {/* 1. Project identification */}
           <section className="mb-xl">
-            <h2 className="font-title-sm text-title-sm text-primary mb-md flex items-center gap-sm">
-              <span className="material-symbols-outlined text-secondary">gavel</span>
-              Business Decisions &amp; Risk Waivers
-            </h2>
+            <h3 className="text-xs font-bold uppercase tracking-widest text-[#1a2744] border-b border-outline-variant pb-1 mb-md">
+              1. Project Identification
+            </h3>
+            <div className="grid md:grid-cols-2 gap-md">
+              <InfoCell label="Project / Application" value={project?.name} />
+              <InfoCell label="Module / Workstream" value={project?.module_name} />
+              <InfoCell label="Prepared By" value={project?.designed_by} />
+              <InfoCell
+                label="Design / Plan Date"
+                value={project?.design_date ? new Date(project.design_date).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }) : null}
+              />
+            </div>
+          </section>
 
-            {signOffData.businessDecisions.accepted.length > 0 && (
-              <div className="mb-lg">
-                <h3 className="font-label-md text-label-md font-bold text-green-700 mb-md">Accepted Decisions</h3>
-                <div className="space-y-md">
-                  {signOffData.businessDecisions.accepted.map((decision) => (
-                    <div key={decision.defectId} className="border border-green-300 bg-green-50 rounded-lg p-md">
-                      <div className="grid grid-cols-2 gap-md mb-sm">
-                        <div>
-                          <p className="text-xs font-semibold text-outline uppercase">Defect ID</p>
-                          <p className="font-label-md text-label-md font-bold">DEF-{decision.defectId}{decision.bugNumber ? ` (BUG-${decision.bugNumber})` : ""}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs font-semibold text-outline uppercase">Type</p>
-                          <p className="font-label-md text-label-md font-bold flex items-center gap-1">
-                            <span>{decision.decisionType === "risk_waiver" ? "⚠️" : "📋"}</span>
-                            {decision.decisionType === "risk_waiver" ? "Risk Waiver" : "Business Review"}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs font-semibold text-outline uppercase">Severity</p>
-                          <p className="font-label-md text-label-md font-bold">{decision.severity}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs font-semibold text-outline uppercase">Test Case</p>
-                          <p className="text-body-sm text-body-sm">{decision.testCaseName || "N/A"}</p>
-                        </div>
-                      </div>
-                      <div className="bg-white p-sm rounded border border-green-200 mb-sm">
-                        <p className="text-xs font-semibold text-outline uppercase mb-xs">Justification</p>
-                        <p className="text-body-sm text-body-sm whitespace-pre-wrap">{decision.justification}</p>
-                      </div>
-                      <div className="grid grid-cols-2 gap-md text-body-sm text-body-sm">
-                        <div>
-                          <p className="font-semibold text-on-surface-variant">Submitted By</p>
-                          <p className="text-on-surface">{decision.submittedBy}</p>
-                          <p className="text-xs text-on-surface-variant">{new Date(decision.submittedAt).toLocaleString()}</p>
-                        </div>
-                        <div>
-                          <p className="font-semibold text-on-surface-variant">Approved By</p>
-                          <p className="text-on-surface">{decision.acceptedBy}</p>
-                          <p className="text-xs text-on-surface-variant">{new Date(decision.acceptedAt).toLocaleString()}</p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+          {/* 2. Scope */}
+          <section className="mb-xl">
+            <h3 className="text-xs font-bold uppercase tracking-widest text-[#1a2744] border-b border-outline-variant pb-1 mb-md">
+              2. Scope of Acceptance
+            </h3>
+            <div className="grid md:grid-cols-2 gap-md mb-md">
+              <InfoCell label="In Scope" value={project?.scope} multiline />
+              <InfoCell label="Out of Scope" value={project?.out_of_scope} multiline />
+            </div>
+            {(project?.objectives || project?.entry_criteria || project?.exit_criteria) && (
+              <div className="space-y-sm text-sm text-on-surface-variant">
+                {project?.objectives && (
+                  <p><span className="font-semibold text-on-surface">Objectives: </span>{project.objectives}</p>
+                )}
+                {project?.entry_criteria && (
+                  <p><span className="font-semibold text-on-surface">Entry criteria: </span>{project.entry_criteria}</p>
+                )}
+                {project?.exit_criteria && (
+                  <p><span className="font-semibold text-on-surface">Exit criteria: </span>{project.exit_criteria}</p>
+                )}
               </div>
             )}
+          </section>
 
-            <p className="mt-lg text-body-sm text-body-sm text-on-surface-variant italic">
-              All business decisions are immutably recorded in the project audit log and are subject to governance review.
+          {/* 3. Decision-oriented outcome — exit criteria, residual risk, recommendation */}
+          <section className="mb-xl">
+            <h3 className="text-xs font-bold uppercase tracking-widest text-[#1a2744] border-b border-outline-variant pb-1 mb-md">
+              3. Exit Criteria, Residual Risk &amp; Recommendation
+            </h3>
+
+            <div className="border border-outline-variant bg-slate-50/80 p-md rounded-sm mb-md">
+              <div className="text-[10px] uppercase tracking-wider text-on-surface-variant mb-1">
+                Exit criteria (from approved UAT plan)
+              </div>
+              <p className="text-sm text-on-surface leading-relaxed whitespace-pre-wrap">
+                {project?.exit_criteria?.trim() || "As defined in the approved UAT plan / project entry-exit criteria."}
+              </p>
+              <p className="text-sm mt-sm">
+                <span className="font-semibold text-on-surface">Assessment: </span>
+                <span className="text-on-surface-variant">{exitCriteriaStatus}</span>
+              </p>
+            </div>
+
+            <div className="border border-outline-variant overflow-hidden rounded-sm mb-md">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-[#1a2744] text-white text-left">
+                    <th className="px-md py-sm font-semibold text-xs uppercase tracking-wide">Residual risk item</th>
+                    <th className="px-md py-sm font-semibold text-xs uppercase tracking-wide w-20">Count</th>
+                    <th className="px-md py-sm font-semibold text-xs uppercase tracking-wide hidden sm:table-cell">Disposition</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-outline-variant">
+                  <tr className="bg-white">
+                    <td className="px-md py-sm text-on-surface">Open defects at sign-off</td>
+                    <td className="px-md py-sm font-semibold text-on-surface">{openDefects}</td>
+                    <td className="px-md py-sm text-on-surface-variant text-xs hidden sm:table-cell">
+                      {openDefects === 0 ? "None" : "Carried forward"}
+                    </td>
+                  </tr>
+                  {severityRows.map((row) => (
+                    <tr key={row.severity} className="bg-white">
+                      <td className="px-md py-sm pl-8 text-on-surface-variant">— {row.severity} severity</td>
+                      <td className="px-md py-sm text-on-surface">{row.count}</td>
+                      <td className="px-md py-sm text-on-surface-variant text-xs hidden sm:table-cell">Open</td>
+                    </tr>
+                  ))}
+                  <tr className="bg-white">
+                    <td className="px-md py-sm text-on-surface">Accepted / waived defects</td>
+                    <td className="px-md py-sm font-semibold text-on-surface">{acceptedCount}</td>
+                    <td className="px-md py-sm text-on-surface-variant text-xs hidden sm:table-cell">
+                      {acceptedCount === 0 ? "None" : "Annex A"}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="border border-[#1a2744] bg-slate-50 p-md rounded-sm">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-[#1a2744] mb-sm">
+                Management recommendation
+              </div>
+              <p className="text-sm leading-relaxed text-on-surface">{recommendation}</p>
+            </div>
+          </section>
+
+          {/* 4. Declaration */}
+          <section className="mb-xl border border-[#1a2744]/bg-slate-50 p-md rounded-sm">
+            <h3 className="text-xs font-bold uppercase tracking-widest text-[#1a2744] mb-sm">
+              4. Declaration of Acceptance
+            </h3>
+            <p className="text-sm leading-relaxed text-on-surface">
+              By signing below, the undersigned confirm that User Acceptance Testing for the project and module identified
+              above has been completed in accordance with the approved UAT plan and exit criteria. The Business Owner
+              accepts the system as fit for the intended business purpose, subject to any residual risks explicitly recorded
+              in this certificate. The QA / Test Lead confirms that testing was planned, executed, and recorded under
+              controlled conditions and that results are available for audit.
+            </p>
+            <p className="text-sm leading-relaxed text-on-surface mt-sm">
+              This certificate constitutes formal business acceptance for the purposes of go-live / production readiness
+              decisions. Detailed test evidence remains available in TestCaseHub and associated project records.
             </p>
           </section>
-        )}
 
-        {/* 7. Certificate Status Banner */}
-        <footer className={`p-md rounded-lg flex flex-col md:flex-row justify-between items-center gap-md ${
-          isFullySigned ? "bg-primary text-white" : "bg-amber-500 text-white"
-        }`}>
-          <div className="flex items-center gap-sm">
-            <span className="material-symbols-outlined text-secondary-fixed">verified_user</span>
-            <span className="font-label-md text-label-md uppercase tracking-widest">
-              {isFullySigned
-                ? "Document Status: FULLY SIGNED OFF"
-                : `Document Status: AWAITING SIGNATURES — ${collected} of 2 signatures collected`}
+          {/* 5. Signatures */}
+          <section className="mb-xl">
+            <h3 className="text-xs font-bold uppercase tracking-widest text-[#1a2744] border-b border-outline-variant pb-1 mb-md">
+              5. Authorised Signatures
+            </h3>
+            <div className="grid md:grid-cols-2 gap-lg sign-off-signatures">
+              <SignatureCard
+                roleLabel="Business Owner"
+                signed={boSigned}
+                record={signOffData.businessOwner}
+                canSign={canSignBO}
+                isAdminViewer={isAdminViewer}
+                onSign={(data) => signMut.mutate(data)}
+                loading={signMut.isPending}
+              />
+              <SignatureCard
+                roleLabel="QA / Test Lead"
+                signed={tlSigned}
+                record={signOffData.testLead}
+                canSign={canSignTL}
+                isAdminViewer={isAdminViewer}
+                onSign={(data) => signMut.mutate(data)}
+                loading={signMut.isPending}
+              />
+            </div>
+          </section>
+
+          {/* Residual risks */}
+          {signOffData?.businessDecisions && signOffData.businessDecisions.accepted.length > 0 && (
+            <section className="mb-xl">
+              <h3 className="text-xs font-bold uppercase tracking-widest text-[#1a2744] border-b border-outline-variant pb-1 mb-md">
+                Annex A — Accepted Residual Risks &amp; Waivers
+              </h3>
+              <div className="space-y-md">
+                {signOffData.businessDecisions.accepted.map((decision) => (
+                  <div key={decision.defectId} className="border border-outline-variant rounded-sm p-md bg-surface-container-lowest">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-md mb-sm text-sm">
+                      <div>
+                        <p className="text-[10px] font-semibold text-outline uppercase">Defect</p>
+                        <p className="font-semibold">
+                          {decision.bugNumber != null ? `BUG-${decision.bugNumber}` : `DEF-${decision.defectId}`}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-semibold text-outline uppercase">Type</p>
+                        <p className="font-semibold">
+                          {decision.decisionType === "risk_waiver" ? "Risk Waiver" : "Business Review"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-semibold text-outline uppercase">Severity</p>
+                        <p className="font-semibold">{decision.severity}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-semibold text-outline uppercase">Test Case</p>
+                        <p className="text-sm">{decision.testCaseName || "N/A"}</p>
+                      </div>
+                    </div>
+                    <div className="bg-white p-sm rounded border border-outline-variant mb-sm">
+                      <p className="text-[10px] font-semibold text-outline uppercase mb-xs">Justification</p>
+                      <p className="text-sm whitespace-pre-wrap">{decision.justification}</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-md text-sm text-on-surface-variant">
+                      <div>
+                        <p className="font-semibold text-on-surface">Submitted by</p>
+                        <p>{decision.submittedBy}</p>
+                        <p className="text-xs">{new Date(decision.submittedAt).toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="font-semibold text-on-surface">Approved by</p>
+                        <p>{decision.acceptedBy}</p>
+                        <p className="text-xs">{new Date(decision.acceptedAt).toLocaleString()}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-md text-xs text-on-surface-variant italic">
+                Each decision is immutably recorded in the project audit log.
+              </p>
+            </section>
+          )}
+
+          {/* Status footer */}
+          <footer
+            className={`px-md py-sm rounded-sm border flex flex-col sm:flex-row justify-between items-center gap-sm ${
+              isFullySigned
+                ? hasConditions
+                  ? "bg-amber-50 border-amber-200 text-amber-900"
+                  : "bg-green-50 border-green-200 text-green-800"
+                : "bg-amber-50 border-amber-200 text-amber-900"
+            }`}
+          >
+            <div className="flex items-center gap-sm">
+              <span className="material-symbols-outlined text-base">
+                {isFullySigned ? (hasConditions ? "gavel" : "verified_user") : "pending"}
+              </span>
+              <span className="text-xs font-bold uppercase tracking-widest">
+                {isFullySigned
+                  ? hasConditions
+                    ? "Accepted with conditions — see residual risk"
+                    : "Formally accepted — UAT complete"
+                  : `Pending authorised signatures — ${collected} of 2 collected`}
+              </span>
+            </div>
+            <span className="text-[10px] uppercase tracking-wide opacity-70">
+              Confidential · Management &amp; audit use
             </span>
-          </div>
-        </footer>
+          </footer>
+        </div>
       </div>
     </div>
   );
 }
+
+function InfoCell({
+  label,
+  value,
+  multiline,
+}: {
+  label: string;
+  value?: string | null;
+  multiline?: boolean;
+}) {
+  return (
+    <div className="border border-outline-variant bg-slate-50/80 p-md rounded-sm">
+      <div className="text-[10px] uppercase tracking-wider text-on-surface-variant mb-1">{label}</div>
+      <div className={`text-sm text-on-surface ${multiline ? "leading-relaxed whitespace-pre-wrap" : "font-medium"}`}>
+        {value?.trim() || "—"}
+      </div>
+    </div>
+  );
+}
+
+function SignatureCard({
+  roleLabel,
+  signed,
+  record,
+  canSign,
+  isAdminViewer,
+  onSign,
+  loading,
+}: {
+  roleLabel: string;
+  signed: boolean;
+  record?: SignOffData["testLead"] | SignOffData["businessOwner"];
+  canSign: boolean;
+  isAdminViewer: boolean;
+  onSign: (data: { name: string; role: string; signature: string; signatureImage?: string }) => void;
+  loading: boolean;
+}) {
+  return (
+    <div
+      className={`relative p-lg border rounded-sm transition-all ${
+        signed
+          ? "border-outline-variant bg-white"
+          : "border-dashed border-outline-variant bg-slate-50/50"
+      }`}
+    >
+      {signed && (
+        <div className="absolute top-3 right-3 text-[10px] font-bold uppercase tracking-widest text-green-700 border border-green-300 bg-green-50 px-2 py-0.5 rounded-sm">
+          Signed
+        </div>
+      )}
+      <div className="text-[10px] font-bold uppercase tracking-widest text-[#1a2744] mb-md">
+        {roleLabel}
+      </div>
+
+      {signed && record ? (
+        <div>
+          <div className="h-16 flex items-end border-b border-[#1a2744] mb-sm pb-1">
+            {record.signatureImage ? (
+              <img
+                src={record.signatureImage}
+                alt={`${record.name} signature`}
+                className="max-h-14 max-w-[200px] object-contain"
+              />
+            ) : (
+              <span className="font-serif italic text-2xl text-primary opacity-80">
+                {record.signature || record.name}
+              </span>
+            )}
+          </div>
+          <p className="text-[10px] text-on-surface-variant mb-sm">Authorised electronic signature</p>
+          <div className="flex justify-between items-end gap-md">
+            <div>
+              <div className="font-semibold text-sm">{record.name}</div>
+              <div className="text-xs text-on-surface-variant">{record.role}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-[10px] text-on-surface-variant uppercase">Date signed</div>
+              <div className="text-sm font-medium">
+                {new Date(record.date).toLocaleDateString(undefined, {
+                  year: "numeric",
+                  month: "long",
+                  day: "numeric",
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : canSign ? (
+        <SignForm roleLabel={roleLabel} onSave={onSign} loading={loading} />
+      ) : isAdminViewer ? (
+        <p className="text-sm text-on-surface-variant italic">
+          Only the assigned {roleLabel} can sign this certificate.
+        </p>
+      ) : (
+        <div>
+          <div className="h-16 flex items-center justify-center border-b border-outline-variant mb-sm">
+            <span className="text-sm text-on-surface-variant">Awaiting authorised signature</span>
+          </div>
+          <p className="text-xs text-on-surface-variant">Name / title / date will appear once signed.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type SigMode = "draw" | "upload" | "type";
 
 function SignForm({
   roleLabel,
@@ -444,60 +595,286 @@ function SignForm({
   loading,
 }: {
   roleLabel: string;
-  onSave: (data: { name: string; role: string; signature: string }) => void;
+  onSave: (data: { name: string; role: string; signature: string; signatureImage?: string }) => void;
   loading: boolean;
 }) {
-  const [name, setName] = useState("");
-  const [role, setRole] = useState("");
-  const [signature, setSignature] = useState("");
   const user = getStoredUser();
+  const [name, setName] = useState(user?.username || "");
+  const [title, setTitle] = useState(roleLabel);
+  const [mode, setMode] = useState<SigMode>("draw");
+  const [typedSig, setTypedSig] = useState("");
+  const [imageData, setImageData] = useState<string | null>(null);
+  const [hasInk, setHasInk] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const drawing = useRef(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const resizeCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const parent = canvas.parentElement;
+    if (!parent) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = parent.clientWidth;
+    const h = 120;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "#1a2744";
+      ctx.lineWidth = 2;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (mode !== "draw") return;
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
+    return () => window.removeEventListener("resize", resizeCanvas);
+  }, [mode, resizeCanvas]);
+
+  const pos = (e: MouseEvent | TouchEvent) => {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    if ("touches" in e) {
+      const t = e.touches[0];
+      return { x: t.clientX - rect.left, y: t.clientY - rect.top };
+    }
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
+  const startDraw = (e: MouseEvent | TouchEvent) => {
+    e.preventDefault();
+    const ctx = canvasRef.current?.getContext("2d");
+    if (!ctx) return;
+    drawing.current = true;
+    const p = pos(e);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+  };
+
+  const moveDraw = (e: MouseEvent | TouchEvent) => {
+    if (!drawing.current) return;
+    e.preventDefault();
+    const ctx = canvasRef.current?.getContext("2d");
+    if (!ctx) return;
+    const p = pos(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    setHasInk(true);
+  };
+
+  const endDraw = () => {
+    drawing.current = false;
+  };
+
+  const clearCanvas = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (canvas && ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    setHasInk(false);
+  };
+
+  const onFile = (file: File | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please upload a PNG or JPEG image of your signature");
+      return;
+    }
+    if (file.size > MAX_SIGNATURE_BYTES) {
+      toast.error("Signature image must be under 400 KB");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      if (!result.startsWith("data:image/")) {
+        toast.error("Could not read signature image");
+        return;
+      }
+      setImageData(result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    const fullName = name.trim() || user?.username || "";
+    if (!fullName) {
+      toast.error("Please enter your full name");
+      return;
+    }
+
+    let signatureImage: string | undefined;
+    let signature = fullName;
+
+    if (mode === "draw") {
+      if (!hasInk || !canvasRef.current) {
+        toast.error("Please draw your signature");
+        return;
+      }
+      signatureImage = canvasRef.current.toDataURL("image/png");
+      signature = fullName;
+    } else if (mode === "upload") {
+      if (!imageData) {
+        toast.error("Please upload a signature image");
+        return;
+      }
+      signatureImage = imageData;
+      signature = fullName;
+    } else {
+      if (!typedSig.trim()) {
+        toast.error("Please type your signature");
+        return;
+      }
+      signature = typedSig.trim();
+    }
+
+    onSave({
+      name: fullName,
+      role: title.trim() || roleLabel,
+      signature,
+      ...(signatureImage ? { signatureImage } : {}),
+    });
+  };
+
+  const tabClass = (m: SigMode) =>
+    `px-3 py-1.5 text-xs font-semibold rounded-sm border transition-colors ${
+      mode === m
+        ? "bg-[#1a2744] text-white border-[#1a2744]"
+        : "bg-white text-on-surface-variant border-outline-variant hover:border-[#1a2744]"
+    }`;
 
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        onSave({
-          name: name.trim() || user?.username || "",
-          role: role.trim() || roleLabel,
-          signature: signature.trim() || user?.username || "",
-        });
-      }}
-      className="space-y-md mt-md"
-    >
-      <div className="space-y-sm">
-        <label className="font-label-sm text-label-sm text-on-surface-variant">Full Name</label>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm"
-          placeholder={user?.username ?? ""}
-        />
+    <form onSubmit={handleSubmit} className="space-y-md mt-sm">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-sm">
+        <div className="space-y-1">
+          <label className="text-[10px] uppercase tracking-wider text-on-surface-variant">Full name</label>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="w-full bg-white border border-outline-variant rounded-sm px-2 py-1.5 text-sm"
+            placeholder="As it should appear on the certificate"
+            required
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] uppercase tracking-wider text-on-surface-variant">Title / role</label>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="w-full bg-white border border-outline-variant rounded-sm px-2 py-1.5 text-sm"
+            placeholder={roleLabel}
+          />
+        </div>
       </div>
-      <div className="space-y-sm">
-        <label className="font-label-sm text-label-sm text-on-surface-variant">Role / Title</label>
-        <input
-          value={role}
-          onChange={(e) => setRole(e.target.value)}
-          className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm"
-          placeholder={roleLabel}
-        />
+
+      <div>
+        <label className="text-[10px] uppercase tracking-wider text-on-surface-variant block mb-1.5">
+          Electronic signature
+        </label>
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          <button type="button" className={tabClass("draw")} onClick={() => setMode("draw")}>
+            Draw
+          </button>
+          <button type="button" className={tabClass("upload")} onClick={() => setMode("upload")}>
+            Upload image
+          </button>
+          <button type="button" className={tabClass("type")} onClick={() => setMode("type")}>
+            Type name
+          </button>
+        </div>
+
+        {mode === "draw" && (
+          <div>
+            <div className="border border-outline-variant rounded-sm bg-white touch-none">
+              <canvas
+                ref={canvasRef}
+                className="w-full cursor-crosshair block"
+                onMouseDown={startDraw}
+                onMouseMove={moveDraw}
+                onMouseUp={endDraw}
+                onMouseLeave={endDraw}
+                onTouchStart={startDraw}
+                onTouchMove={moveDraw}
+                onTouchEnd={endDraw}
+              />
+            </div>
+            <div className="flex justify-between items-center mt-1">
+              <p className="text-[10px] text-on-surface-variant">Sign in the box above with mouse or touch</p>
+              <button
+                type="button"
+                onClick={clearCanvas}
+                className="text-[10px] uppercase tracking-wide text-on-surface-variant hover:text-on-surface"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+        )}
+
+        {mode === "upload" && (
+          <div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="hidden"
+              onChange={(e) => onFile(e.target.files?.[0])}
+            />
+            {imageData ? (
+              <div className="border border-outline-variant rounded-sm bg-white p-md flex flex-col items-center gap-sm">
+                <img src={imageData} alt="Signature preview" className="max-h-20 max-w-full object-contain" />
+                <button
+                  type="button"
+                  className="text-xs text-on-surface-variant underline"
+                  onClick={() => {
+                    setImageData(null);
+                    if (fileRef.current) fileRef.current.value = "";
+                  }}
+                >
+                  Remove and choose another
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                className="w-full border border-dashed border-outline-variant rounded-sm py-8 text-sm text-on-surface-variant hover:border-[#1a2744] hover:text-on-surface transition-colors"
+              >
+                Click to upload a PNG or JPEG of your signature
+              </button>
+            )}
+          </div>
+        )}
+
+        {mode === "type" && (
+          <input
+            value={typedSig}
+            onChange={(e) => setTypedSig(e.target.value)}
+            className="w-full h-16 bg-white border border-outline-variant rounded-sm px-3 text-2xl font-serif italic"
+            placeholder="Type your full name as signature"
+          />
+        )}
       </div>
-      <div className="space-y-sm">
-        <label className="font-label-sm text-label-sm text-on-surface-variant">Signature (type your name)</label>
-        <textarea
-          value={signature}
-          onChange={(e) => setSignature(e.target.value)}
-          className="w-full h-16 bg-surface border border-outline-variant rounded-lg p-2 text-sm resize-none font-serif italic"
-          placeholder="Type your full name as signature..."
-        />
-      </div>
+
       <button
         type="submit"
         disabled={loading}
-        className="w-full py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 disabled:opacity-50"
+        className="w-full py-2.5 bg-[#1a2744] text-white rounded-sm text-sm font-semibold tracking-wide hover:brightness-110 disabled:opacity-50"
       >
-        {loading ? "Signing..." : `Sign as ${roleLabel}`}
+        {loading ? "Recording signature…" : `Sign as ${roleLabel}`}
       </button>
+      <p className="text-[10px] text-on-surface-variant text-center leading-snug">
+        Your signature is stored with this certificate and appears on the PDF download.
+      </p>
     </form>
   );
 }

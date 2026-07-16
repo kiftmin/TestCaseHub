@@ -69,6 +69,12 @@ router.get("/projects/:projectId/defects", async (req: AuthenticatedRequest, res
             useCase: { columns: { id: true, code: true, name: true } },
           },
         },
+        testRun: {
+          columns: { id: true, name: true, status: true, run_type: true },
+        },
+        assignedTo: {
+          columns: { id: true, username: true, name: true, password_hash: false },
+        },
         execution: {
           columns: {
             id: true,

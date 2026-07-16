@@ -15,12 +15,16 @@ const router = express.Router();
  * or step result is recorded so the dashboard KPIs and per-run counts stay
  * accurate.
  *
+ * On retest runs, blocked cases are excluded — they are not executable and
+ * must not keep the scenario stuck in "in_progress".
+ *
  * Logic:
  *  1. If any execution has overall_result="failed"                    → "failed"
- *  2. If all executions have terminal overall_results (passed/pba)    → "passed"/"passed_by_agreement"
- *  3. If any execution has step results (pass/fail recorded)          → "in_progress"
- *  4. If any execution exists (status = "in_progress")                → "in_progress"
- *  5. Otherwise                                                       → "pending"
+ *  2. If all executable cases have terminal overall_results           → "passed"/"passed_by_agreement"
+ *  3. If tester already signed off and every executable case is terminal → same as 1/2
+ *  4. If any execution has step results (pass/fail recorded)          → "in_progress"
+ *  5. If any execution exists (status = "in_progress")                → "in_progress"
+ *  6. Otherwise                                                       → "pending"
  */
 export async function syncUseCaseStatus(testRunId: number, useCaseId: number): Promise<void> {
   const testRunUseCase = await db.query.testRunUseCases.findFirst({
@@ -31,6 +35,11 @@ export async function syncUseCaseStatus(testRunId: number, useCaseId: number): P
   });
   if (!testRunUseCase) return;
 
+  const testRun = await db.query.testRuns.findFirst({
+    where: eq(schema.testRuns.id, testRunId),
+    columns: { run_type: true },
+  });
+
   const useCase = await db.query.useCases.findFirst({
     where: eq(schema.useCases.id, useCaseId),
     columns: { id: true },
@@ -38,33 +47,54 @@ export async function syncUseCaseStatus(testRunId: number, useCaseId: number): P
   });
   if (!useCase) return;
 
-  const testCaseIds = useCase.testCases.map((tc) => tc.id);
-  const executions = await db.query.executions.findMany({
-    where: and(
-      eq(schema.executions.test_run_id, testRunId),
-      testCaseIds.length > 0
-        ? sql`${schema.executions.test_case_id} IN (${sql.join(testCaseIds, sql`,`)})`
-        : sql`1=0`,
-    ),
-  });
+  // Only count cases that are executable in this run.
+  // Retest: exclude blocked (and any case not in scope at all).
+  let relevantCaseIds = useCase.testCases.map((tc) => tc.id);
+  if (testRun?.run_type === "retest") {
+    const scope = await getRetestScope(testRunId);
+    const blocked = new Set(scope.blockedCaseIds);
+    const executable = new Set(scope.testCaseIds); // verify + regression only
+    relevantCaseIds = relevantCaseIds.filter(
+      (id) => executable.has(id) && !blocked.has(id),
+    );
+  }
 
-  // A scenario is only terminal when EVERY test case has a terminal execution.
-  // executions only contains rows that exist — missing rows mean Not Started.
+  const executions = relevantCaseIds.length > 0
+    ? await db.query.executions.findMany({
+        where: and(
+          eq(schema.executions.test_run_id, testRunId),
+          sql`${schema.executions.test_case_id} IN (${sql.join(relevantCaseIds, sql`,`)})`,
+        ),
+      })
+    : [];
+
+  const isTerminal = (e: { overall_result: string | null }) =>
+    e.overall_result === "passed" ||
+    e.overall_result === "failed" ||
+    e.overall_result === "passed_by_agreement";
+
+  // A scenario is terminal when every *executable* test case has a terminal execution.
+  // Blocked retest cases are intentionally ignored.
+  // If the scenario has zero executable cases (all blocked), treat as terminal/passed.
   const allTestCasesHaveTerminalExec =
-    testCaseIds.length > 0 &&
-    testCaseIds.every((tcId) => {
-      const exec = executions.find((e) => e.test_case_id === tcId);
-      return exec && (exec.overall_result === "passed" || exec.overall_result === "failed" || exec.overall_result === "passed_by_agreement");
-    });
+    relevantCaseIds.length === 0 ||
+    (relevantCaseIds.length > 0 &&
+      relevantCaseIds.every((tcId) => {
+        const exec = executions.find((e) => e.test_case_id === tcId);
+        return exec && isTerminal(exec);
+      }));
 
   let newStatus = "pending";
-  if (executions.length > 0) {
+  if (relevantCaseIds.length === 0) {
+    // Only blocked cases in this scenario for this retest run
+    newStatus = "passed";
+  } else if (executions.length > 0) {
     const failed = executions.some((e) => e.overall_result === "failed");
     const hasPassedByAgreement = executions.some((e) => e.overall_result === "passed_by_agreement");
-    const execInProgress = executions.some((e) => e.status === "in_progress");
+    const execInProgress = executions.some((e) => e.status === "in_progress" && !isTerminal(e));
 
     // Lightweight check — stop at the first step result with a pass/fail
-    const execIds = executions.map(e => e.id);
+    const execIds = executions.map((e) => e.id);
     const stepResultRow = execIds.length > 0
       ? await db.select({ id: schema.stepResults.id })
           .from(schema.stepResults)
@@ -77,13 +107,21 @@ export async function syncUseCaseStatus(testRunId: number, useCaseId: number): P
     const hasStepResults = stepResultRow.length > 0;
 
     if (failed && allTestCasesHaveTerminalExec) {
-      // Only mark failed when all cases are done (no remaining Not Started)
       newStatus = "failed";
     } else if (allTestCasesHaveTerminalExec && !failed) {
       newStatus = hasPassedByAgreement ? "passed_by_agreement" : "passed";
     } else if (failed || hasStepResults || execInProgress) {
       newStatus = "in_progress";
     }
+  }
+
+  // Tester sign-off is definitive for their assigned scenario: if they signed off
+  // and every executable case is terminal, force the terminal status even if a
+  // prior race left status as in_progress.
+  if (testRunUseCase.tester_sign_off && allTestCasesHaveTerminalExec) {
+    const failed = executions.some((e) => e.overall_result === "failed");
+    const hasPassedByAgreement = executions.some((e) => e.overall_result === "passed_by_agreement");
+    newStatus = failed ? "failed" : hasPassedByAgreement ? "passed_by_agreement" : "passed";
   }
 
   if (testRunUseCase.status !== newStatus) {

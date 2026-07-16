@@ -155,6 +155,9 @@ router.get("/projects/:projectId/defects", async (req: AuthenticatedRequest, res
       inActiveRetestRun: enrolledDefectIds.has(d.id),
     }));
 
+    // Batch previous status for READY_FOR_VERIFICATION (reschedule UI needs the real target)
+    result = await enrichPreviousStatusBatch(result);
+
     res.json(result);
   } catch (err) { next(err); }
 });
@@ -174,7 +177,13 @@ router.get("/defects/:defectId", async (req: AuthenticatedRequest, res, next) =>
       },
     });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    res.json(await enrichDecisionType(defect));
+    const enriched = await enrichDecisionType(defect);
+    if (enriched.status === "READY_FOR_VERIFICATION") {
+      const previous_status = await getPreviousStatus(defectId);
+      res.json({ ...enriched, previous_status });
+      return;
+    }
+    res.json(enriched);
   } catch (err) { next(err); }
 });
 
@@ -222,6 +231,43 @@ async function getPriorState(
     columns: { from_status: true },
   });
   return entry?.from_status ?? fallback;
+}
+
+/**
+ * Batch-enrich READY_FOR_VERIFICATION defects with previous_status
+ * (the status immediately before they entered verification).
+ * Used by the Reschedule dialog so it shows the real target status.
+ */
+async function enrichPreviousStatusBatch<T extends { id: number; status: string }>(
+  defects: T[],
+): Promise<Array<T & { previous_status?: string }>> {
+  const readyIds = defects
+    .filter((d) => d.status === "READY_FOR_VERIFICATION")
+    .map((d) => d.id);
+  if (readyIds.length === 0) return defects;
+
+  const audits = await db.query.statusAuditLog.findMany({
+    where: and(
+      eq(schema.statusAuditLog.entity_type, "defect"),
+      inArray(schema.statusAuditLog.entity_id, readyIds),
+      eq(schema.statusAuditLog.to_status, "READY_FOR_VERIFICATION"),
+    ),
+    orderBy: [desc(schema.statusAuditLog.changed_at)],
+    columns: { entity_id: true, from_status: true },
+  });
+  const prevByDefect = new Map<number, string>();
+  for (const a of audits) {
+    if (!prevByDefect.has(a.entity_id) && a.from_status) {
+      prevByDefect.set(a.entity_id, a.from_status);
+    }
+  }
+  return defects.map((d) => {
+    if (d.status !== "READY_FOR_VERIFICATION") return d;
+    return {
+      ...d,
+      previous_status: prevByDefect.get(d.id) ?? "TRIAGED",
+    };
+  });
 }
 
 /**

@@ -282,6 +282,8 @@ export interface Defect {
   project?: Project;
   decision_type?: "risk_waiver" | "business_review";
   inActiveRetestRun?: boolean;
+  /** Status held immediately before READY_FOR_VERIFICATION (for reschedule UI). */
+  previous_status?: string | null;
 }
 
 export interface DefectRetest {

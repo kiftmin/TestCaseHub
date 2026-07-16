@@ -1132,6 +1132,7 @@ function DefectRow({
   const [noteOpen, setNoteOpen] = useState(false);
   const [devNoteFilter, setDevNoteFilter] = useState<"all" | "internal" | "standard">("all");
   const [flagRetestNewOpen, setFlagRetestNewOpen] = useState(false);
+  const [flagRetestQaOpen, setFlagRetestQaOpen] = useState(false);
   const [flagBlockedNewOpen, setFlagBlockedNewOpen] = useState(false);
   const [showBusinessDecisionDialog, setShowBusinessDecisionDialog] = useState(false);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
@@ -1275,12 +1276,16 @@ function DefectRow({
   });
 
   const flagRetestMut = useMutation({
-    mutationFn: () => customFetch(`/defects/${defect.id}/flag-retest`, {
+    mutationFn: (reason?: string) => customFetch(`/defects/${defect.id}/flag-retest`, {
       method: "PATCH",
-      body: JSON.stringify({ reason: "Ready for verification", targetVerificationRunId: defect.test_run_id }),
+      body: JSON.stringify({
+        reason: reason?.trim() || "Ready for verification",
+        targetVerificationRunId: defect.test_run_id,
+      }),
     }),
     onMutate: () => {
       patchDefectCache({ status: "READY_FOR_VERIFICATION", retest_reason: "Ready for verification" });
+      setFlagRetestQaOpen(false);
     },
     onSuccess: () => { invalidateProject(); toast.success("Sent for verification"); },
     onError: (e: Error) => {
@@ -1598,7 +1603,7 @@ function DefectRow({
             {/* Flag Retest (QA_PASSED → READY_FOR_VERIFICATION) — gated behind QA review */}
             {canManage && isQaPassed && (
               <button
-                onClick={() => flagRetestMut.mutate()}
+                onClick={() => setFlagRetestQaOpen(true)}
                 className="action-btn action-btn-amber"
                 title="Send for Verification"
               >
@@ -1690,15 +1695,15 @@ function DefectRow({
                 <span className="material-symbols-outlined text-sm">thumb_down</span>
               </button>
             )}
-            {/* Reschedule Retest (READY_FOR_VERIFICATION → previous status) */}
+            {/* Reschedule Retest (READY_FOR_VERIFICATION → previous status from audit) */}
             {canManage && isReady && (
               <button
                 onClick={() => setRescheduleOpen(true)}
                 className="action-btn action-btn-orange"
                 title={
-                  defect.assigned_to_user_id
-                    ? "Reschedule — Soft return to QA_PASSED (no regression penalty; QA review does not need to be redone)"
-                    : "Reschedule — Soft return to previous status (no regression penalty)"
+                  defect.previous_status === "QA_PASSED"
+                    ? "Reschedule — Soft return to QA Passed (no regression penalty; QA review does not need to be redone)"
+                    : `Reschedule — Soft return to ${statusDisplay[defect.previous_status ?? ""] ?? defect.previous_status ?? "previous status"} (no regression penalty)`
                 }
               >
                 <span className="material-symbols-outlined text-sm">schedule</span>
@@ -2170,17 +2175,38 @@ function DefectRow({
       {/* Reschedule Retest Dialog */}
       {rescheduleOpen && (
         <Dialog onClose={() => setRescheduleOpen(false)} title="Reschedule Retest">
-          <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-lg p-md mb-sm">
-            <span className="material-symbols-outlined text-orange-700 text-xl flex-shrink-0">schedule</span>
-            <p className="font-body-sm text-orange-900">
-              Level 1 rollback — sends the defect back to{' '}
-              <strong>{defect.assigned_to_user_id ? "QA_PASSED" : "its previous status"}</strong>
-              {' '}without a regression penalty.
-              {defect.assigned_to_user_id
-                ? " The developer can make adjustments and re-submit. Use this when the fix mostly works but needs minor changes."
-                : " The defect can be reviewed, assigned, and re-accelerated once ready."}
-            </p>
-          </div>
+          {(() => {
+            const prev = defect.previous_status ?? null;
+            const prevLabel = prev ? (statusDisplay[prev] ?? prev) : "its previous status";
+            const cameFromQaPass = prev === "QA_PASSED";
+            return (
+              <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-lg p-md mb-sm">
+                <span className="material-symbols-outlined text-orange-700 text-xl flex-shrink-0">schedule</span>
+                <div className="font-body-sm text-orange-900 space-y-1">
+                  <p>
+                    Soft rollback (no regression penalty) — returns the defect to{' '}
+                    <strong>{prevLabel}</strong>
+                    {prev ? (
+                      <span className="text-orange-800/80"> (the status it held before verification)</span>
+                    ) : null}
+                    .
+                  </p>
+                  {cameFromQaPass ? (
+                    <p>
+                      This defect completed QA before verification. The developer can make minor adjustments
+                      and re-submit without repeating QA review.
+                    </p>
+                  ) : (
+                    <p>
+                      This defect was sent to verification <strong>before completing the full dev cycle</strong>
+                      {prev ? ` (from ${prevLabel})` : ""}. Rolling back restores that earlier stage — it does{' '}
+                      <strong>not</strong> place the defect in QA Passed.
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
           <SimpleReasonForm
             label="Reason"
             placeholder="Explain why the retest needs to be rescheduled..."
@@ -2329,13 +2355,46 @@ function DefectRow({
         </Dialog>
       )}
 
-      {/* Flag Retest from New Dialog */}
+      {/* Flag Retest from New Dialog (early / pre-QA path) */}
       {flagRetestNewOpen && (
-        <Dialog onClose={() => setFlagRetestNewOpen(false)} title="Flag for Retesting">
+        <Dialog onClose={() => setFlagRetestNewOpen(false)} title="Send for Verification">
           <FlagRetestFromNewForm
+            currentStatus={defect.status}
             onSave={(data) => flagRetestFromNewMut.mutate(data)}
             loading={flagRetestFromNewMut.isPending}
           />
+        </Dialog>
+      )}
+
+      {/* Flag Retest from QA Passed (full cycle path) */}
+      {flagRetestQaOpen && (
+        <Dialog onClose={() => setFlagRetestQaOpen(false)} title="Send for Verification">
+          <div className="space-y-md">
+            <div className="flex items-start gap-3 bg-teal-50 border border-teal-200 rounded-lg p-md">
+              <span className="material-symbols-outlined text-teal-700 text-xl flex-shrink-0">verified</span>
+              <p className="font-body-sm text-teal-900">
+                This defect completed the full cycle (<strong>Resolved by Dev → QA Passed</strong>).
+                Sending it to <strong>Ready for Verification</strong> schedules formal tester verification.
+              </p>
+            </div>
+            <div className="flex justify-end gap-md">
+              <button
+                type="button"
+                onClick={() => setFlagRetestQaOpen(false)}
+                className="px-4 py-sm bg-surface border border-outline-variant rounded-lg font-label-sm hover:bg-surface-container-high"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={flagRetestMut.isPending}
+                onClick={() => flagRetestMut.mutate(undefined)}
+                className="px-4 py-sm bg-amber-600 text-white rounded-lg font-label-sm hover:brightness-110 disabled:opacity-50"
+              >
+                {flagRetestMut.isPending ? "Sending..." : "Send for Verification"}
+              </button>
+            </div>
+          </div>
         </Dialog>
       )}
 
@@ -2702,19 +2761,47 @@ function AssignDeveloperForm({ projectId, onAssign, loading }: { projectId: numb
   );
 }
 
-function FlagRetestFromNewForm({ onSave, loading }: { onSave: (data: { reason: string; targetVerificationRunId?: number }) => void; loading: boolean }) {
+function FlagRetestFromNewForm({
+  currentStatus,
+  onSave,
+  loading,
+}: {
+  currentStatus: string;
+  onSave: (data: { reason: string; targetVerificationRunId?: number }) => void;
+  loading: boolean;
+}) {
   const [reason, setReason] = useState("Transient issue — flagging for verification");
+  const statusLabel = statusDisplay[currentStatus] ?? currentStatus;
+  const skipsFullCycle = currentStatus !== "QA_PASSED";
   return (
     <form onSubmit={(e) => { e.preventDefault(); onSave({ reason: reason.trim() }); }} className="space-y-md">
+      {skipsFullCycle && (
+        <div className="flex items-start gap-3 bg-amber-50 border border-amber-300 rounded-lg p-md">
+          <span className="material-symbols-outlined text-amber-700 text-xl flex-shrink-0">warning</span>
+          <div className="font-body-sm text-amber-950 space-y-1">
+            <p className="font-semibold">Early verification — full dev cycle not complete</p>
+            <p>
+              This defect is currently <strong>{statusLabel}</strong>. Sending it to{' '}
+              <strong>Ready for Verification</strong> skips remaining steps of the normal path
+              (assign → in progress → resolve → QA pass).
+            </p>
+            <p>
+              Use this only for transient issues, environment retests, or when you intentionally
+              want testers to re-check before development is finished. Reschedule will return it to{' '}
+              <strong>{statusLabel}</strong>, not to QA Passed.
+            </p>
+          </div>
+        </div>
+      )}
       <p className="font-body-sm text-on-surface-variant">
-        This will move the defect directly to <strong>Ready for Verification</strong> and create a retest tracking record.
+        This will move the defect to <strong>Ready for Verification</strong> and create a retest tracking record.
       </p>
       <div className="space-y-sm">
         <label className="font-label-sm text-label-sm">Reason</label>
         <textarea value={reason} onChange={(e) => setReason(e.target.value)} className="w-full h-20 bg-surface border border-outline-variant rounded-lg p-md text-sm resize-none" placeholder="Why is this being flagged for retest?" required />
       </div>
-      <button type="submit" disabled={loading} className="w-full py-sm bg-blue-600 text-white rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
-        {loading ? "Flagging..." : "Flag for Retesting"}
+      <button type="submit" disabled={loading || !reason.trim()} className="w-full py-sm bg-blue-600 text-white rounded-lg font-label-md hover:brightness-110 disabled:opacity-50">
+        {loading ? "Sending..." : "Send for Verification"}
       </button>
     </form>
   );

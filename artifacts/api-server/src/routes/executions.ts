@@ -911,7 +911,12 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
       // Deferred status notes — must run AFTER commit. Calling logSystemNote/logAudit
       // inside this transaction deadlocks: they use a separate pool connection that
       // needs FOR KEY SHARE on defects we already hold FOR UPDATE.
-      const pendingStatusNotes: Array<{ defectId: number; fromStatus: string; toStatus: string }> = [];
+      const pendingStatusNotes: Array<{
+        defectId: number;
+        fromStatus: string;
+        toStatus: string;
+        reason: string;
+      }> = [];
 
       // Phase A+B: retest must NOT open NEW for verify cases (auto-regress instead).
       // Regression opt-in cases may still create NEW defects on failure.
@@ -1010,6 +1015,13 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
 
           const oldStatus = "READY_FOR_VERIFICATION";
           const nextStatus = result === "passed" ? "CLOSED" : "REGRESSED";
+          const runLabel = lockedRun.name
+            ? `verification test run "${lockedRun.name}" (#${testRunId})`
+            : `verification test run #${testRunId}`;
+          const reason =
+            result === "passed"
+              ? `Closed automatically — linked test case passed in ${runLabel}.`
+              : `Regressed automatically — linked test case failed in ${runLabel}.`;
           if (result === "passed") {
             await tx
               .update(schema.defects)
@@ -1040,7 +1052,12 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
                 ),
               );
           }
-          pendingStatusNotes.push({ defectId: defect.id, fromStatus: oldStatus, toStatus: nextStatus });
+          pendingStatusNotes.push({
+            defectId: defect.id,
+            fromStatus: oldStatus,
+            toStatus: nextStatus,
+            reason,
+          });
 
           // Record result on the enrollment row
           await tx
@@ -1111,8 +1128,9 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
         changedByUserId: userId,
         fromStatus: note.fromStatus,
         toStatus: note.toStatus,
+        reason: note.reason,
       });
-      await logSystemNote(note.defectId, note.fromStatus, note.toStatus, userId);
+      await logSystemNote(note.defectId, note.fromStatus, note.toStatus, userId, note.reason);
     }
     for (const truc of allUseCases) {
       if (truc.useCase) {

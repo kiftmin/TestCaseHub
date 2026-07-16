@@ -686,6 +686,7 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
           entryConfirmed={testRun.entry_confirmed}
           readOnly={
             isCompleted ||
+            execModal.testRunUseCase.tester_sign_off === true ||
             execModal.testCase.retestRole === "blocked" ||
             execModal.testCase.retestExecutable === false
           }
@@ -987,21 +988,67 @@ function ExecutionModal({
 
     if (!entryConfirmed) { setInitialLoading(false); return; }
 
-    // Blocked retest cases: never create an execution
-    if (
-      readOnly ||
-      testCase.retestRole === "blocked" ||
-      testCase.retestExecutable === false
-    ) {
+    const isBlockedCase =
+      testCase.retestRole === "blocked" || testCase.retestExecutable === false;
+    // Blocked cases: never create an execution. Still load existing data if any.
+    if (isBlockedCase) {
       setReadOnlyOverride(true);
-      setInitialLoading(false);
-      return;
     }
 
     let cancelled = false;
 
+    const hydrateFromExecution = (exec: Execution) => {
+      setExecution(exec);
+      if (exec.stepResults) {
+        const map: Record<number, { passed: boolean | null; actual_result: string; comments: string }> = {};
+        [...exec.stepResults].sort((a, b) => a.id - b.id).forEach((sr) => {
+          map[sr.step_id] = { passed: sr.passed, actual_result: sr.actual_result ?? "", comments: sr.comments ?? "" };
+        });
+        setResults(map);
+      }
+      if (exec.overall_result) {
+        setOverallResult(exec.overall_result);
+        // Submitted / completed executions are always view-only
+        setReadOnlyOverride(true);
+      }
+      if (exec.notes) setTesterNotes(exec.notes);
+    };
+
+    const loadExistingViaReport = async () => {
+      const fullReport = await customFetch<TestRunFullReport>(`/test-runs/${testRunId}/full-report`, {
+        cache: "no-store",
+      });
+      if (cancelled) return;
+      const matches = fullReport.executions?.filter((ex) => ex.test_case_id === testCase.id) ?? [];
+      const existing = matches.sort((a, b) => b.id - a.id)[0];
+      if (existing) {
+        hydrateFromExecution(existing as Execution);
+        const attachments = await customFetch<{ id: number; field: string; file_url: string }[]>(
+          `/attachments/execution/${existing.id}`
+        ).catch(() => [] as { id: number; field: string; file_url: string }[]);
+        if (cancelled) return;
+        if (attachments.length > 0) {
+          const imgMap: Record<number, string> = {};
+          attachments.forEach((a) => {
+            if (a.field?.startsWith("step_")) {
+              const stepId = Number(a.field.replace("step_", ""));
+              if (!isNaN(stepId)) imgMap[stepId] = uploadUrl(a.file_url);
+            }
+          });
+          if (Object.keys(imgMap).length > 0) setProofImages(imgMap);
+        }
+      }
+    };
+
     const initExec = async () => {
       try {
+        // Run already completed / force read-only: load existing only, never POST execute
+        if (readOnly || isBlockedCase) {
+          setReadOnlyOverride(true);
+          await loadExistingViaReport();
+          return;
+        }
+
         const user = getStoredUser();
         if (!user) { toast.error("User not found"); setInitialLoading(false); return; }
 
@@ -1012,20 +1059,10 @@ function ExecutionModal({
         if (!cancelled) {
           if (result && typeof result === "object" && "readOnly" in result && (result as any).readOnly === true) {
             setReadOnlyOverride(true);
-            setInitialLoading(false);
+            await loadExistingViaReport();
             return;
           }
-          const exec = result as Execution;
-          setExecution(exec);
-          if (exec.stepResults) {
-            const map: Record<number, { passed: boolean | null; actual_result: string; comments: string }> = {};
-            [...exec.stepResults].sort((a, b) => a.id - b.id).forEach((sr) => {
-              map[sr.step_id] = { passed: sr.passed, actual_result: sr.actual_result ?? "", comments: sr.comments ?? "" };
-            });
-            setResults(map);
-          }
-          if (exec.overall_result) setOverallResult(exec.overall_result);
-          if (exec.notes) setTesterNotes(exec.notes);
+          hydrateFromExecution(result as Execution);
         }
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
@@ -1037,47 +1074,13 @@ function ExecutionModal({
           errMsg.toLowerCase().includes("cannot be executed")
         ) {
           setReadOnlyOverride(true);
-          setInitialLoading(false);
+          try { await loadExistingViaReport(); } catch { /* ignore */ }
           return;
         }
         if (errMsg.toLowerCase().includes("already been executed") || errMsg.toLowerCase().includes("completed test run")) {
+          setReadOnlyOverride(true);
           try {
-            const fullReport = await customFetch<TestRunFullReport>(`/test-runs/${testRunId}/full-report`, {
-              cache: "no-store",
-            });
-            if (cancelled) return;
-            const matches = fullReport.executions?.filter((ex) => ex.test_case_id === testCase.id) ?? [];
-            const existing = matches.sort((a, b) => b.id - a.id)[0];
-            console.log(`[exec] full-report executions for case ${testCase.id}: ${JSON.stringify(matches.map(m => ({ id: m.id, stepResultsCount: m.stepResults?.length ?? 0, stepResultIds: m.stepResults?.map(sr => sr.id) })))}`);
-            console.log(`[exec] Selected execution id=${existing?.id}, stepResults=`, JSON.stringify(existing?.stepResults?.map(sr => ({ id: sr.id, step_id: sr.step_id, passed: sr.passed, actual_result: sr.actual_result }))));
-            if (existing) {
-              setExecution(existing as Execution);
-              if (existing.overall_result) setOverallResult(existing.overall_result);
-              if (existing.notes) setTesterNotes(existing.notes);
-              if (existing.stepResults) {
-                const map: Record<number, { passed: boolean | null; actual_result: string; comments: string }> = {};
-                const sorted = [...existing.stepResults].sort((a, b) => a.id - b.id);
-                sorted.forEach((sr) => {
-                  map[sr.step_id] = { passed: sr.passed, actual_result: sr.actual_result ?? "", comments: sr.comments ?? "" };
-                });
-                setResults(map);
-              }
-              // Load attachment/proof images independently
-              const attachments = await customFetch<{ id: number; field: string; file_url: string }[]>(
-                `/attachments/execution/${existing.id}`
-              ).catch(() => [] as { id: number; field: string; file_url: string }[]);
-              if (cancelled) return;
-              if (attachments.length > 0) {
-                const imgMap: Record<number, string> = {};
-                attachments.forEach((a) => {
-                  if (a.field?.startsWith("step_")) {
-                    const stepId = Number(a.field.replace("step_", ""));
-                    if (!isNaN(stepId)) imgMap[stepId] = uploadUrl(a.file_url);
-                  }
-                });
-                if (Object.keys(imgMap).length > 0) setProofImages(imgMap);
-              }
-            }
+            await loadExistingViaReport();
           } catch (e2) {
             const msg = e2 instanceof Error ? e2.message : "An error occurred";
             toast.error(msg);
@@ -1091,7 +1094,7 @@ function ExecutionModal({
     };
     initExec();
     return () => { cancelled = true; };
-  }, [entryConfirmed, testRunId, testCase.id, readOnly]);
+  }, [entryConfirmed, testRunId, testCase.id, readOnly, testCase.retestRole, testCase.retestExecutable]);
 
   // Sync state to cache whenever execution data changes (survives component remounts)
   useEffect(() => {
@@ -1173,8 +1176,14 @@ function ExecutionModal({
     return () => window.removeEventListener("online", handleOnline);
   }, [execution?.id, draftKey, queryClient, testRunId]);
 
+  const isExecutionTerminal =
+    !!execution?.overall_result ||
+    execution?.status === "completed" ||
+    !!overallResult;
+  const effectiveReadOnly = readOnly || readOnlyOverride || isExecutionTerminal;
+
   const submitStepResult = async (stepId: number, passed: boolean, actual_result: string, comments: string) => {
-    if (!execution?.id) return;
+    if (!execution?.id || effectiveReadOnly) return;
 
     if (!navigator.onLine) {
       const stored = sessionStorage.getItem(draftKey);
@@ -1201,7 +1210,7 @@ function ExecutionModal({
   };
 
   const completeExecution = async () => {
-    if (!execution?.id || !totalSteps) return;
+    if (!execution?.id || !totalSteps || effectiveReadOnly) return;
 
     const allHaveResults = stepList.every((step) => results[step.id]?.passed !== null);
     if (!allHaveResults) {
@@ -1330,8 +1339,6 @@ function ConfirmDialog({
     </div>
   );
 }
-
-  const effectiveReadOnly = readOnly || readOnlyOverride;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">

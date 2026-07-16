@@ -244,21 +244,44 @@ export function TesterDashboardPage() {
       map.get(runId)!.useCases.push(r);
     });
 
-    // Compute progress for each run — count scenarios (not test cases)
+    // Compute progress for each run — count scenarios assigned to this tester
     for (const [, group] of map) {
       let completed = 0, inProg = 0, notStarted = 0;
       const runExecs = (group.run as any).executions ?? [];
+      const runType = (group.run as any).run_type as string | undefined;
+      const blockedCaseIds = new Set<number>(
+        ((group.run as any).blockedCaseIds as number[] | undefined) ?? [],
+      );
 
       for (const uc of group.useCases) {
-        const tcs = uc.useCase?.testCases ?? [];
-        // Compute this scenario's progress from its test cases
+        // Authoritative after submit: sign-off or terminal scenario status
+        const signedOff = uc.tester_sign_off === true;
+        const terminalStatus =
+          uc.status === "passed" ||
+          uc.status === "failed" ||
+          uc.status === "passed_by_agreement";
+        if (signedOff || terminalStatus) {
+          completed++;
+          continue;
+        }
+
+        const tcs = (uc.useCase?.testCases ?? []).filter((tc: any) => {
+          // Retest: ignore blocked cases — they are not executable
+          if (tc.retestRole === "blocked" || tc.retestExecutable === false) return false;
+          if (blockedCaseIds.has(tc.id)) return false;
+          return true;
+        });
+
         const caseProgresses = tcs.map((tc: any) => {
           const exec = runExecs.find((e: any) => e.test_case_id === tc.id);
           if (!exec) return "Not Started" as CaseProgress;
           if (exec.overall_result != null) return "Completed" as CaseProgress;
           return computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);
         });
+
+        // All-blocked retest scenario (no executable cases) counts as complete for this tester
         const scenarioProgress: CaseProgress =
+          tcs.length === 0 && runType === "retest" ? "Completed" :
           caseProgresses.length === 0 ? "Not Started" :
           caseProgresses.every((p: CaseProgress) => p === "Completed") ? "Completed" :
           caseProgresses.some((p: CaseProgress) => p === "In Progress" || p === "Completed") ? "In Progress" :

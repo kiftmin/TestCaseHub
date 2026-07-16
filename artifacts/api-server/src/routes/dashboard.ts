@@ -8,27 +8,61 @@ import { AuthenticatedRequest } from "../middlewares/auth.js";
 const router = express.Router();
 
 // GET /api/dashboard/summary
-router.get("/summary", async (req, res, next) => {
+router.get("/summary", async (req: AuthenticatedRequest, res, next) => {
   try {
-    const totalProjects = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(schema.projects)
-      .then((row) => row[0].count);
+    const role = req.user!.role;
+    const userId = req.user!.userId;
 
-    const totalTestRuns = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(schema.testRuns)
-      .then((row) => row[0].count);
+    let projectIds: number[] | undefined;
 
-    const totalTestCases = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(schema.testCases)
-      .then((row) => row[0].count);
+    if (role !== "ADMIN") {
+      projectIds = await getProjectIdsForUser(userId, role);
+      if (projectIds.length === 0) {
+        res.json({ totalProjects: 0, totalTestRuns: 0, totalTestCases: 0, totalDefects: 0 });
+        return;
+      }
+    }
 
-    const totalDefects = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(schema.defects)
-      .then((row) => row[0].count);
+    const totalProjects = projectIds
+      ? projectIds.length
+      : await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.projects)
+          .then((row) => row[0].count);
+
+    const totalTestRuns = projectIds
+      ? await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.testRuns)
+          .where(inArray(schema.testRuns.project_id, projectIds))
+          .then((row) => row[0].count)
+      : await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.testRuns)
+          .then((row) => row[0].count);
+
+    const totalTestCases = projectIds
+      ? await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.testCases)
+          .innerJoin(schema.useCases, eq(schema.testCases.use_case_id, schema.useCases.id))
+          .where(inArray(schema.useCases.project_id, projectIds))
+          .then((row) => row[0].count)
+      : await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.testCases)
+          .then((row) => row[0].count);
+
+    const totalDefects = projectIds
+      ? await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.defects)
+          .where(inArray(schema.defects.project_id, projectIds))
+          .then((row) => row[0].count)
+      : await db
+          .select({ count: sql<number>`count(*)` })
+          .from(schema.defects)
+          .then((row) => row[0].count);
 
     res.json({
       totalProjects,

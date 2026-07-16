@@ -199,22 +199,4 @@ router.patch("/discussions/:discussionId/end", async (req: AuthenticatedRequest,
   } catch (err) { next(err); }
 });
 
-// GET /api/discussions/:discussionId/defects/:defectId
-router.get("/discussions/:discussionId/defects/:defectId", async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const defectId = Number(req.params.defectId);
-    const defect = await db.query.defects.findFirst({
-      where: eq(schema.defects.id, defectId),
-      with: {
-        testCase: { with: { steps: true } },
-        execution: { with: { stepResults: true } },
-        notes: true,
-        retests: true,
-      },
-    });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    res.json(defect);
-  } catch (err) { next(err); }
-});
-
 export default router;

@@ -1,5 +1,5 @@
 import express from "express";
-import { eq, desc, and, ne, sql, inArray } from "drizzle-orm";
+import { eq, desc, and, sql, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
@@ -323,14 +323,13 @@ router.patch("/defects/:defectId/classify", async (req: AuthenticatedRequest, re
 
     const oldStatus = defect.status;
     let targetStatus = oldStatus;
-    const updateData: Record<string, any> = {
+    const patch: Record<string, unknown> = {
       severity: data.severity,
       priority: data.priority,
-      updated_at: new Date(),
     };
 
     if (data.assigned_to_user_id !== undefined) {
-      updateData.assigned_to_user_id = data.assigned_to_user_id;
+      patch.assigned_to_user_id = data.assigned_to_user_id;
       if (oldStatus === "NEW") {
         // Log intermediate TRIAGED step so the stepper tracks it as visited
         await logSystemNote(defectId, "NEW", "TRIAGED", req.user!.userId);
@@ -342,12 +341,26 @@ router.patch("/defects/:defectId/classify", async (req: AuthenticatedRequest, re
       targetStatus = "TRIAGED";
     }
 
-    updateData.status = targetStatus;
-
-    const [updated] = await db.update(schema.defects)
-      .set(updateData)
-      .where(eq(schema.defects.id, defectId))
-      .returning();
+    let updated;
+    if (targetStatus !== oldStatus) {
+      patch.status = targetStatus;
+      const result = await transitionDefect({
+        defectId,
+        allowedFrom: DEFECT_TRANSITIONS.classify,
+        patch,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ message: result.message });
+        return;
+      }
+      updated = result.after;
+    } else {
+      const [u] = await db.update(schema.defects)
+        .set(patch)
+        .where(eq(schema.defects.id, defectId))
+        .returning();
+      updated = u;
+    }
 
     let assignedUserText = "";
     if (data.assigned_to_user_id) {
@@ -384,29 +397,24 @@ router.patch("/defects/:defectId/assign", async (req: AuthenticatedRequest, res,
     const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-
-    if (defect.status !== "TRIAGED") {
-      res.status(409).json({ message: "Defect must be triaged before it can be assigned. Please classify severity and priority first." });
-      return;
-    }
-
-    const oldStatus = defect.status;
-    const [updated] = await db.update(schema.defects)
-      .set({
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS.assign,
+      patch: {
         status: "ASSIGNED",
         assigned_to_user_id: data.assigned_to_user_id,
         support_ticket_number: data.support_ticket_number ?? null,
-        updated_at: new Date(),
-      })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
+      },
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
+      return;
+    }
 
     const assignedUser = await db.query.users.findFirst({ where: eq(schema.users.id, data.assigned_to_user_id), columns: { name: true } });
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "ASSIGNED" });
-    await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, `Assigned to ${assignedUser?.name ?? `user #${data.assigned_to_user_id}`}`);
-    res.json(updated);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: result.before.status, toStatus: "ASSIGNED" });
+    await logSystemNote(defectId, result.before.status, "ASSIGNED", req.user!.userId, `Assigned to ${assignedUser?.name ?? `user #${data.assigned_to_user_id}`}`);
+    res.json(result.after);
   } catch (err) { next(err); }
 });
 
@@ -465,19 +473,21 @@ router.patch("/defects/:defectId/flag-retest-from-new", async (req: Authenticate
     const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.id, defectId),
+      columns: { test_run_id: true },
+    });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    const blockedStatuses = ["CLOSED", "PASSED_BY_AGREEMENT", "PENDING_BIZ_ACCEPTANCE", "RESOLVED_DEV", "READY_FOR_VERIFICATION"];
-    if (blockedStatuses.includes(defect.status)) {
-      res.status(409).json({ message: "Defect must pass QA review before it can be sent for verification. A resolved (but not QA-reviewed) defect cannot be retested directly." });
+
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS["flag-retest-from-new"],
+      patch: { status: "READY_FOR_VERIFICATION", retest_reason: data.reason },
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
       return;
     }
-
-    const oldStatus = defect.status;
-    const [updated] = await db.update(schema.defects)
-      .set({ status: "READY_FOR_VERIFICATION", retest_reason: data.reason, updated_at: new Date() })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
 
     await db.insert(schema.defectRetests).values({
       defect_id: defectId,
@@ -485,9 +495,9 @@ router.patch("/defects/:defectId/flag-retest-from-new", async (req: Authenticate
       target_verification_run_id: data.targetVerificationRunId ?? defect.test_run_id,
     });
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "READY_FOR_VERIFICATION", reason: data.reason });
-    await logSystemNote(defectId, oldStatus, "READY_FOR_VERIFICATION", req.user!.userId, data.reason);
-    res.json(updated);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: result.before.status, toStatus: "READY_FOR_VERIFICATION", reason: data.reason });
+    await logSystemNote(defectId, result.before.status, "READY_FOR_VERIFICATION", req.user!.userId, data.reason);
+    res.json(result.after);
   } catch (err) { next(err); }
 });
 
@@ -509,41 +519,33 @@ router.patch("/defects/:defectId/submit-for-business-decision", async (req: Auth
     const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-
-    const validFromStates = ["NEW", "TRIAGED", "ASSIGNED", "IN_PROGRESS", "RESOLVED_DEV", "QA_PASSED", "REGRESSED", "READY_FOR_VERIFICATION"];
-    if (!validFromStates.includes(defect.status)) {
-      res.status(400).json({
-        message: `Defect must be in one of these states to submit for business decision: ${validFromStates.join(", ")}. Current status: ${defect.status}`
-      });
-      return;
-    }
-
-    const oldStatus = defect.status;
-    const [updated] = await db.update(schema.defects)
-      .set({
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS["submit-for-business-decision"],
+      patch: {
         status: "PENDING_BIZ_ACCEPTANCE",
         accepted_by_business_note: data.justification,
-        updated_at: new Date(),
-      })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
+      },
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
+      return;
+    }
 
     const reasonPrefix = data.decisionType === "risk_waiver" ? "[RISK WAIVER] " : "[BUSINESS REVIEW] ";
     await logAudit({
       entityType: "defect",
       entityId: defectId,
       changedByUserId: req.user!.userId,
-      fromStatus: oldStatus,
+      fromStatus: result.before.status,
       toStatus: "PENDING_BIZ_ACCEPTANCE",
       reason: reasonPrefix + data.justification,
     });
 
     const decisionTypeLabel = data.decisionType === "risk_waiver" ? "Risk waiver" : "Business review";
-    await logSystemNote(defectId, oldStatus, "PENDING_BIZ_ACCEPTANCE", req.user!.userId, `${decisionTypeLabel} submitted for Business Owner approval: ${data.justification}`);
+    await logSystemNote(defectId, result.before.status, "PENDING_BIZ_ACCEPTANCE", req.user!.userId, `${decisionTypeLabel} submitted for Business Owner approval: ${data.justification}`);
 
-    res.json(updated);
+    res.json(result.after);
   } catch (err) { next(err); }
 });
 
@@ -669,27 +671,30 @@ router.patch("/defects/:defectId/start", async (req: AuthenticatedRequest, res, 
     const allowed = await checkProjectRole(req, projectId, ["DEVELOPER", "TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-    if (defect.status !== "ASSIGNED") { res.status(409).json({ message: `Cannot start defect in status ${defect.status}. Only ASSIGNED defects can be started.` }); return; }
-    // DEVELOPER can only start their own defect; TEST_LEAD can start any
-    if (defect.assigned_to_user_id !== req.user!.userId) {
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS.start,
+      patch: { status: "IN_PROGRESS" },
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
+      return;
+    }
+    if (result.before.assigned_to_user_id !== req.user!.userId) {
       const isTestLead = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
       if (!isTestLead) {
+        // Roll back the transition
+        await db.update(schema.defects)
+          .set({ status: result.before.status, updated_at: new Date() })
+          .where(eq(schema.defects.id, defectId));
         res.status(403).json({ message: "You can only start work on defects assigned to you." });
         return;
       }
     }
 
-    const oldStatus = defect.status;
-    const [updated] = await db.update(schema.defects)
-      .set({ status: "IN_PROGRESS", updated_at: new Date() })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
-
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "IN_PROGRESS" });
-    await logSystemNote(defectId, oldStatus, "IN_PROGRESS", req.user!.userId);
-    res.json(updated);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: result.before.status, toStatus: "IN_PROGRESS" });
+    await logSystemNote(defectId, result.before.status, "IN_PROGRESS", req.user!.userId);
+    res.json(result.after);
   } catch (err) { next(err); }
 });
 
@@ -873,7 +878,10 @@ router.patch("/defects/:defectId/qa-review", async (req: AuthenticatedRequest, r
       return;
     }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.id, defectId),
+      columns: { assigned_to_user_id: true, regression_index: true, status: true },
+    });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
 
     if (defect.status !== "RESOLVED_DEV") {
@@ -891,36 +899,44 @@ router.patch("/defects/:defectId/qa-review", async (req: AuthenticatedRequest, r
     const regressionIndex = defect.regression_index ?? 0;
 
     if (data.result === "passed") {
-      const [updated] = await db.update(schema.defects)
-        .set({
+      const result = await transitionDefect({
+        defectId,
+        allowedFrom: DEFECT_TRANSITIONS["qa-review"],
+        patch: {
           status: "QA_PASSED",
           qa_reviewed_by_user_id: req.user!.userId,
           qa_reviewed_at: new Date(),
-          updated_at: new Date(),
-        })
-        .where(eq(schema.defects.id, defectId))
-        .returning();
+        },
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ message: result.message });
+        return;
+      }
 
       await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "QA_PASSED", reason: data.notes ?? "QA passed" });
       await logSystemNote(defectId, oldStatus, "QA_PASSED", req.user!.userId, `QA review passed. ${data.notes ?? ""}`);
 
-      res.json(updated);
+      res.json(result.after);
     } else {
-      const [updated] = await db.update(schema.defects)
-        .set({
+      const result = await transitionDefect({
+        defectId,
+        allowedFrom: DEFECT_TRANSITIONS["qa-review"],
+        patch: {
           status: "IN_PROGRESS",
           qa_reviewed_by_user_id: null,
           qa_reviewed_at: null,
           regression_index: regressionIndex,
-          updated_at: new Date(),
-        })
-        .where(eq(schema.defects.id, defectId))
-        .returning();
+        },
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ message: result.message });
+        return;
+      }
 
       await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "IN_PROGRESS", reason: data.notes ?? "QA failed" });
       await logSystemNote(defectId, oldStatus, "IN_PROGRESS", req.user!.userId, `QA review failed. ${data.notes ?? ""}`);
 
-      res.json(updated);
+      res.json(result.after);
     }
   } catch (err) { next(err); }
 });
@@ -947,19 +963,24 @@ router.patch("/defects/:defectId/flag-retest", async (req: AuthenticatedRequest,
     const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
+    const defect = await db.query.defects.findFirst({
+      where: eq(schema.defects.id, defectId),
+      columns: { test_run_id: true },
+    });
     if (!defect) { res.status(404).json({ message: "Not found" }); return; }
 
-    if (defect.status !== "QA_PASSED") {
-      res.status(409).json({ message: "Defect must pass QA review before it can be sent for verification." });
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS["flag-retest"],
+      patch: {
+        status: "READY_FOR_VERIFICATION",
+        retest_reason: data.reason,
+      },
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
       return;
     }
-
-    const oldStatus = defect.status;
-    const [updated] = await db.update(schema.defects)
-      .set({ status: "READY_FOR_VERIFICATION", retest_reason: data.reason, updated_at: new Date() })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
 
     await db.insert(schema.defectRetests).values({
       defect_id: defectId,
@@ -967,9 +988,9 @@ router.patch("/defects/:defectId/flag-retest", async (req: AuthenticatedRequest,
       target_verification_run_id: data.targetVerificationRunId,
     });
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "READY_FOR_VERIFICATION", reason: data.reason });
-    await logSystemNote(defectId, oldStatus, "READY_FOR_VERIFICATION", req.user!.userId, data.reason);
-    res.json(updated);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: result.before.status, toStatus: "READY_FOR_VERIFICATION", reason: data.reason });
+    await logSystemNote(defectId, result.before.status, "READY_FOR_VERIFICATION", req.user!.userId, data.reason);
+    res.json(result.after);
   } catch (err) { next(err); }
 });
 
@@ -1111,36 +1132,36 @@ router.patch("/defects/:defectId/resume-work", async (req: AuthenticatedRequest,
     const allowed = await checkProjectRole(req, projectId, ["DEVELOPER", "TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Only developer or test lead can resume work" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-
-    if (defect.status !== "RESOLVED_DEV" && defect.status !== "QA_PASSED") {
-      res.status(400).json({ message: "Defect is not in RESOLVED_DEV or QA_PASSED state" });
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS["resume-work"],
+      patch: { status: "IN_PROGRESS", resolved_at: null },
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
       return;
     }
 
     const isDeveloper = await checkProjectRole(req, projectId, ["DEVELOPER"]);
     const isAdmin = req.user!.role === "ADMIN";
     const isTestLead = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
-    if (isDeveloper && !isAdmin && !isTestLead && defect.assigned_to_user_id !== req.user!.userId) {
+    if (isDeveloper && !isAdmin && !isTestLead && result.before.assigned_to_user_id !== req.user!.userId) {
+      // Roll back the transition
+      await db.update(schema.defects)
+        .set({ status: result.before.status, resolved_at: result.before.resolved_at, updated_at: new Date() })
+        .where(eq(schema.defects.id, defectId));
       res.status(403).json({ message: "You can only resume work on your own assigned defects" });
       return;
     }
 
-    const oldStatus = defect.status;
-    const [updated] = await db.update(schema.defects)
-      .set({ status: "IN_PROGRESS", resolved_at: null, updated_at: new Date() })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
-
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "IN_PROGRESS", reason: data.reason });
-    await logSystemNote(defectId, oldStatus, "IN_PROGRESS", req.user!.userId, data.reason);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: result.before.status, toStatus: "IN_PROGRESS", reason: data.reason });
+    await logSystemNote(defectId, result.before.status, "IN_PROGRESS", req.user!.userId, data.reason);
     res.json({
-      id: updated.id,
-      status: updated.status,
-      assigned_to_user_id: updated.assigned_to_user_id,
-      resolved_at: updated.resolved_at,
-      updated_at: updated.updated_at,
+      id: result.after.id,
+      status: result.after.status,
+      assigned_to_user_id: result.after.assigned_to_user_id,
+      resolved_at: result.after.resolved_at,
+      updated_at: result.after.updated_at,
     });
   } catch (err) { next(err); }
 });
@@ -1159,31 +1180,27 @@ router.patch("/defects/:defectId/reschedule-retest", async (req: AuthenticatedRe
     const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Only test lead can reschedule retest" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-
-    if (defect.status !== "READY_FOR_VERIFICATION") {
-      res.status(400).json({ message: "Defect is not in READY_FOR_VERIFICATION state" });
-      return;
-    }
-
-    const oldStatus = defect.status;
     const nextStatus = await getPreviousStatus(defectId);
 
-    const [updated] = await db.update(schema.defects)
-      .set({ status: nextStatus, updated_at: new Date() })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS["reschedule-retest"],
+      patch: { status: nextStatus },
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
+      return;
+    }
 
     await db.delete(schema.defectRetests)
       .where(eq(schema.defectRetests.defect_id, defectId));
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: nextStatus, reason: data.reason });
-    await logSystemNote(defectId, oldStatus, nextStatus, req.user!.userId, data.reason);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: result.before.status, toStatus: nextStatus, reason: data.reason });
+    await logSystemNote(defectId, result.before.status, nextStatus, req.user!.userId, data.reason);
     res.json({
-      id: updated.id,
-      status: updated.status,
-      updated_at: updated.updated_at,
+      id: result.after.id,
+      status: result.after.status,
+      updated_at: result.after.updated_at,
     });
   } catch (err) { next(err); }
 });
@@ -1205,77 +1222,65 @@ router.patch("/defects/:defectId/reject-verification", async (req: Authenticated
     const allowed = await checkProjectRole(req, projectId, ["BUSINESS_OWNER", "TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Only business owner or test lead can reject verification" }); return; }
 
-    const txn = await db.transaction(async (tx) => {
-      const [defect] = await tx
-        .select()
-        .from(schema.defects)
-        .where(eq(schema.defects.id, defectId))
-        .for("update");
-      if (!defect) return { error: { status: 404, message: "Not found" } };
-
-      if (defect.status !== "READY_FOR_VERIFICATION") {
-        return { error: { status: 400, message: "Defect is not in READY_FOR_VERIFICATION state" } };
-      }
-
-      const oldStatus = defect.status;
-      const nextStatus = defect.assigned_to_user_id
-        ? "ASSIGNED"
-        : await getPreviousStatus(defectId);
-
-      const newRegressionIndex = (defect.regression_index ?? 0) + 1;
-
-      // Append to rejection_log as JSON array
-      let rejections: Array<{ at: string; by: number; reason: string; type?: string }> = [];
-      if (defect.rejection_log) {
-        try {
-          const parsed = JSON.parse(defect.rejection_log);
-          if (Array.isArray(parsed.rejections)) {
-            rejections = parsed.rejections;
-          }
-        } catch { /* start fresh */ }
-      }
-      rejections.push({
-        at: new Date().toISOString(),
-        by: req.user!.userId,
-        reason: data.reason,
-        ...(data.rejectionType ? { type: data.rejectionType } : {}),
-      });
-
-      const rejectionLog = JSON.stringify({ rejections });
-
-      const [updated] = await tx.update(schema.defects)
-        .set({
-          status: nextStatus,
-          regression_index: newRegressionIndex,
-          rejection_log: rejectionLog,
-          updated_at: new Date(),
-        })
-        .where(eq(schema.defects.id, defectId))
-        .returning();
-
-      return { ok: true, updated, oldStatus, nextStatus, reason: data.reason };
+    // Read current state for rejection_log construction (outside lock — safe, minor log-gap risk only)
+    const current = await db.query.defects.findFirst({
+      where: eq(schema.defects.id, defectId),
+      columns: { assigned_to_user_id: true, regression_index: true, rejection_log: true },
     });
+    if (!current) { res.status(404).json({ message: "Not found" }); return; }
 
-    if ("error" in txn) {
-      res.status(txn.error.status).json({ message: txn.error.message });
+    const nextStatus = current.assigned_to_user_id
+      ? "ASSIGNED"
+      : await getPreviousStatus(defectId);
+
+    const newRegressionIndex = (current.regression_index ?? 0) + 1;
+
+    let rejections: Array<{ at: string; by: number; reason: string; type?: string }> = [];
+    if (current.rejection_log) {
+      try {
+        const parsed = JSON.parse(current.rejection_log);
+        if (Array.isArray(parsed.rejections)) {
+          rejections = parsed.rejections;
+        }
+      } catch { /* start fresh */ }
+    }
+    rejections.push({
+      at: new Date().toISOString(),
+      by: req.user!.userId,
+      reason: data.reason,
+      ...(data.rejectionType ? { type: data.rejectionType } : {}),
+    });
+    const rejectionLog = JSON.stringify({ rejections });
+
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS["reject-verification"],
+      patch: {
+        status: nextStatus,
+        regression_index: newRegressionIndex,
+        rejection_log: rejectionLog,
+      },
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
       return;
     }
 
     await db.delete(schema.defectRetests)
       .where(eq(schema.defectRetests.defect_id, defectId));
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: txn.oldStatus, toStatus: txn.nextStatus, reason: data.reason });
-    await logSystemNote(defectId, txn.oldStatus, txn.nextStatus, req.user!.userId, data.reason);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: result.before.status, toStatus: nextStatus, reason: data.reason });
+    await logSystemNote(defectId, result.before.status, nextStatus, req.user!.userId, data.reason);
 
     // TODO: Notify developer (in-app notification + optional email)
     // To be implemented when notification infrastructure is available
 
     res.json({
-      id: txn.updated.id,
-      status: txn.updated.status,
-      assigned_to_user_id: txn.updated.assigned_to_user_id,
-      updated_at: txn.updated.updated_at,
-      regression_index: txn.updated.regression_index,
+      id: result.after.id,
+      status: result.after.status,
+      assigned_to_user_id: result.after.assigned_to_user_id,
+      updated_at: result.after.updated_at,
+      regression_index: result.after.regression_index,
     });
   } catch (err) { next(err); }
 });
@@ -1299,85 +1304,72 @@ router.patch("/defects/:defectId/regress", async (req: AuthenticatedRequest, res
     const allowed = await checkProjectRole(req, projectId, ["DEVELOPER", "TEST_LEAD", "BUSINESS_OWNER"]);
     if (!allowed) { res.status(403).json({ message: "Insufficient permissions to regress defect" }); return; }
 
-    const txn = await db.transaction(async (tx) => {
-      const [defect] = await tx
-        .select()
-        .from(schema.defects)
-        .where(eq(schema.defects.id, defectId))
-        .for("update");
-      if (!defect) return { error: { status: 404, message: "Not found" } };
+    // Read current state for rejection_log construction (outside lock — minor log-gap risk only)
+    const current = await db.query.defects.findFirst({
+      where: eq(schema.defects.id, defectId),
+      columns: { regression_index: true, rejection_log: true, priority: true },
+    });
+    if (!current) { res.status(404).json({ message: "Not found" }); return; }
 
-      if (defect.status !== "CLOSED" && defect.status !== "PASSED_BY_AGREEMENT") {
-        return { error: { status: 400, message: "Defect is not in a closeable state (not CLOSED)" } };
-      }
+    const newRegressionIndex = (current.regression_index ?? 0) + 1;
 
-      const oldStatus = defect.status;
-      const newRegressionIndex = (defect.regression_index ?? 0) + 1;
+    // Append to rejection_log as JSON array under regressions key
+    let parsedLog: Record<string, unknown> = {};
+    let regressions: Array<{ at: string; by: number; reason: string; type: string; customerReference?: string }> = [];
+    if (current.rejection_log) {
+      try {
+        parsedLog = JSON.parse(current.rejection_log);
+        if (Array.isArray(parsedLog.regressions)) {
+          regressions = parsedLog.regressions;
+        }
+      } catch { /* start fresh */ }
+    }
+    regressions.push({
+      at: new Date().toISOString(),
+      by: req.user!.userId,
+      reason: data.reason,
+      type: data.incidentType,
+      ...(data.customerReference ? { customerReference: data.customerReference } : {}),
+    });
+    const rejectionLog = JSON.stringify({ ...parsedLog, regressions });
 
-      // Append to rejection_log as JSON array under regressions key
-      let regressions: Array<{ at: string; by: number; reason: string; type: string; customerReference?: string }> = [];
-      if (defect.rejection_log) {
-        try {
-          const parsed = JSON.parse(defect.rejection_log);
-          if (Array.isArray(parsed.regressions)) {
-            regressions = parsed.regressions;
-          }
-        } catch { /* start fresh */ }
-      }
-      regressions.push({
-        at: new Date().toISOString(),
-        by: req.user!.userId,
-        reason: data.reason,
-        type: data.incidentType,
-        ...(data.customerReference ? { customerReference: data.customerReference } : {}),
-      });
+    // Set priority to P1 if it was lower
+    const currentPriority = current.priority ?? "P4";
+    const newPriority = (currentPriority === "P1" || currentPriority === "P2") ? currentPriority : "P1";
 
-      const rejectionLog = JSON.stringify({ ...(defect.rejection_log ? (() => { try { return JSON.parse(defect.rejection_log); } catch { return {}; } })() : {}), regressions });
-
-      // Set priority to P1 if it was lower
-      const currentPriority = defect.priority ?? "P4";
-      const newPriority = (currentPriority === "P1" || currentPriority === "P2") ? currentPriority : "P1";
-
-      const updateData: Record<string, unknown> = {
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS.regress,
+      patch: {
         status: "REGRESSED",
         regression_index: newRegressionIndex,
         rejection_log: rejectionLog,
         priority: newPriority,
-        updated_at: new Date(),
-      };
-
-      const [updated] = await tx.update(schema.defects)
-        .set(updateData)
-        .where(eq(schema.defects.id, defectId))
-        .returning();
-
-      return { ok: true, updated, oldStatus, regressionNote: [
-        `Regression reported: ${data.reason}`,
-        `Incident type: ${data.incidentType}`,
-        data.customerReference ? `Customer reference: ${data.customerReference}` : null,
-        `Severity impact: ${data.severity ?? "Not specified"}`,
-      ].filter(Boolean).join("\n") };
+      },
     });
-
-    if ("error" in txn) {
-      res.status(txn.error.status).json({ message: txn.error.message });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
       return;
     }
 
-    // Create a comment/note with full regression details
-    const regressionNote = txn.regressionNote;
+    const regressionNote = [
+      `Regression reported: ${data.reason}`,
+      `Incident type: ${data.incidentType}`,
+      data.customerReference ? `Customer reference: ${data.customerReference}` : null,
+      `Severity impact: ${data.severity ?? "Not specified"}`,
+    ].filter(Boolean).join("\n");
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: txn.oldStatus, toStatus: "REGRESSED", reason: data.reason });
-    await logSystemNote(defectId, txn.oldStatus, "REGRESSED", req.user!.userId, txn.regressionNote);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: result.before.status, toStatus: "REGRESSED", reason: data.reason });
+    await logSystemNote(defectId, result.before.status, "REGRESSED", req.user!.userId, regressionNote);
 
     // TODO: Notify PROJECT_LEAD and TEST_LEAD urgently (escalation required)
     // To be implemented when notification infrastructure is available
 
     res.json({
-      id: txn.updated.id,
-      status: txn.updated.status,
-      updated_at: txn.updated.updated_at,
-      regression_index: txn.updated.regression_index,
+      id: result.after.id,
+      status: result.after.status,
+      updated_at: result.after.updated_at,
+      regression_index: result.after.regression_index,
     });
   } catch (err) { next(err); }
 });
@@ -1399,14 +1391,6 @@ router.patch("/defects/:defectId/retry-after-regression", async (req: Authentica
     const allowed = await checkProjectRole(req, projectId, ["TEST_LEAD"]);
     if (!allowed) { res.status(403).json({ message: "Only test lead can retry regressed defects" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-
-    if (defect.status !== "REGRESSED") {
-      res.status(400).json({ message: "Defect is not in REGRESSED state" });
-      return;
-    }
-
     // If reassignTo provided, verify user exists and has DEVELOPER role
     if (data.reassignTo !== undefined) {
       const devAssignment = await db.query.projectAssignments.findFirst({
@@ -1422,46 +1406,47 @@ router.patch("/defects/:defectId/retry-after-regression", async (req: Authentica
       }
     }
 
-    const oldStatus = defect.status;
-    const updateData: Record<string, unknown> = {
-      status: "ASSIGNED",
-      updated_at: new Date(),
-    };
+    const patch: Record<string, unknown> = { status: "ASSIGNED" };
     if (data.reassignTo !== undefined) {
-      updateData.assigned_to_user_id = data.reassignTo;
+      patch.assigned_to_user_id = data.reassignTo;
+    }
+
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS["retry-after-regression"],
+      patch,
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
+      return;
     }
 
     let reassignDetail = "";
     if (data.reassignTo !== undefined) {
       const oldDev = await db.query.users.findFirst({
-        where: eq(schema.users.id, defect.assigned_to_user_id ?? -1),
+        where: eq(schema.users.id, result.before.assigned_to_user_id ?? -1),
         columns: { name: true },
       });
       const newDev = await db.query.users.findFirst({
         where: eq(schema.users.id, data.reassignTo),
         columns: { name: true },
       });
-      const oldName = oldDev?.name ?? `user #${defect.assigned_to_user_id}`;
+      const oldName = oldDev?.name ?? `user #${result.before.assigned_to_user_id}`;
       const newName = newDev?.name ?? `user #${data.reassignTo}`;
       reassignDetail = `Reassigned from ${oldName} to ${newName}: `;
     }
 
-    const [updated] = await db.update(schema.defects)
-      .set(updateData)
-      .where(eq(schema.defects.id, defectId))
-      .returning();
-
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "ASSIGNED", reason: data.reason });
-    await logSystemNote(defectId, oldStatus, "ASSIGNED", req.user!.userId, reassignDetail + data.reason);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: result.before.status, toStatus: "ASSIGNED", reason: data.reason });
+    await logSystemNote(defectId, result.before.status, "ASSIGNED", req.user!.userId, reassignDetail + data.reason);
 
     // TODO: Notify developer of reassignment
     // To be implemented when notification infrastructure is available
 
     res.json({
-      id: updated.id,
-      status: updated.status,
-      assigned_to_user_id: updated.assigned_to_user_id,
-      updated_at: updated.updated_at,
+      id: result.after.id,
+      status: result.after.status,
+      assigned_to_user_id: result.after.assigned_to_user_id,
+      updated_at: result.after.updated_at,
     });
   } catch (err) { next(err); }
 });
@@ -1561,19 +1546,18 @@ router.patch("/defects/:defectId/accept-by-agreement", async (req: Authenticated
     const allowed = await checkProjectRole(req, projectId, ["BUSINESS_OWNER"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
-
-    if (defect.status !== "PENDING_BIZ_ACCEPTANCE") {
-      res.status(400).json({ message: "Only defects pending business acceptance can be accepted by agreement" });
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS["accept-by-agreement"],
+      patch: {
+        status: "PASSED_BY_AGREEMENT",
+        accepted_by_business_note: data.justification,
+      },
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
       return;
     }
-
-    const oldStatus = defect.status;
-    const [updated] = await db.update(schema.defects)
-      .set({ status: "PASSED_BY_AGREEMENT", accepted_by_business_note: data.justification, updated_at: new Date() })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
 
     const auditEntry = await db.query.statusAuditLog.findFirst({
       where: and(
@@ -1585,9 +1569,9 @@ router.patch("/defects/:defectId/accept-by-agreement", async (req: Authenticated
     });
     const decisionType = auditEntry?.reason?.startsWith("[RISK WAIVER]") ? "Risk Waiver" : "Business Review";
 
-    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: "PASSED_BY_AGREEMENT", reason: data.justification, justification: data.justification });
-    await logSystemNote(defectId, oldStatus, "PASSED_BY_AGREEMENT", req.user!.userId, `[${decisionType}] ${data.justification}`);
-    res.json(updated);
+    await logAudit({ entityType: "defect", entityId: defectId, changedByUserId: req.user!.userId, fromStatus: result.before.status, toStatus: "PASSED_BY_AGREEMENT", reason: data.justification, justification: data.justification });
+    await logSystemNote(defectId, result.before.status, "PASSED_BY_AGREEMENT", req.user!.userId, `[${decisionType}] ${data.justification}`);
+    res.json(result.after);
   } catch (err) { next(err); }
 });
 
@@ -1609,15 +1593,20 @@ router.patch("/defects/:defectId/reject-biz-acceptance", async (req: Authenticat
     const allowed = await checkProjectRole(req, projectId, ["BUSINESS_OWNER"]);
     if (!allowed) { res.status(403).json({ message: "Forbidden" }); return; }
 
-    const defect = await db.query.defects.findFirst({ where: eq(schema.defects.id, defectId) });
-    if (!defect) { res.status(404).json({ message: "Not found" }); return; }
+    const rollbackStatus = await getPriorState(defectId, "PENDING_BIZ_ACCEPTANCE", "TRIAGED");
 
-    if (defect.status !== "PENDING_BIZ_ACCEPTANCE") {
-      res.status(400).json({ message: "Only defects pending business acceptance can be rejected." });
+    const result = await transitionDefect({
+      defectId,
+      allowedFrom: DEFECT_TRANSITIONS["reject-biz-acceptance"],
+      patch: {
+        status: rollbackStatus,
+        accepted_by_business_note: null,
+      },
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ message: result.message });
       return;
     }
-
-    const rollbackStatus = await getPriorState(defectId, "PENDING_BIZ_ACCEPTANCE", "TRIAGED");
 
     const auditEntry = await db.query.statusAuditLog.findFirst({
       where: and(
@@ -1629,26 +1618,16 @@ router.patch("/defects/:defectId/reject-biz-acceptance", async (req: Authenticat
     });
     const decisionType = auditEntry?.reason?.startsWith("[RISK WAIVER]") ? "Risk Waiver" : "Business Review";
 
-    const oldStatus = defect.status;
-    const [updated] = await db.update(schema.defects)
-      .set({
-        status: rollbackStatus,
-        accepted_by_business_note: null,
-        updated_at: new Date(),
-      })
-      .where(eq(schema.defects.id, defectId))
-      .returning();
-
     await logAudit({
       entityType: "defect",
       entityId: defectId,
       changedByUserId: req.user!.userId,
-      fromStatus: oldStatus,
+      fromStatus: result.before.status,
       toStatus: rollbackStatus,
       reason: data.reason,
     });
-    await logSystemNote(defectId, oldStatus, rollbackStatus, req.user!.userId, `[${decisionType}] ${data.reason}`);
-    res.json(updated);
+    await logSystemNote(defectId, result.before.status, rollbackStatus, req.user!.userId, `[${decisionType}] ${data.reason}`);
+    res.json(result.after);
   } catch (err) { next(err); }
 });
 

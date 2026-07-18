@@ -16,11 +16,17 @@ const upload = multer({
     const allowed = [
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "application/vnd.ms-excel",
+      "text/csv",
+      "application/csv",
+      "text/plain",
+      "application/vnd.ms-excel",
     ];
-    if (allowed.includes(file.mimetype)) {
+    const name = (file.originalname || "").toLowerCase();
+    const extOk = name.endsWith(".xlsx") || name.endsWith(".xls") || name.endsWith(".csv");
+    if (allowed.includes(file.mimetype) || extOk) {
       cb(null, true);
     } else {
-      cb(new Error("Invalid file type. Only .xlsx and .xls are allowed."));
+      cb(new Error("Invalid file type. Only .xlsx, .xls, and .csv are allowed."));
     }
   },
 });
@@ -64,17 +70,112 @@ interface Warning {
   reason: string;
 }
 
+/** Logical fields the importer can bind to spreadsheet columns. */
+export type ImportColumnKey =
+  | "testCase"
+  | "title"
+  | "steps"
+  | "testData"
+  | "expectedResult"
+  | "precondition"
+  | "actualResult"
+  | "status"
+  | "notes";
+
+const STRUCTURE_KEYS: ImportColumnKey[] = [
+  "testCase",
+  "title",
+  "steps",
+  "testData",
+  "expectedResult",
+  "precondition",
+];
+
+const EXECUTION_KEYS: ImportColumnKey[] = ["actualResult", "status", "notes"];
+
+function autoDetectColumnKey(raw: string): ImportColumnKey | null {
+  const cell = raw.trim().toLowerCase().replace(/[#\s]/g, "");
+  if (!cell) return null;
+  if (/^testcase/.test(cell)) return "testCase";
+  if (/^testtitle/.test(cell) || /^title/.test(cell)) return "title";
+  if (/^teststeps/.test(cell) || /^steps/.test(cell)) return "steps";
+  if (/^testdata/.test(cell) || /^data/.test(cell)) return "testData";
+  if (/^expectedresult/.test(cell) || /^expected/.test(cell)) return "expectedResult";
+  if (/^actualresult/.test(cell) || /^actual/.test(cell)) return "actualResult";
+  if (/^status/.test(cell)) return "status";
+  if (/^notes?$/.test(cell)) return "notes";
+  if (/^precondition/.test(cell)) return "precondition";
+  return null;
+}
+
+function buildColumnMap(
+  headerRow: unknown[],
+  overrides?: Partial<Record<ImportColumnKey, number | null>>,
+): Record<string, number> {
+  const map: Record<string, number> = {};
+  for (let i = 0; i < Math.min(headerRow.length, 30); i++) {
+    const key = autoDetectColumnKey(String((headerRow as any)[i] ?? ""));
+    if (key && map[key] == null) map[key] = i;
+  }
+  if (overrides) {
+    for (const [k, v] of Object.entries(overrides)) {
+      if (v == null || v === -1) {
+        delete map[k];
+      } else if (typeof v === "number" && v >= 0) {
+        map[k] = v;
+      }
+    }
+  }
+  return map;
+}
+
+function detectHeaderRow(rows: unknown[][]): {
+  headers: { index: number; label: string; autoKey: ImportColumnKey | null }[];
+  autoMap: Record<string, number>;
+  rowIndex: number;
+} | null {
+  for (let i = 0; i < Math.min(rows.length, 80); i++) {
+    const row = rows[i] as any[];
+    if (!row) continue;
+    const labels: { index: number; label: string; autoKey: ImportColumnKey | null }[] = [];
+    let hasTestCase = false;
+    let hasSteps = false;
+    for (let c = 0; c < Math.min(row.length, 30); c++) {
+      const label = String(row[c] ?? "").trim();
+      if (!label) continue;
+      const autoKey = autoDetectColumnKey(label);
+      labels.push({ index: c, label, autoKey });
+      if (autoKey === "testCase") hasTestCase = true;
+      if (autoKey === "steps") hasSteps = true;
+    }
+    if (hasTestCase && hasSteps && labels.length >= 2) {
+      return {
+        headers: labels,
+        autoMap: buildColumnMap(row),
+        rowIndex: i,
+      };
+    }
+  }
+  return null;
+}
+
 /**
- * Parse a spreadsheet buffer and extract metadata + use-case/test-case/step data.
+ * Parse a spreadsheet/CSV buffer and extract metadata + use-case/test-case/step data.
+ * Execution columns (Actual Result, Status, Notes) are never imported.
  */
 function parseImportFile(
   buffer: Buffer,
+  columnOverrides?: Partial<Record<ImportColumnKey, number | null>>,
 ): {
   suggestedMetadata: SuggestedMetadata;
   parsedUseCases: ParsedUseCase[];
   warnings: Warning[];
+  detectedHeaders: { index: number; label: string; autoKey: ImportColumnKey | null }[];
+  columnMap: Record<string, number>;
+  structureOnly: true;
+  ignoredExecutionColumns: string[];
 } {
-  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const workbook = XLSX.read(buffer, { type: "buffer", raw: false });
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) throw new Error("Spreadsheet has no sheets");
   const sheet = workbook.Sheets[sheetName];
@@ -82,7 +183,6 @@ function parseImportFile(
 
   if (rows.length === 0) throw new Error("Spreadsheet is empty");
 
-  // Phase 1: Extract header-block metadata
   const suggestedMetadata: SuggestedMetadata = {
     projectName: null,
     moduleName: null,
@@ -146,13 +246,20 @@ function parseImportFile(
     }
   }
 
-  // Phase 2: Parse use cases, test cases, steps
+  const headerInfo = detectHeaderRow(rows);
+  const detectedHeaders = headerInfo?.headers ?? [];
+  let defaultMap = headerInfo?.autoMap ?? {};
+
   const parsedUseCases: ParsedUseCase[] = [];
   let currentUseCase: ParsedUseCase | null = null;
   let currentTestCase: ParsedTestCase | null = null;
   let columnMap: Record<string, number> | null = null;
+  let lastAppliedMap: Record<string, number> = {};
 
   const UC_REGEX = /^Use Case\s+([\w-]+):\s*(.*)$/i;
+
+  // Flat CSV without "Use Case" headers: create a single default scenario
+  const hasUseCaseHeaders = rows.some((r) => /^Use Case\s+/i.test(String((r as any)?.[0] ?? "").trim()));
 
   for (let i = dataStartRow; i < rows.length; i++) {
     const row = rows[i] as any;
@@ -175,13 +282,51 @@ function parseImportFile(
       continue;
     }
 
-    if (!currentUseCase) continue;
+    if (!currentUseCase) {
+      if (!hasUseCaseHeaders && headerInfo && i === headerInfo.rowIndex) {
+        // Fall through to header detection below after creating default UC
+        currentUseCase = {
+          code: "UC-01",
+          name: suggestedMetadata.moduleName || suggestedMetadata.projectName || "Imported Scenarios",
+          testCases: [],
+        };
+        parsedUseCases.push(currentUseCase);
+      } else if (!hasUseCaseHeaders && headerInfo && i > headerInfo.rowIndex) {
+        if (!currentUseCase) {
+          currentUseCase = {
+            code: "UC-01",
+            name: suggestedMetadata.moduleName || suggestedMetadata.projectName || "Imported Scenarios",
+            testCases: [],
+          };
+          parsedUseCases.push(currentUseCase);
+        }
+      } else {
+        continue;
+      }
+    }
 
     const clean0 = cell0.toLowerCase().replace(/[#\s]/g, "");
     if (clean0 === "testcase" || clean0 === "testcase#" || /^test\s*case/i.test(cell0)) {
-      columnMap = buildColumnMap(row);
+      columnMap = buildColumnMap(row, columnOverrides);
+      lastAppliedMap = columnMap;
       currentTestCase = null;
       continue;
+    }
+
+    // Flat file: first header row already detected — apply map once
+    if (!columnMap && headerInfo && i === headerInfo.rowIndex) {
+      columnMap = buildColumnMap(row, columnOverrides);
+      lastAppliedMap = columnMap;
+      currentTestCase = null;
+      continue;
+    }
+
+    if (!columnMap && headerInfo && !hasUseCaseHeaders && i > headerInfo.rowIndex) {
+      columnMap = buildColumnMap(
+        rows[headerInfo.rowIndex] as unknown[],
+        columnOverrides,
+      );
+      lastAppliedMap = columnMap;
     }
 
     if (!columnMap) continue;
@@ -198,7 +343,7 @@ function parseImportFile(
 
     if (testCaseCell && stepsCell) {
       if (currentTestCase) {
-        currentUseCase.testCases.push(currentTestCase);
+        currentUseCase!.testCases.push(currentTestCase);
       }
       const titleCell = titleIdx != null ? String(row[titleIdx] ?? "").trim() : "";
       currentTestCase = {
@@ -226,7 +371,20 @@ function parseImportFile(
     currentUseCase.testCases.push(currentTestCase);
   }
 
-  // Phase 3: Detect warnings
+  // If overrides provided but no per-section header was hit, ensure map reflects overrides
+  if (columnOverrides && Object.keys(lastAppliedMap).length === 0 && headerInfo) {
+    lastAppliedMap = buildColumnMap(rows[headerInfo.rowIndex] as unknown[], columnOverrides);
+  }
+  if (Object.keys(lastAppliedMap).length === 0) {
+    lastAppliedMap = defaultMap;
+    if (columnOverrides) {
+      lastAppliedMap = buildColumnMap(
+        headerInfo ? (rows[headerInfo.rowIndex] as unknown[]) : [],
+        columnOverrides,
+      );
+    }
+  }
+
   const warnings: Warning[] = [];
   for (const uc of parsedUseCases) {
     const realCases = uc.testCases.filter((tc) =>
@@ -267,7 +425,71 @@ function parseImportFile(
     }
   }
 
-  return { suggestedMetadata, parsedUseCases, warnings };
+  const ignoredExecutionColumns = detectedHeaders
+    .filter((h) => h.autoKey && EXECUTION_KEYS.includes(h.autoKey))
+    .map((h) => h.label);
+
+  return {
+    suggestedMetadata,
+    parsedUseCases,
+    warnings,
+    detectedHeaders,
+    columnMap: lastAppliedMap,
+    structureOnly: true,
+    ignoredExecutionColumns,
+  };
+}
+
+function parseColumnOverrides(raw: unknown): Partial<Record<ImportColumnKey, number | null>> | undefined {
+  if (raw == null || raw === "") return undefined;
+  let obj: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!obj || typeof obj !== "object") return undefined;
+  const out: Partial<Record<ImportColumnKey, number | null>> = {};
+  for (const key of [...STRUCTURE_KEYS, ...EXECUTION_KEYS]) {
+    if (key in (obj as object)) {
+      const v = (obj as any)[key];
+      if (v === null || v === "" || v === -1) out[key] = null;
+      else if (typeof v === "number" && Number.isFinite(v)) out[key] = v;
+      else if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) out[key] = Number(v);
+    }
+  }
+  return out;
+}
+
+function previewPayload(parsed: ReturnType<typeof parseImportFile>) {
+  return {
+    suggestedProjectMetadata: parsed.suggestedMetadata,
+    useCases: parsed.parsedUseCases,
+    warnings: parsed.warnings,
+    totals: {
+      useCases: parsed.parsedUseCases.length,
+      testCases: parsed.parsedUseCases.reduce((s, uc) => s + uc.testCases.length, 0),
+      steps: parsed.parsedUseCases.reduce(
+        (s, uc) => s + uc.testCases.reduce((ss, tc) => ss + tc.steps.length, 0),
+        0,
+      ),
+    },
+    detectedHeaders: parsed.detectedHeaders,
+    columnMap: parsed.columnMap,
+    structureOnly: true as const,
+    ignoredExecutionColumns: parsed.ignoredExecutionColumns,
+    mappableFields: [
+      { key: "testCase", label: "Test Case #", required: true },
+      { key: "title", label: "Title", required: false },
+      { key: "steps", label: "Steps", required: true },
+      { key: "testData", label: "Test Data", required: false },
+      { key: "expectedResult", label: "Expected Result", required: false },
+      { key: "precondition", label: "Precondition", required: false },
+    ],
+    note: "Import is structure-only. Actual Result, Status (Pass/Fail), and Notes columns are never imported.",
+  };
 }
 
 // POST /api/import/preview — dry-run parse without requiring a project
@@ -282,23 +504,11 @@ router.post(
         return;
       }
 
-      const { suggestedMetadata, parsedUseCases, warnings } = parseImportFile(req.file.buffer);
-
-      res.json({
-        suggestedProjectMetadata: suggestedMetadata,
-        useCases: parsedUseCases,
-        warnings,
-        totals: {
-          useCases: parsedUseCases.length,
-          testCases: parsedUseCases.reduce((s, uc) => s + uc.testCases.length, 0),
-          steps: parsedUseCases.reduce(
-            (s, uc) => s + uc.testCases.reduce((ss, tc) => ss + tc.steps.length, 0),
-            0,
-          ),
-        },
-      });
+      const overrides = parseColumnOverrides((req.body as any)?.columnMap);
+      const parsed = parseImportFile(req.file.buffer, overrides);
+      res.json(previewPayload(parsed));
     } catch (err) {
-      if (err instanceof Error && (err.message.includes("Invalid file type") || err.message.includes("Spreadsheet"))) {
+      if (err instanceof Error && (err.message.includes("Invalid file type") || err.message.includes("Spreadsheet") || err.message.includes("empty"))) {
         res.status(400).json({ message: err.message });
         return;
       }
@@ -332,35 +542,21 @@ router.post(
       }
 
       const dryRun = req.query.dryRun === "true";
+      const overrides = parseColumnOverrides((req.body as any)?.columnMap);
+      const parsed = parseImportFile(req.file.buffer, overrides);
 
-      const { suggestedMetadata, parsedUseCases, warnings } = parseImportFile(req.file.buffer);
-
-      // Phase 4: Dry-run
       if (dryRun) {
-        res.json({
-          suggestedProjectMetadata: suggestedMetadata,
-          useCases: parsedUseCases,
-          warnings,
-          totals: {
-            useCases: parsedUseCases.length,
-            testCases: parsedUseCases.reduce((s, uc) => s + uc.testCases.length, 0),
-            steps: parsedUseCases.reduce(
-              (s, uc) => s + uc.testCases.reduce((ss, tc) => ss + tc.steps.length, 0),
-              0,
-            ),
-          },
-        });
+        res.json(previewPayload(parsed));
         return;
       }
 
-      // Phase 5: Transactional import
       let useCasesCreated = 0;
       let testCasesCreated = 0;
       let stepsCreated = 0;
 
       await db.transaction(async (tx) => {
-        for (const uc of parsedUseCases) {
-          const warning = warnings.find(
+        for (const uc of parsed.parsedUseCases) {
+          const warning = parsed.warnings.find(
             (w) =>
               w.useCaseCode === uc.code &&
               w.reason.includes("no test cases with step content")
@@ -435,11 +631,12 @@ router.post(
         useCasesCreated,
         testCasesCreated,
         stepsCreated,
-        warnings,
+        warnings: parsed.warnings,
         suggestedProjectMetadata: null,
+        structureOnly: true,
       });
     } catch (err) {
-      if (err instanceof Error && (err.message.includes("Invalid file type") || err.message.includes("Spreadsheet"))) {
+      if (err instanceof Error && (err.message.includes("Invalid file type") || err.message.includes("Spreadsheet") || err.message.includes("empty"))) {
         res.status(400).json({ message: err.message });
         return;
       }
@@ -447,26 +644,5 @@ router.post(
     }
   }
 );
-
-function buildColumnMap(headerRow: Record<string, string>): Record<string, number> {
-  const map: Record<string, number> = {};
-  for (let i = 0; i < 20; i++) {
-    const cell = String((headerRow as any)[i] ?? "")
-      .trim()
-      .toLowerCase()
-      .replace(/[#\s]/g, "");
-
-    if (/^testcase/.test(cell)) map["testCase"] = i;
-    else if (/^testtitle/.test(cell) || /^title/i.test(cell)) map["title"] = i;
-    else if (/^teststeps/.test(cell) || /^steps/i.test(cell)) map["steps"] = i;
-    else if (/^testdata/.test(cell) || /^data/i.test(cell)) map["testData"] = i;
-    else if (/^expectedresult/.test(cell) || /^expected/i.test(cell)) map["expectedResult"] = i;
-    else if (/^actualresult/.test(cell) || /^actual/i.test(cell)) map["actualResult"] = i;
-    else if (/^status/.test(cell)) map["status"] = i;
-    else if (/^notes?$/.test(cell)) map["notes"] = i;
-    else if (/^precondition/i.test(cell)) map["precondition"] = i;
-  }
-  return map;
-}
 
 export default router;

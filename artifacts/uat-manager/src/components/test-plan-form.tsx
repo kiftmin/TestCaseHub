@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "./ui/button";
 import { Field, inputBaseClass, inputInvalidClass, inputValidClass } from "./ui/field";
@@ -10,6 +10,25 @@ import { SlideOver } from "./ui/slide-over";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import type { Project, User } from "../types/api";
+
+export interface DraftStep {
+  instruction: string;
+  testData: string;
+  expectedResult: string;
+}
+
+export interface DraftTestCase {
+  caseNumber: string;
+  title: string;
+  precondition: string;
+  steps: DraftStep[];
+}
+
+export interface DraftScenario {
+  code: string;
+  name: string;
+  testCases: DraftTestCase[];
+}
 
 export interface TestPlanFormData {
   name: string;
@@ -23,6 +42,8 @@ export interface TestPlanFormData {
   outOfScope: string;
   entryCriteria: string;
   exitCriteria: string;
+  /** Create mode only — optional initial plan structure */
+  structure?: DraftScenario[];
 }
 
 interface TestPlanFormProps {
@@ -34,12 +55,35 @@ interface TestPlanFormProps {
   initial?: Project;
 }
 
-const STEPS: Step[] = [
+const CREATE_STEPS: Step[] = [
+  { key: "overview", label: "Overview" },
+  { key: "team", label: "Team & Timeline" },
+  { key: "scope", label: "Scope & Criteria" },
+  { key: "structure", label: "Structure" },
+  { key: "review", label: "Review" },
+];
+
+const EDIT_STEPS: Step[] = [
   { key: "overview", label: "Overview" },
   { key: "team", label: "Team & Timeline" },
   { key: "scope", label: "Scope & Criteria" },
   { key: "review", label: "Review" },
 ];
+
+function emptyScenario(index: number): DraftScenario {
+  return {
+    code: `UC-${String(index + 1).padStart(2, "0")}`,
+    name: "",
+    testCases: [
+      {
+        caseNumber: "1",
+        title: "",
+        precondition: "",
+        steps: [{ instruction: "", testData: "", expectedResult: "" }],
+      },
+    ],
+  };
+}
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -88,10 +132,13 @@ export function TestPlanForm({
   initial,
 }: TestPlanFormProps) {
   const currentUser = getStoredUser();
+  const steps = mode === "create" ? CREATE_STEPS : EDIT_STEPS;
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<TestPlanFormData>(() =>
     mode === "edit" && initial ? fromProject(initial) : makeEmpty()
   );
+  const [structure, setStructure] = useState<DraftScenario[]>([]);
+  const [structureError, setStructureError] = useState<string | null>(null);
   const [errors, setErrors] = useState<FormErrors>({});
   const [completed, setCompleted] = useState<number[]>([]);
 
@@ -107,7 +154,9 @@ export function TestPlanForm({
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setStep(0);
       setErrors({});
+      setStructureError(null);
       setCompleted([]);
+      setStructure([]);
       setForm(
         mode === "edit" && initial
           ? fromProject(initial)
@@ -134,20 +183,26 @@ export function TestPlanForm({
     [users]
   );
 
+  /** Map create-step index to validation domain */
   const validateStep = (s: number): FormErrors => {
     const errs: FormErrors = {};
-    if (s === 0) {
+    const key = steps[s]?.key;
+    if (key === "overview") {
       if (!form.name.trim()) errs.name = "Project name is required";
       if (!form.moduleName.trim()) errs.moduleName = "Module is required";
       if (form.testLink.trim() && !/^https?:\/\/\S+$/i.test(form.testLink.trim())) {
         errs.testLink = "Enter a valid URL (http:// or https://)";
       }
-    } else if (s === 1) {
+    } else if (key === "team") {
       if (!form.designedBy.trim()) errs.designedBy = "Designer name is required";
       if (!form.designDate) errs.designDate = "Design date is required";
       if (mode === "create" && form.testLeadId == null) {
         errs.testLeadId = "Test lead is required";
       }
+    } else if (key === "structure") {
+      const msg = validateStructure(structure);
+      if (msg) setStructureError(msg);
+      else setStructureError(null);
     }
     return errs;
   };
@@ -156,55 +211,88 @@ export function TestPlanForm({
     const errs = validateStep(step);
     setErrors(errs);
     if (Object.keys(errs).length > 0) return;
+    if (steps[step]?.key === "structure") {
+      const msg = validateStructure(structure);
+      if (msg) {
+        setStructureError(msg);
+        return;
+      }
+      setStructureError(null);
+    }
     setCompleted((c) => (c.includes(step) ? c : [...c, step]));
-    setStep((s) => Math.min(s + 1, STEPS.length - 1));
+    setStep((s) => Math.min(s + 1, steps.length - 1));
   };
 
   const handleBack = () => {
     setErrors({});
+    setStructureError(null);
     setStep((s) => Math.max(s - 1, 0));
   };
 
   const handleStepClick = (idx: number) => {
     if (idx <= step || completed.includes(idx)) {
       setErrors({});
+      setStructureError(null);
       setStep(idx);
     }
   };
 
   const handleSubmit = () => {
-    for (let s = 0; s < STEPS.length - 1; s++) {
+    for (let s = 0; s < steps.length - 1; s++) {
       const errs = validateStep(s);
       if (Object.keys(errs).length > 0) {
         setErrors(errs);
         setStep(s);
         return;
       }
+      if (steps[s]?.key === "structure") {
+        const msg = validateStructure(structure);
+        if (msg) {
+          setStructureError(msg);
+          setStep(s);
+          return;
+        }
+      }
     }
-    onSave(form);
+    const payload: TestPlanFormData = {
+      ...form,
+      ...(mode === "create" && structure.length > 0
+        ? { structure: structure.filter(hasMeaningfulScenario) }
+        : {}),
+    };
+    onSave(payload);
   };
 
   const title = mode === "create" ? "Create Test Plan" : "Edit Test Plan";
   const subtitle =
     mode === "create"
-      ? "Define the scope, ownership, and entry/exit criteria for this test plan."
+      ? "Define scope, ownership, criteria, and optionally seed scenarios, cases, and steps."
       : "Update this test plan's metadata. The project code cannot be changed.";
-  const submitLabel = mode === "create" ? "Create Project" : "Save Changes";
+  const submitLabel =
+    mode === "create"
+      ? structure.filter(hasMeaningfulScenario).length > 0
+        ? "Create Plan & Structure"
+        : "Create Project"
+      : "Save Changes";
   const submittingLabel = mode === "create" ? "Creating..." : "Saving...";
+
+  const currentKey = steps[step]?.key;
 
   return (
     <SlideOver open={open} onClose={onClose} title={title} subtitle={subtitle}>
       <div className="p-lg space-y-lg">
         <Stepper
-          steps={STEPS}
+          steps={steps}
           currentIndex={step}
           completedIndices={completed}
           onStepClick={handleStepClick}
         />
 
         <div className="min-h-[360px]">
-          {step === 0 && <OverviewStep form={form} errors={errors} set={set} />}
-          {step === 1 && (
+          {currentKey === "overview" && (
+            <OverviewStep form={form} errors={errors} set={set} />
+          )}
+          {currentKey === "team" && (
             <TeamStep
               form={form}
               errors={errors}
@@ -213,13 +301,22 @@ export function TestPlanForm({
               allowNullLead={mode === "edit"}
             />
           )}
-          {step === 2 && <ScopeStep form={form} errors={errors} set={set} />}
-          {step === 3 && (
+          {currentKey === "scope" && <ScopeStep form={form} errors={errors} set={set} />}
+          {currentKey === "structure" && (
+            <StructureStep
+              structure={structure}
+              setStructure={setStructure}
+              error={structureError}
+            />
+          )}
+          {currentKey === "review" && (
             <ReviewStep
               form={form}
               users={activeUsers}
               projectCode={initial?.project_code}
               onJumpToStep={handleStepClick}
+              structure={mode === "create" ? structure : undefined}
+              isCreate={mode === "create"}
             />
           )}
         </div>
@@ -236,7 +333,7 @@ export function TestPlanForm({
               Back
             </Button>
           )}
-          {step < STEPS.length - 1 ? (
+          {step < steps.length - 1 ? (
             <Button variant="primary" onClick={handleNext} disabled={saving}>
               Continue
               <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
@@ -250,6 +347,51 @@ export function TestPlanForm({
       </div>
     </SlideOver>
   );
+}
+
+function hasMeaningfulScenario(s: DraftScenario): boolean {
+  if (!s.code.trim() || !s.name.trim()) return false;
+  return s.testCases.some(
+    (tc) =>
+      tc.caseNumber.trim() &&
+      tc.title.trim() &&
+      tc.steps.some((st) => st.instruction.trim())
+  );
+}
+
+/** Empty structure is allowed (skip). Partial/invalid rows must be fixed or removed. */
+function validateStructure(structure: DraftScenario[]): string | null {
+  if (structure.length === 0) return null;
+  for (const s of structure) {
+    const empty =
+      !s.code.trim() &&
+      !s.name.trim() &&
+      s.testCases.every(
+        (tc) =>
+          !tc.caseNumber.trim() &&
+          !tc.title.trim() &&
+          tc.steps.every((st) => !st.instruction.trim())
+      );
+    if (empty) continue;
+    if (!s.code.trim() || !s.name.trim()) {
+      return "Each scenario needs a code and name (or remove empty scenarios).";
+    }
+    const meaningful = s.testCases.filter(
+      (tc) => tc.caseNumber.trim() || tc.title.trim() || tc.steps.some((st) => st.instruction.trim())
+    );
+    if (meaningful.length === 0) {
+      return `Scenario ${s.code || "?"} needs at least one test case with a step.`;
+    }
+    for (const tc of meaningful) {
+      if (!tc.caseNumber.trim() || !tc.title.trim()) {
+        return `Scenario ${s.code}: each test case needs a number and title.`;
+      }
+      if (!tc.steps.some((st) => st.instruction.trim())) {
+        return `Scenario ${s.code}, case ${tc.caseNumber}: add at least one step instruction.`;
+      }
+    }
+  }
+  return null;
 }
 
 /* ───────────── Step 1: Overview ───────────── */
@@ -634,11 +776,15 @@ function ReviewStep({
   users,
   projectCode,
   onJumpToStep,
+  structure,
+  isCreate,
 }: {
   form: TestPlanFormData;
   users: User[];
   projectCode?: string;
   onJumpToStep: (idx: number) => void;
+  structure?: DraftScenario[];
+  isCreate?: boolean;
 }) {
   const display = (v: string | null | undefined) =>
     v && v.trim() ? v : "—";
@@ -646,6 +792,17 @@ function ReviewStep({
   const designDate = form.designDate
     ? new Date(form.designDate + "T00:00:00").toLocaleDateString()
     : "—";
+  const meaningful = (structure ?? []).filter(hasMeaningfulScenario);
+  const caseCount = meaningful.reduce((n, s) => n + s.testCases.filter((tc) => tc.title.trim()).length, 0);
+  const stepCount = meaningful.reduce(
+    (n, s) =>
+      n +
+      s.testCases.reduce(
+        (nn, tc) => nn + tc.steps.filter((st) => st.instruction.trim()).length,
+        0
+      ),
+    0
+  );
 
   return (
     <div className="space-y-md">
@@ -697,7 +854,301 @@ function ReviewStep({
           { label: "Exit Criteria", value: display(form.exitCriteria), multiline: true },
         ]}
       />
+
+      {isCreate && (
+        <ReviewCard
+          stepIndex={3}
+          title="Initial Structure"
+          onJumpToStep={onJumpToStep}
+          rows={[
+            {
+              label: "Scenarios",
+              value:
+                meaningful.length === 0
+                  ? "None — you can add scenarios later or import from Excel"
+                  : `${meaningful.length} scenario(s), ${caseCount} case(s), ${stepCount} step(s)`,
+            },
+          ]}
+        />
+      )}
     </div>
+  );
+}
+
+/* ───────────── Create: Structure step ───────────── */
+
+function StructureStep({
+  structure,
+  setStructure,
+  error,
+}: {
+  structure: DraftScenario[];
+  setStructure: Dispatch<SetStateAction<DraftScenario[]>>;
+  error: string | null;
+}) {
+  const updateScenario = (si: number, patch: Partial<DraftScenario>) => {
+    setStructure((list) => list.map((s, i) => (i === si ? { ...s, ...patch } : s)));
+  };
+
+  const updateCase = (si: number, ci: number, patch: Partial<DraftTestCase>) => {
+    setStructure((list) =>
+      list.map((s, i) => {
+        if (i !== si) return s;
+        return {
+          ...s,
+          testCases: s.testCases.map((tc, j) => (j === ci ? { ...tc, ...patch } : tc)),
+        };
+      })
+    );
+  };
+
+  const updateStep = (
+    si: number,
+    ci: number,
+    sti: number,
+    patch: Partial<DraftStep>
+  ) => {
+    setStructure((list) =>
+      list.map((s, i) => {
+        if (i !== si) return s;
+        return {
+          ...s,
+          testCases: s.testCases.map((tc, j) => {
+            if (j !== ci) return tc;
+            return {
+              ...tc,
+              steps: tc.steps.map((st, k) => (k === sti ? { ...st, ...patch } : st)),
+            };
+          }),
+        };
+      })
+    );
+  };
+
+  return (
+    <FormSection
+      title="Initial Structure"
+      description="Optionally seed scenarios, test cases, and steps now. You can skip this and import from Excel or add them later on the Test Plan tab."
+    >
+      {error && (
+        <div className="p-sm rounded-lg border border-error bg-error-container text-body-sm text-on-error-container">
+          {error}
+        </div>
+      )}
+
+      {structure.length === 0 ? (
+        <div className="flex flex-col items-center gap-md py-lg border border-dashed border-outline-variant rounded-xl">
+          <span className="material-symbols-outlined text-[40px] text-on-surface-variant">
+            account_tree
+          </span>
+          <p className="text-body-sm text-on-surface-variant text-center max-w-sm">
+            No scenarios yet. Add one to start building the plan, or continue and leave the plan
+            empty.
+          </p>
+          <Button
+            variant="secondary"
+            onClick={() => setStructure([emptyScenario(0)])}
+          >
+            <span className="material-symbols-outlined text-[18px]">add</span>
+            Add scenario
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-md">
+          {structure.map((sc, si) => (
+            <div
+              key={si}
+              className="border border-outline-variant rounded-xl p-md space-y-md bg-surface-container-lowest"
+            >
+              <div className="flex items-start justify-between gap-sm">
+                <p className="text-label-sm font-label-sm text-on-surface-variant uppercase tracking-wider">
+                  Scenario {si + 1}
+                </p>
+                <button
+                  type="button"
+                  className="text-on-surface-variant hover:text-error text-label-sm"
+                  onClick={() => setStructure((list) => list.filter((_, i) => i !== si))}
+                >
+                  Remove
+                </button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-md">
+                <Field label="Code" required>
+                  <input
+                    type="text"
+                    value={sc.code}
+                    onChange={(e) => updateScenario(si, { code: e.target.value })}
+                    placeholder="UC-01"
+                    className={`${inputBaseClass} font-mono ${inputValidClass}`}
+                  />
+                </Field>
+                <div className="md:col-span-2">
+                  <Field label="Scenario name" required>
+                    <input
+                      type="text"
+                      value={sc.name}
+                      onChange={(e) => updateScenario(si, { name: e.target.value })}
+                      placeholder="e.g. User can log in"
+                      className={`${inputBaseClass} ${inputValidClass}`}
+                    />
+                  </Field>
+                </div>
+              </div>
+
+              {sc.testCases.map((tc, ci) => (
+                <div
+                  key={ci}
+                  className="ml-0 md:ml-md border-l-2 border-outline-variant pl-md space-y-sm"
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-label-sm text-on-surface-variant">Test case {ci + 1}</p>
+                    {sc.testCases.length > 1 && (
+                      <button
+                        type="button"
+                        className="text-label-sm text-on-surface-variant hover:text-error"
+                        onClick={() =>
+                          updateScenario(si, {
+                            testCases: sc.testCases.filter((_, j) => j !== ci),
+                          })
+                        }
+                      >
+                        Remove case
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-sm">
+                    <Field label="Case #">
+                      <input
+                        type="text"
+                        value={tc.caseNumber}
+                        onChange={(e) => updateCase(si, ci, { caseNumber: e.target.value })}
+                        placeholder="1"
+                        className={`${inputBaseClass} ${inputValidClass}`}
+                      />
+                    </Field>
+                    <div className="md:col-span-2">
+                      <Field label="Title">
+                        <input
+                          type="text"
+                          value={tc.title}
+                          onChange={(e) => updateCase(si, ci, { title: e.target.value })}
+                          placeholder="Happy path"
+                          className={`${inputBaseClass} ${inputValidClass}`}
+                        />
+                      </Field>
+                    </div>
+                  </div>
+                  <Field label="Precondition">
+                    <input
+                      type="text"
+                      value={tc.precondition}
+                      onChange={(e) => updateCase(si, ci, { precondition: e.target.value })}
+                      placeholder="Optional"
+                      className={`${inputBaseClass} ${inputValidClass}`}
+                    />
+                  </Field>
+
+                  {tc.steps.map((st, sti) => (
+                    <div key={sti} className="grid grid-cols-1 gap-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-label-sm text-on-surface-variant">
+                          Step {sti + 1}
+                        </span>
+                        {tc.steps.length > 1 && (
+                          <button
+                            type="button"
+                            className="text-label-sm text-on-surface-variant hover:text-error"
+                            onClick={() =>
+                              updateCase(si, ci, {
+                                steps: tc.steps.filter((_, k) => k !== sti),
+                              })
+                            }
+                          >
+                            Remove step
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        value={st.instruction}
+                        onChange={(e) =>
+                          updateStep(si, ci, sti, { instruction: e.target.value })
+                        }
+                        placeholder="Instruction"
+                        className={`${inputBaseClass} ${inputValidClass}`}
+                      />
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-sm">
+                        <input
+                          type="text"
+                          value={st.testData}
+                          onChange={(e) =>
+                            updateStep(si, ci, sti, { testData: e.target.value })
+                          }
+                          placeholder="Test data (optional)"
+                          className={`${inputBaseClass} ${inputValidClass}`}
+                        />
+                        <input
+                          type="text"
+                          value={st.expectedResult}
+                          onChange={(e) =>
+                            updateStep(si, ci, sti, { expectedResult: e.target.value })
+                          }
+                          placeholder="Expected result (optional)"
+                          className={`${inputBaseClass} ${inputValidClass}`}
+                        />
+                      </div>
+                    </div>
+                  ))}
+
+                  <Button
+                    variant="ghost"
+                    onClick={() =>
+                      updateCase(si, ci, {
+                        steps: [
+                          ...tc.steps,
+                          { instruction: "", testData: "", expectedResult: "" },
+                        ],
+                      })
+                    }
+                  >
+                    <span className="material-symbols-outlined text-[16px]">add</span>
+                    Add step
+                  </Button>
+                </div>
+              ))}
+
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  updateScenario(si, {
+                    testCases: [
+                      ...sc.testCases,
+                      {
+                        caseNumber: String(sc.testCases.length + 1),
+                        title: "",
+                        precondition: "",
+                        steps: [{ instruction: "", testData: "", expectedResult: "" }],
+                      },
+                    ],
+                  })
+                }
+              >
+                <span className="material-symbols-outlined text-[16px]">add</span>
+                Add test case
+              </Button>
+            </div>
+          ))}
+
+          <Button
+            variant="secondary"
+            onClick={() => setStructure((list) => [...list, emptyScenario(list.length)])}
+          >
+            <span className="material-symbols-outlined text-[18px]">add</span>
+            Add scenario
+          </Button>
+        </div>
+      )}
+    </FormSection>
   );
 }
 

@@ -1,5 +1,5 @@
 import express from "express";
-import { eq, desc, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
@@ -103,6 +103,59 @@ router.post("/bulk", async (req: AuthenticatedRequest, res, next) => {
   } catch (err) {
     if (err instanceof Error && err.message.includes("test_steps_test_case_id_step_number_unique")) {
       res.status(409).json({ message: `One or more step numbers already exist in this test case.` });
+      return;
+    }
+    next(err);
+  }
+});
+
+// PUT /api/test-steps/reorder — atomic reorder within a test case
+router.put("/reorder", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const parsed = z.object({
+      steps: z.array(z.object({ id: z.number(), step_number: z.string() })),
+    }).parse(req.body);
+
+    if (parsed.steps.length === 0) { res.status(400).json({ message: "No steps provided" }); return; }
+
+    // Verify all steps belong to the same test case and user has access
+    const steps = await db.query.testSteps.findMany({
+      where: inArray(schema.testSteps.id, parsed.steps.map(s => s.id)),
+      with: { testCase: true },
+    });
+    if (steps.length !== parsed.steps.length) {
+      res.status(404).json({ message: "One or more steps not found" }); return;
+    }
+    const testCaseId = steps[0].test_case_id;
+    if (steps.some(s => s.test_case_id !== testCaseId)) {
+      res.status(400).json({ message: "All steps must belong to the same test case" }); return;
+    }
+
+    const useCase = await db.query.useCases.findFirst({ where: eq(schema.useCases.id, steps[0].testCase.use_case_id) });
+    if (!useCase) { res.status(404).json({ message: "Use case not found" }); return; }
+
+    const allowed = await checkProjectRole(req, useCase.project_id, ["TEST_LEAD", "TEST_AUTHOR"]);
+    if (!allowed && req.user!.role !== "ADMIN") { res.status(403).json({ message: "Forbidden" }); return; }
+
+    // Atomic reorder: set to negative temp values then to final values (same transaction avoids unique conflicts)
+    await db.transaction(async (tx) => {
+      for (let i = 0; i < parsed.steps.length; i++) {
+        await tx.update(schema.testSteps)
+          .set({ step_number: String(-(i + 1)) })
+          .where(eq(schema.testSteps.id, parsed.steps[i].id));
+      }
+      for (let i = 0; i < parsed.steps.length; i++) {
+        await tx.update(schema.testSteps)
+          .set({ step_number: parsed.steps[i].step_number })
+          .where(eq(schema.testSteps.id, parsed.steps[i].id));
+      }
+    });
+
+    await bumpProjectVersion(useCase.project_id);
+    res.json({ success: true });
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("test_steps_test_case_id_step_number_unique")) {
+      res.status(409).json({ message: `Step number already exists in this test case.` });
       return;
     }
     next(err);

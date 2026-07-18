@@ -36,6 +36,9 @@ async function main() {
     "0018_integrity_uniques_and_indexes.sql",
     "0019_test_run_case_scope.sql",
     "0020_clear_test_run_data.sql",
+    "0021_project_preconditions.sql",
+    "0022_shared_step_blocks.sql",
+    "0023_reset_sign_off_for_gremlin_world.sql",
   ];
   for (const file of rawSqlFiles) {
     const rawSqlPath = join(__dirname, "..", "drizzle", file);

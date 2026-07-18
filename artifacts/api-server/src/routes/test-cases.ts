@@ -5,8 +5,20 @@ import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { checkProjectRole, denyUnlessProjectAccess, projectIdFromUseCase, projectIdFromTestCase, AuthenticatedRequest } from "../middlewares/auth.js";
 import { bumpProjectVersion, logAudit } from "../utils/project.js";
+import { setTestCasePreconditionLinks, resolvePreconditionDisplay } from "./preconditions.js";
 
 const router = express.Router();
+
+function linkedFromRow(tc: {
+  precondition: string | null;
+  preconditionLinks?: { precondition: { id: number; text: string } }[];
+}) {
+  const linked = (tc.preconditionLinks ?? []).map((l) => ({
+    id: l.precondition.id,
+    text: l.precondition.text,
+  }));
+  return resolvePreconditionDisplay(tc.precondition, linked);
+}
 
 // GET /api/use-cases/:useCaseId/test-cases
 router.get("/", async (req: AuthenticatedRequest, res, next) => {
@@ -17,8 +29,17 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
     const data = await db.query.testCases.findMany({
       where: eq(schema.testCases.use_case_id, useCaseId),
       orderBy: schema.testCases.sort_order,
+      with: {
+        preconditionLinks: { with: { precondition: true } },
+      },
     });
-    res.json(data);
+    res.json(
+      data.map((tc) => {
+        const { linkedPreconditions, resolvedPrecondition } = linkedFromRow(tc);
+        const { preconditionLinks: _pl, ...rest } = tc;
+        return { ...rest, linkedPreconditions, resolvedPrecondition };
+      }),
+    );
   } catch (err) { next(err); }
 });
 
@@ -29,10 +50,15 @@ router.get("/:testCaseId", async (req: AuthenticatedRequest, res, next) => {
     if (!(await denyUnlessProjectAccess(req, res, await projectIdFromTestCase(id)))) return;
     const testCase = await db.query.testCases.findFirst({
       where: eq(schema.testCases.id, id),
-      with: { steps: { orderBy: sql`CAST(${schema.testSteps.step_number} AS INTEGER)` } },
+      with: {
+        steps: { orderBy: sql`CAST(${schema.testSteps.step_number} AS INTEGER)` },
+        preconditionLinks: { with: { precondition: true } },
+      },
     });
     if (!testCase) { res.status(404).json({ message: "Test case not found" }); return; }
-    res.json(testCase);
+    const { linkedPreconditions, resolvedPrecondition } = linkedFromRow(testCase);
+    const { preconditionLinks: _pl, ...rest } = testCase;
+    res.json({ ...rest, linkedPreconditions, resolvedPrecondition });
   } catch (err) { next(err); }
 });
 
@@ -69,6 +95,7 @@ router.post("/", async (req: AuthenticatedRequest, res, next) => {
       estimated_minutes: z.number().optional(),
       acceptance_criteria: z.string().optional(),
       precondition: z.string().optional(),
+      precondition_ids: z.array(z.number()).optional(),
     }).parse(req.body);
 
     const maxSort = await db.select({ max: sql<number>`MAX(${schema.testCases.sort_order})` })
@@ -76,12 +103,31 @@ router.post("/", async (req: AuthenticatedRequest, res, next) => {
       .where(eq(schema.testCases.use_case_id, useCaseId));
     const nextSort = (maxSort[0]?.max ?? -1) + 1;
 
-    const [inserted] = await db.insert(schema.testCases).values({ ...parsed, use_case_id: useCaseId, sort_order: nextSort }).returning();
+    const { precondition_ids, ...caseFields } = parsed;
+    const [inserted] = await db.insert(schema.testCases).values({ ...caseFields, use_case_id: useCaseId, sort_order: nextSort }).returning();
+
+    if (precondition_ids) {
+      try {
+        await setTestCasePreconditionLinks(inserted.id, useCase.project_id, precondition_ids);
+      } catch (e: any) {
+        if (e?.status === 422) {
+          res.status(422).json({ message: e.message });
+          return;
+        }
+        throw e;
+      }
+    }
 
     await bumpProjectVersion(useCase.project_id);
     await logAudit({ entityType: "test_case", entityId: inserted.id, changedByUserId: req.user!.userId, toStatus: "created" });
 
-    res.status(201).json(inserted);
+    const full = await db.query.testCases.findFirst({
+      where: eq(schema.testCases.id, inserted.id),
+      with: { preconditionLinks: { with: { precondition: true } } },
+    });
+    const { linkedPreconditions, resolvedPrecondition } = linkedFromRow(full!);
+    const { preconditionLinks: _pl, ...rest } = full!;
+    res.status(201).json({ ...rest, linkedPreconditions, resolvedPrecondition });
   } catch (err) { next(err); }
 });
 
@@ -105,18 +151,38 @@ router.put("/:testCaseId", async (req: AuthenticatedRequest, res, next) => {
       estimated_minutes: z.number().nullable().optional(),
       acceptance_criteria: z.string().nullable().optional(),
       precondition: z.string().nullable().optional(),
+      precondition_ids: z.array(z.number()).optional(),
       sort_order: z.number().optional(),
     }).parse(req.body);
 
+    const { precondition_ids, ...caseFields } = parsed;
     const [updated] = await db.update(schema.testCases)
-      .set(parsed)
+      .set(caseFields)
       .where(eq(schema.testCases.id, id))
       .returning();
+
+    if (precondition_ids !== undefined) {
+      try {
+        await setTestCasePreconditionLinks(id, useCase.project_id, precondition_ids);
+      } catch (e: any) {
+        if (e?.status === 422) {
+          res.status(422).json({ message: e.message });
+          return;
+        }
+        throw e;
+      }
+    }
 
     await bumpProjectVersion(useCase.project_id);
     await logAudit({ entityType: "test_case", entityId: id, changedByUserId: req.user!.userId, toStatus: "updated" });
 
-    res.json(updated);
+    const full = await db.query.testCases.findFirst({
+      where: eq(schema.testCases.id, id),
+      with: { preconditionLinks: { with: { precondition: true } } },
+    });
+    const { linkedPreconditions, resolvedPrecondition } = linkedFromRow(full!);
+    const { preconditionLinks: _pl, ...rest } = full!;
+    res.json({ ...rest, linkedPreconditions, resolvedPrecondition });
   } catch (err) { next(err); }
 });
 

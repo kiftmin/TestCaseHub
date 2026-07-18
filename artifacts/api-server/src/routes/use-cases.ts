@@ -5,8 +5,26 @@ import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { checkProjectRole, denyUnlessProjectAccess, projectIdFromUseCase, AuthenticatedRequest } from "../middlewares/auth.js";
 import { bumpProjectVersion, logAudit } from "../utils/project.js";
+import { resolvePreconditionDisplay } from "./preconditions.js";
 
 const router = express.Router();
+
+function enrichTestCase(tc: {
+  precondition: string | null;
+  preconditionLinks?: { precondition: { id: number; text: string } }[];
+  [key: string]: unknown;
+}) {
+  const linked = (tc.preconditionLinks ?? []).map((l) => ({
+    id: l.precondition.id,
+    text: l.precondition.text,
+  }));
+  const { linkedPreconditions, resolvedPrecondition } = resolvePreconditionDisplay(
+    tc.precondition,
+    linked,
+  );
+  const { preconditionLinks: _pl, ...rest } = tc;
+  return { ...rest, linkedPreconditions, resolvedPrecondition };
+}
 
 // These routes are mounted at /api/use-cases and /api/projects/:projectId/use-cases
 // We handle the project-based route differently - note that Express router params work from the mount point
@@ -23,9 +41,21 @@ router.get("/", async (req: AuthenticatedRequest, res, next) => {
     const result = await db.query.useCases.findMany({
       where: eq(schema.useCases.project_id, projectId),
       orderBy: schema.useCases.sort_order,
-      with: { testCases: { with: { steps: true } } },
+      with: {
+        testCases: {
+          with: {
+            steps: true,
+            preconditionLinks: { with: { precondition: true } },
+          },
+        },
+      },
     });
-    res.json(result);
+    res.json(
+      result.map((uc) => ({
+        ...uc,
+        testCases: (uc.testCases ?? []).map((tc) => enrichTestCase(tc as any)),
+      })),
+    );
   } catch (err) { next(err); }
 });
 
@@ -51,13 +81,19 @@ router.get("/:useCaseId", async (req: AuthenticatedRequest, res, next) => {
       with: {
         testCases: {
           orderBy: schema.testCases.sort_order,
-          with: { steps: { orderBy: sql`CAST(${schema.testSteps.step_number} AS INTEGER)` } },
+          with: {
+            steps: { orderBy: sql`CAST(${schema.testSteps.step_number} AS INTEGER)` },
+            preconditionLinks: { with: { precondition: true } },
+          },
         },
       },
     });
     if (!data) { res.status(404).json({ message: "Not found" }); return; }
     if (!(await denyUnlessProjectAccess(req, res, data.project_id))) return;
-    res.json(data);
+    res.json({
+      ...data,
+      testCases: (data.testCases ?? []).map((tc) => enrichTestCase(tc as any)),
+    });
   } catch (err) { next(err); }
 });
 

@@ -26,6 +26,8 @@ import defectRoutes from "./routes/defects.js";
 import discussionRoutes from "./routes/discussions.js";
 import attachmentRoutes from "./routes/attachments.js";
 import importRoutes from "./routes/import-routes.js";
+import preconditionRoutes from "./routes/preconditions.js";
+import sharedStepRoutes from "./routes/shared-steps.js";
 
 const app: Express = express();
 app.use(
@@ -89,6 +91,8 @@ api.use("/", authenticate, defectRoutes);      // /defects, /test-runs/:id/defec
 api.use("/", authenticate, discussionRoutes);   // /discussions, /test-runs/:id/discussions
 api.use("/", authenticate, attachmentRoutes);   // /upload, /attachments
 api.use("/", authenticate, importRoutes);       // /projects/:projectId/import
+api.use("/", authenticate, preconditionRoutes); // /projects/:id/preconditions, /preconditions/:id
+api.use("/", authenticate, sharedStepRoutes);   // /projects/:id/shared-step-blocks, insert-shared-steps
 
 app.use("/api", api);
 app.use(errorHandler);

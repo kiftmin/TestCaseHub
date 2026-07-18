@@ -102,6 +102,33 @@ export interface UseCase {
 
 export type RetestCaseRole = "verify" | "regression" | "blocked";
 
+export interface ProjectPrecondition {
+  id: number;
+  project_id: number;
+  text: string;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface SharedStepItem {
+  id: number;
+  block_id: number;
+  step_number: string;
+  instruction: string;
+  test_data: string | null;
+  expected_result: string | null;
+  sort_order: number;
+}
+
+export interface SharedStepBlock {
+  id: number;
+  project_id: number;
+  name: string;
+  sort_order: number;
+  created_at: string;
+  items?: SharedStepItem[];
+}
+
 export interface TestCase {
   id: number;
   use_case_id: number;
@@ -110,7 +137,12 @@ export interface TestCase {
   test_type: string | null;
   estimated_minutes: number | null;
   acceptance_criteria: string | null;
+  /** Free-text case-specific precondition (optional extra beyond library links). */
   precondition: string | null;
+  /** Linked project library snippets. */
+  linkedPreconditions?: { id: number; text: string }[];
+  /** Library texts + free-text joined for display/execute/PDF. */
+  resolvedPrecondition?: string | null;
   sort_order?: number;
   created_at: string;
   steps?: TestStep[];

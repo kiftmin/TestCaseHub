@@ -218,8 +218,8 @@ function ProjectsPageContent() {
   });
 
   const createMutation = useMutation({
-    mutationFn: (data: TestPlanFormData) =>
-      customFetch<Project>("/projects", {
+    mutationFn: async (data: TestPlanFormData) => {
+      const proj = await customFetch<Project>("/projects", {
         method: "POST",
         body: JSON.stringify({
           name: data.name.trim(),
@@ -234,12 +234,83 @@ function ProjectsPageContent() {
           entryCriteria: data.entryCriteria.trim() || null,
           exitCriteria: data.exitCriteria.trim() || null,
         }),
-      }),
-    onSuccess: (proj) => {
+      });
+
+      const structure = data.structure ?? [];
+      let scenarios = 0;
+      let cases = 0;
+      let steps = 0;
+
+      for (const sc of structure) {
+        if (!sc.code.trim() || !sc.name.trim()) continue;
+        const useCase = await customFetch<{ id: number }>(
+          `/use-cases?projectId=${proj.id}`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              code: sc.code.trim(),
+              name: sc.name.trim(),
+            }),
+          }
+        );
+        scenarios++;
+
+        for (const tc of sc.testCases) {
+          if (!tc.caseNumber.trim() || !tc.title.trim()) continue;
+          const hasStep = tc.steps.some((st) => st.instruction.trim());
+          if (!hasStep) continue;
+
+          const testCase = await customFetch<{ id: number }>("/test-cases", {
+            method: "POST",
+            body: JSON.stringify({
+              use_case_id: useCase.id,
+              case_number: tc.caseNumber.trim(),
+              title: tc.title.trim(),
+              ...(tc.precondition.trim()
+                ? { precondition: tc.precondition.trim() }
+                : {}),
+            }),
+          });
+          cases++;
+
+          const stepPayload = tc.steps
+            .filter((st) => st.instruction.trim())
+            .map((st, idx) => ({
+              step_number: String(idx + 1),
+              instruction: st.instruction.trim(),
+              ...(st.testData.trim() ? { test_data: st.testData.trim() } : {}),
+              ...(st.expectedResult.trim()
+                ? { expected_result: st.expectedResult.trim() }
+                : {}),
+            }));
+
+          if (stepPayload.length > 0) {
+            await customFetch("/test-steps/bulk", {
+              method: "POST",
+              body: JSON.stringify({
+                test_case_id: testCase.id,
+                steps: stepPayload,
+              }),
+            });
+            steps += stepPayload.length;
+          }
+        }
+      }
+
+      return { proj, structureCounts: { scenarios, cases, steps } };
+    },
+    onSuccess: ({ proj, structureCounts }) => {
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       setSlideOver(false);
-      toast.success("Project created");
-      setFollowUpProject(proj);
+      if (structureCounts.scenarios > 0) {
+        toast.success(
+          `Project created with ${structureCounts.scenarios} scenario(s), ${structureCounts.cases} case(s), ${structureCounts.steps} step(s)`
+        );
+        navigate(`/projects/${proj.id}`);
+      } else {
+        toast.success("Project created");
+        setFollowUpProject(proj);
+      }
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -302,7 +373,7 @@ function ProjectsPageContent() {
                 className="bg-surface-container-high text-on-surface px-lg py-sm rounded-lg font-label-md flex items-center gap-sm border border-outline-variant hover:bg-surface-container transition-all"
               >
                 <span className="material-symbols-outlined">upload_file</span>
-                Import from Excel
+                Import Plan
               </button>
               <button
                 onClick={() => setSlideOver(true)}
@@ -551,8 +622,8 @@ function ProjectsPageContent() {
           >
             <span className="material-symbols-outlined text-secondary text-[32px]">upload_file</span>
             <div>
-              <p className="font-label-md text-on-surface">Import from Excel</p>
-              <p className="text-body-sm text-on-surface-variant">Import test cases from a spreadsheet into this project.</p>
+              <p className="font-label-md text-on-surface">Import plan structure</p>
+              <p className="text-body-sm text-on-surface-variant">Import scenarios, cases, and steps from Excel or CSV (results are never imported).</p>
             </div>
           </button>
           <button

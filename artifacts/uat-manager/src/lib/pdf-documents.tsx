@@ -484,7 +484,7 @@ function ExecFormStepRow({ step, index }: { step: ExecFormStep; index: number })
       style={[styles.formStepRow, index % 2 === 1 ? styles.formStepRowAlt : {}]}
       wrap={false}
     >
-      <Text style={[styles.formCell, { width: FORM_COL.step }]}>{step.step_number}</Text>
+      <Text style={[styles.formCell, { width: FORM_COL.step }]}>{index + 1}</Text>
       <Text style={[styles.formCell, { width: FORM_COL.desc }]}>{step.instruction}</Text>
       <Text style={[styles.formCell, { width: FORM_COL.expected }]}>{step.expected_result || "—"}</Text>
       <View style={[styles.formBlankArea, { width: FORM_COL.actual }]}>
@@ -588,58 +588,468 @@ export function TestRunExecutionFormPDF({
   );
 }
 
+const tplanRpt = StyleSheet.create({
+  page: {
+    paddingTop: 48,
+    paddingBottom: 56,
+    paddingHorizontal: 40,
+    fontFamily: "Helvetica",
+    fontSize: 9,
+    color: "#1b1b1d",
+    backgroundColor: "#ffffff",
+  },
+  topBar: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 5,
+    backgroundColor: "#1a2744",
+  },
+  headerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginBottom: 14,
+    paddingBottom: 12,
+    borderBottomWidth: 1.5,
+    borderBottomColor: "#1a2744",
+  },
+  docLabel: {
+    fontSize: 8,
+    color: "#45464d",
+    letterSpacing: 1.4,
+    textTransform: "uppercase",
+    marginBottom: 3,
+  },
+  title: {
+    fontSize: 16,
+    fontFamily: "Helvetica-Bold",
+    color: "#1a2744",
+    marginBottom: 3,
+  },
+  subtitle: {
+    fontSize: 9,
+    color: "#45464d",
+  },
+  metaBox: { alignItems: "flex-end" },
+  metaLabel: {
+    fontSize: 7,
+    color: "#45464d",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    marginBottom: 1,
+  },
+  metaValue: {
+    fontSize: 9,
+    fontFamily: "Helvetica-Bold",
+    color: "#1b1b1d",
+    marginBottom: 5,
+  },
+  summaryStrip: {
+    flexDirection: "row",
+    borderWidth: 0.75,
+    borderColor: "#d0d0d6",
+    marginBottom: 14,
+  },
+  summaryCell: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    borderRightWidth: 0.5,
+    borderRightColor: "#e0e0e5",
+    alignItems: "center",
+  },
+  summaryValue: {
+    fontSize: 14,
+    fontFamily: "Helvetica-Bold",
+    color: "#1a2744",
+  },
+  summaryLabel: {
+    fontSize: 7,
+    color: "#45464d",
+    marginTop: 2,
+    textAlign: "center",
+  },
+  sectionTitle: {
+    fontSize: 9,
+    fontFamily: "Helvetica-Bold",
+    color: "#1a2744",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    marginBottom: 6,
+    marginTop: 8,
+    paddingBottom: 3,
+    borderBottomWidth: 0.75,
+    borderBottomColor: "#d0d0d6",
+  },
+  infoGrid: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 8,
+  },
+  infoCard: {
+    flex: 1,
+    borderWidth: 0.75,
+    borderColor: "#d0d0d6",
+    padding: 7,
+    backgroundColor: "#fafafa",
+  },
+  infoLabel: {
+    fontSize: 7,
+    color: "#45464d",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    marginBottom: 2,
+  },
+  infoValue: {
+    fontSize: 8,
+    color: "#1b1b1d",
+    lineHeight: 1.35,
+  },
+  scenarioHeader: {
+    backgroundColor: "#1a2744",
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    marginTop: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  scenarioTitle: {
+    fontSize: 9,
+    fontFamily: "Helvetica-Bold",
+    color: "#ffffff",
+    flex: 1,
+  },
+  scenarioCount: {
+    fontSize: 8,
+    color: "rgba(255,255,255,0.75)",
+  },
+  testCaseCard: {
+    borderLeftWidth: 0.75,
+    borderRightWidth: 0.75,
+    borderBottomWidth: 0.5,
+    borderColor: "#e0e0e5",
+    padding: 8,
+  },
+  testCaseCardAlt: {
+    backgroundColor: "#fafafa",
+  },
+  tcTitle: {
+    fontSize: 8.5,
+    fontFamily: "Helvetica-Bold",
+    color: "#1a2744",
+    marginBottom: 3,
+    lineHeight: 1.35,
+  },
+  tcMeta: {
+    fontSize: 7.5,
+    color: "#45464d",
+    marginBottom: 1,
+    lineHeight: 1.4,
+  },
+  stepItem: {
+    flexDirection: "row",
+    marginLeft: 4,
+    marginBottom: 6,
+  },
+  stepNumber: {
+    fontSize: 7.5,
+    color: "#45464d",
+    width: 20,
+  },
+  stepText: {
+    fontSize: 7.5,
+    color: "#1b1b1d",
+    flex: 1,
+    lineHeight: 1.35,
+  },
+  stepExpected: {
+    fontSize: 7,
+    color: "#45464d",
+    fontStyle: "italic",
+  },
+  sectionDivider: {
+    borderTopWidth: 0.5,
+    borderTopColor: "#e0e0e5",
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  footer: {
+    position: "absolute",
+    bottom: 20,
+    left: 40,
+    right: 40,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    borderTopWidth: 0.75,
+    borderTopColor: "#d0d0d6",
+    paddingTop: 5,
+  },
+  footerText: { fontSize: 7, color: "#45464d" },
+  emptyState: { color: "#45464d", fontStyle: "italic", textAlign: "center", marginTop: 20 },
+  /* ── Precondition sub-header ── */
+  tcPrecondition: {
+    fontSize: 7.5,
+    color: "#45464d",
+    fontStyle: "italic",
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  /* ── Detailed step table ── */
+  stepTable: {
+    borderWidth: 0.75,
+    borderColor: "#d0d0d6",
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  stepTableHeader: {
+    flexDirection: "row",
+    backgroundColor: "#eef0f5",
+    borderBottomWidth: 0.75,
+    borderBottomColor: "#d0d0d6",
+  },
+  stepTableHeaderCell: {
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+    fontSize: 7,
+    fontFamily: "Helvetica-Bold",
+    color: "#1a2744",
+    textTransform: "uppercase",
+  },
+  stepTableRow: {
+    flexDirection: "row",
+    borderBottomWidth: 0.5,
+    borderBottomColor: "#e0e0e5",
+    minHeight: 18,
+  },
+  stepTableRowAlt: {
+    backgroundColor: "#fafafa",
+  },
+  stepTableCell: {
+    paddingVertical: 3,
+    paddingHorizontal: 4,
+    fontSize: 7.5,
+    color: "#1b1b1d",
+  },
+  stepTableCellMuted: {
+    paddingVertical: 3,
+    paddingHorizontal: 4,
+    fontSize: 7.5,
+    color: "#45464d",
+    fontStyle: "italic",
+  },
+});
+
+function countSteps(useCases: { testCases?: { steps?: unknown[] }[] }[]) {
+  return useCases.reduce(
+    (sum, uc) => sum + (uc.testCases?.reduce((s, tc) => s + (tc.steps?.length ?? 0), 0) ?? 0),
+    0,
+  );
+}
+
 export function TestPlanDocumentPDF({
   projectName,
   projectObj,
   useCases,
+  detailed = false,
 }: {
   projectName: string;
-  projectObj?: { objectives?: string | null; scope?: string | null; designed_by?: string | null; module_name?: string | null; version?: number | null };
-  useCases: { code: string; name: string; testCases?: { case_number: string; title: string; acceptance_criteria?: string | null; steps?: { step_number: string; instruction: string; expected_result?: string | null }[] }[] }[];
+  projectObj?: {
+    objectives?: string | null;
+    scope?: string | null;
+    out_of_scope?: string | null;
+    entry_criteria?: string | null;
+    exit_criteria?: string | null;
+    designed_by?: string | null;
+    module_name?: string | null;
+    version?: number | null;
+    project_code?: string | null;
+  };
+  detailed?: boolean;
+  useCases: { code: string; name: string; testCases?: { case_number: string; title: string; acceptance_criteria?: string | null; precondition?: string | null; resolvedPrecondition?: string | null; steps?: { step_number: string; instruction: string; test_data?: string | null; expected_result?: string | null }[] }[] }[];
 }) {
+  const generatedOn = new Date().toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const code = projectObj?.project_code ?? "";
+  const docId = code ? `UCH-${code}-MTP` : "Master Test Plan";
+  const scenarioCount = useCases.length;
+  const caseCount = useCases.reduce((s, uc) => s + (uc.testCases?.length ?? 0), 0);
+  const stepCount = countSteps(useCases);
+
+  const STEP_COLS = {
+    num: "6%",
+    instruction: "42%",
+    data: "24%",
+    expected: "28%",
+  } as const;
+
+  const overviewCards: { label: string; value: string | null | undefined }[] = [];
+  if (projectObj?.objectives) overviewCards.push({ label: "Objectives", value: projectObj.objectives });
+  if (projectObj?.scope) overviewCards.push({ label: "Scope", value: projectObj.scope });
+  if (projectObj?.out_of_scope) overviewCards.push({ label: "Out of Scope", value: projectObj.out_of_scope });
+  if (projectObj?.entry_criteria) overviewCards.push({ label: "Entry Criteria", value: projectObj.entry_criteria });
+  if (projectObj?.exit_criteria) overviewCards.push({ label: "Exit Criteria", value: projectObj.exit_criteria });
+
   return (
     <Document>
-      <Page size="A4" style={styles.page}>
-        <View style={styles.header}>
-          <Text style={styles.title}>{projectName}</Text>
-          <Text style={styles.subtitle}>Master Test Plan</Text>
-          <Text style={styles.subtitle}>Generated: {new Date().toLocaleDateString()}</Text>
+      <Page size="A4" style={tplanRpt.page}>
+        <View style={tplanRpt.topBar} fixed />
+
+        {/* ── Header ── */}
+        <View style={tplanRpt.headerRow}>
+          <View style={{ flex: 1, paddingRight: 16 }}>
+            <Text style={tplanRpt.docLabel}>Test Planning</Text>
+            <Text style={tplanRpt.title}>Master Test Plan</Text>
+            <Text style={tplanRpt.subtitle}>Business User Acceptance Testing</Text>
+          </View>
+          <View style={tplanRpt.metaBox}>
+            <Text style={tplanRpt.metaLabel}>Project</Text>
+            <Text style={tplanRpt.metaValue}>{projectName || "—"}</Text>
+            {code ? (
+              <>
+                <Text style={tplanRpt.metaLabel}>Document ID</Text>
+                <Text style={tplanRpt.metaValue}>{docId}</Text>
+              </>
+            ) : null}
+            {projectObj?.version != null ? (
+              <>
+                <Text style={tplanRpt.metaLabel}>Version</Text>
+                <Text style={tplanRpt.metaValue}>v{projectObj.version}</Text>
+              </>
+            ) : null}
+            <Text style={tplanRpt.metaLabel}>Generated</Text>
+            <Text style={tplanRpt.metaValue}>{generatedOn}</Text>
+            {projectObj?.designed_by ? (
+              <>
+                <Text style={tplanRpt.metaLabel}>Designed By</Text>
+                <Text style={tplanRpt.metaValue}>{projectObj.designed_by}</Text>
+              </>
+            ) : null}
+          </View>
         </View>
 
-        {projectObj?.objectives && (
-          <View style={{ marginBottom: 8 }}>
-            <Text style={{ fontSize: 9, fontWeight: 700 }}>Objectives:</Text>
-            <Text style={{ fontSize: 9, color: colors.muted }}>{projectObj.objectives}</Text>
+        {/* ── Summary strip ── */}
+        <View style={tplanRpt.summaryStrip}>
+          <View style={tplanRpt.summaryCell}>
+            <Text style={tplanRpt.summaryValue}>{scenarioCount}</Text>
+            <Text style={tplanRpt.summaryLabel}>Scenarios</Text>
           </View>
-        )}
+          <View style={tplanRpt.summaryCell}>
+            <Text style={tplanRpt.summaryValue}>{caseCount}</Text>
+            <Text style={tplanRpt.summaryLabel}>Test Cases</Text>
+          </View>
+          <View style={[tplanRpt.summaryCell, { borderRightWidth: 0 }]}>
+            <Text style={tplanRpt.summaryValue}>{stepCount}</Text>
+            <Text style={tplanRpt.summaryLabel}>Steps</Text>
+          </View>
+        </View>
 
-        {useCases.map((uc) => (
-          <View key={uc.code} wrap={false} style={{ marginBottom: 12 }}>
-            <Text style={styles.ucCode}>{uc.code} — {uc.name}</Text>
-            {uc.testCases?.map((tc) => (
-              <View key={tc.case_number} wrap={false} style={{ marginLeft: 12, marginTop: 6 }}>
-                <Text style={styles.tcCode}>[{tc.case_number}] {tc.title}</Text>
-                {tc.acceptance_criteria && (
-                  <Text style={{ fontSize: 8, color: colors.muted, marginLeft: 12, marginBottom: 2 }}>
-                    Acceptance: {tc.acceptance_criteria}
-                  </Text>
-                )}
-                {tc.steps && tc.steps.length > 0 && (
-                  <View style={{ marginLeft: 12 }}>
-                    {tc.steps.map((s) => (
-                      <View key={`${tc.case_number}-${s.step_number}`} style={styles.stepItem}>
-                        <Text style={styles.stepNumber}>{s.step_number}.</Text>
-                        <Text style={{ flex: 1 }}>{s.instruction}{s.expected_result ? ` → ${s.expected_result}` : ""}</Text>
-                      </View>
-                    ))}
-                  </View>
-                )}
+        {/* ── Project Overview ── */}
+        {overviewCards.length > 0 && (
+          <>
+            <Text style={tplanRpt.sectionTitle}>Project Overview</Text>
+            {overviewCards.map((card, i) => (
+              <View key={i} style={tplanRpt.infoCard}>
+                <Text style={tplanRpt.infoLabel}>{card.label}</Text>
+                <Text style={tplanRpt.infoValue}>{card.value}</Text>
               </View>
             ))}
-          </View>
-        ))}
+          </>
+        )}
 
-        <Text style={styles.footer}>TestCaseHub — Master Test Plan — Generated {new Date().toLocaleDateString()}</Text>
+        {/* ── Scenarios ── */}
+        {useCases.length === 0 ? (
+          <Text style={tplanRpt.emptyState}>No scenarios have been defined for this test plan.</Text>
+        ) : (
+          useCases.map((uc, ui) => (
+            <View key={uc.code} wrap={false}>
+              <View style={tplanRpt.scenarioHeader}>
+                <Text style={tplanRpt.scenarioTitle}>
+                  {uc.code} — {uc.name}
+                </Text>
+                <Text style={tplanRpt.scenarioCount}>
+                  {uc.testCases?.length ?? 0} test case{(uc.testCases?.length ?? 0) === 1 ? "" : "s"}
+                </Text>
+              </View>
+              {(!uc.testCases || uc.testCases.length === 0) ? (
+                <View style={tplanRpt.testCaseCard}>
+                  <Text style={tplanRpt.tcMeta}>No test cases defined.</Text>
+                </View>
+              ) : (
+                uc.testCases.map((tc, ti) => (
+                  <View
+                    key={tc.case_number}
+                    wrap={false}
+                    style={[
+                      tplanRpt.testCaseCard,
+                      ti % 2 === 1 ? tplanRpt.testCaseCardAlt : {},
+                    ]}
+                  >
+                    <Text style={tplanRpt.tcTitle}>[{tc.case_number}] {tc.title}</Text>
+                    {(tc.resolvedPrecondition || tc.precondition) && (
+                      <Text style={tplanRpt.tcPrecondition}>
+                        Precondition: {tc.resolvedPrecondition || tc.precondition}
+                      </Text>
+                    )}
+                    {tc.acceptance_criteria && (
+                      <Text style={tplanRpt.tcPrecondition}>
+                        Acceptance: {tc.acceptance_criteria}
+                      </Text>
+                    )}
+                    {tc.steps && tc.steps.length > 0 && !detailed && (
+                      <View>
+                        {tc.steps.map((s, si) => (
+                          <View key={`${tc.case_number}-${s.step_number}`} style={tplanRpt.stepItem}>
+                            <Text style={tplanRpt.stepNumber}>{si + 1}.</Text>
+                            <Text style={tplanRpt.stepText}>{s.instruction}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                    {tc.steps && tc.steps.length > 0 && detailed && (
+                      <View style={tplanRpt.stepTable}>
+                        <View style={tplanRpt.stepTableHeader}>
+                          <Text style={[tplanRpt.stepTableHeaderCell, { width: STEP_COLS.num }]}>#</Text>
+                          <Text style={[tplanRpt.stepTableHeaderCell, { width: STEP_COLS.instruction }]}>Instruction</Text>
+                          <Text style={[tplanRpt.stepTableHeaderCell, { width: STEP_COLS.data }]}>Test Data</Text>
+                          <Text style={[tplanRpt.stepTableHeaderCell, { width: STEP_COLS.expected }]}>Expected Result</Text>
+                        </View>
+                        {tc.steps.map((s, i) => (
+                          <View
+                            key={`${tc.case_number}-${s.step_number}`}
+                            style={[tplanRpt.stepTableRow, i % 2 === 1 ? tplanRpt.stepTableRowAlt : {}]}
+                          >
+                            <Text style={[tplanRpt.stepTableCell, { width: STEP_COLS.num }]}>{i + 1}</Text>
+                            <Text style={[tplanRpt.stepTableCell, { width: STEP_COLS.instruction }]}>{s.instruction}</Text>
+                            <Text style={[tplanRpt.stepTableCellMuted, { width: STEP_COLS.data }]}>{s.test_data || "—"}</Text>
+                            <Text style={[tplanRpt.stepTableCellMuted, { width: STEP_COLS.expected }]}>{s.expected_result || "—"}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+
+                  </View>
+                ))
+              )}
+            </View>
+          ))
+        )}
+
+        {/* ── Footer ── */}
+        <View style={tplanRpt.footer} fixed>
+          <Text style={tplanRpt.footerText}>TestCaseHub · {docId}</Text>
+          <Text
+            style={tplanRpt.footerText}
+            render={({ pageNumber, totalPages }: { pageNumber: number; totalPages: number }) =>
+              `Page ${pageNumber} of ${totalPages}`
+            }
+          />
+        </View>
       </Page>
     </Document>
   );
@@ -1571,7 +1981,7 @@ export function TestRunResultReportPDF({
                                                            { color: "#45464d", label: "—" };
                               return (
                                 <View key={step.id} style={[rpt.stepRow, i % 2 === 1 ? rpt.stepRowAlt : {}]}>
-                                  <Text style={[rpt.stepCell, { width: STEP_COL.num }]}>{step.step_number}</Text>
+                                  <Text style={[rpt.stepCell, { width: STEP_COL.num }]}>{i + 1}</Text>
                                   <Text style={[rpt.stepCell, { width: STEP_COL.instruction }]}>{step.instruction}</Text>
                                   <Text style={[rpt.stepCellMuted, { width: STEP_COL.expected }]}>{step.expected_result ?? "—"}</Text>
                                   <Text style={[rpt.stepCell, { width: STEP_COL.actual }]}>{sr?.actual_result ?? "—"}</Text>

@@ -6,6 +6,7 @@ import { Field, inputBaseClass, inputInvalidClass, inputValidClass } from "./ui/
 import { Textarea } from "./ui/textarea";
 import { Select } from "./ui/select";
 import { uploadUrl, customFetch } from "../lib/api-client";
+import { PreconditionPicker } from "./precondition-library";
 import type { TestStep, UseCase, TestCase } from "../types/api";
 
 /* ───────────── Scenario Dialog ───────────── */
@@ -205,6 +206,7 @@ export interface TestCaseFormData {
   estimated_minutes: number | null;
   acceptance_criteria: string;
   precondition: string;
+  precondition_ids: number[];
 }
 
 interface TestCaseDialogProps {
@@ -212,6 +214,7 @@ interface TestCaseDialogProps {
   mode: "create" | "edit";
   initial?: TestCase | null;
   suggestedCaseNumber?: string;
+  projectId?: number;
   saving: boolean;
   onClose: () => void;
   onSave: (data: TestCaseFormData) => void;
@@ -222,6 +225,7 @@ export function TestCaseDialog({
   mode,
   initial,
   suggestedCaseNumber,
+  projectId,
   saving,
   onClose,
   onSave,
@@ -233,6 +237,7 @@ export function TestCaseDialog({
     estimated_minutes: null,
     acceptance_criteria: "",
     precondition: "",
+    precondition_ids: [],
   });
   const [errors, setErrors] = useState<Partial<Record<keyof TestCaseFormData, string>>>({});
 
@@ -248,6 +253,7 @@ export function TestCaseDialog({
               estimated_minutes: initial.estimated_minutes,
               acceptance_criteria: initial.acceptance_criteria ?? "",
               precondition: initial.precondition ?? "",
+              precondition_ids: (initial.linkedPreconditions ?? []).map((p) => p.id),
             }
           : {
               case_number: suggestedCaseNumber ?? "",
@@ -256,6 +262,7 @@ export function TestCaseDialog({
               estimated_minutes: null,
               acceptance_criteria: "",
               precondition: "",
+              precondition_ids: [],
             }
       );
       setErrors({});
@@ -415,21 +422,31 @@ export function TestCaseDialog({
           />
         </Field>
 
-        <Field
-          label="Precondition"
-          htmlFor="td-precondition"
-          error={errors.precondition}
-          helper="Only needed if this specific test case has a precondition beyond the project's Entry Criteria."
-        >
-          <Textarea
-            id="td-precondition"
-            rows={2}
-            value={form.precondition}
-            onChange={(e) => set("precondition", e.target.value)}
-            placeholder="e.g. Invoice Exists"
-            invalid={!!errors.precondition}
+        {projectId != null ? (
+          <PreconditionPicker
+            projectId={projectId}
+            selectedIds={form.precondition_ids}
+            onChange={(ids) => set("precondition_ids", ids)}
+            freeText={form.precondition}
+            onFreeTextChange={(v) => set("precondition", v)}
           />
-        </Field>
+        ) : (
+          <Field
+            label="Precondition"
+            htmlFor="td-precondition"
+            error={errors.precondition}
+            helper="Only needed if this specific test case has a precondition beyond the project's Entry Criteria."
+          >
+            <Textarea
+              id="td-precondition"
+              rows={2}
+              value={form.precondition}
+              onChange={(e) => set("precondition", e.target.value)}
+              placeholder="e.g. Invoice Exists"
+              invalid={!!errors.precondition}
+            />
+          </Field>
+        )}
       </div>
     </Dialog>
   );
@@ -443,14 +460,25 @@ export interface StepFormData {
   expected_result: string;
 }
 
+/** Split pasted text into step instructions (one non-empty line per step). */
+export function parsePastedSteps(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[\d]+[.)]\s*/, "").trim())
+    .filter(Boolean);
+}
+
 interface StepDialogProps {
   open: boolean;
   mode: "create" | "edit";
   initial?: TestStep | null;
   stepNumber?: number;
   saving: boolean;
+  savingBulk?: boolean;
   onClose: () => void;
   onSave: (data: StepFormData) => void;
+  /** Create mode only: multi-line paste → bulk create */
+  onSaveBulk?: (steps: { instruction: string; test_data?: string; expected_result?: string }[]) => void;
 }
 
 export function StepDialog({
@@ -459,15 +487,20 @@ export function StepDialog({
   initial,
   stepNumber,
   saving,
+  savingBulk,
   onClose,
   onSave,
+  onSaveBulk,
 }: StepDialogProps) {
   const [form, setForm] = useState<StepFormData>({
     instruction: "",
     test_data: "",
     expected_result: "",
   });
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkText, setBulkText] = useState("");
   const [errors, setErrors] = useState<Partial<Record<keyof StepFormData, string>>>({});
+  const busy = saving || !!savingBulk;
 
   useEffect(() => {
     if (open) {
@@ -481,6 +514,8 @@ export function StepDialog({
             }
           : { instruction: "", test_data: "", expected_result: "" }
       );
+      setBulkMode(false);
+      setBulkText("");
       setErrors({});
     }
   }, [open, initial]);
@@ -496,6 +531,15 @@ export function StepDialog({
   };
 
   const handleSubmit = () => {
+    if (mode === "create" && bulkMode && onSaveBulk) {
+      const lines = parsePastedSteps(bulkText);
+      if (lines.length === 0) {
+        toast.error("Paste at least one non-empty line");
+        return;
+      }
+      onSaveBulk(lines.map((instruction) => ({ instruction })));
+      return;
+    }
     const errs: typeof errors = {};
     if (!form.instruction.trim()) errs.instruction = "Instruction is required";
     setErrors(errs);
@@ -503,8 +547,11 @@ export function StepDialog({
     onSave(form);
   };
 
+  const bulkLines = bulkMode ? parsePastedSteps(bulkText) : [];
   const titlePrefix = mode === "create"
-    ? stepNumber != null ? `Add Step ${stepNumber}` : "Add Step"
+    ? bulkMode
+      ? "Paste steps"
+      : stepNumber != null ? `Add Step ${stepNumber}` : "Add Step"
     : `Edit Step${stepNumber != null ? ` ${stepNumber}` : ""}`;
 
   return (
@@ -514,72 +561,120 @@ export function StepDialog({
       title={titlePrefix}
       subtitle={
         mode === "create"
-          ? "A step is a single, executable action with optional test data and an expected result."
+          ? bulkMode
+            ? "One step per line. Numbered prefixes (1. 2) are stripped automatically."
+            : "A step is a single, executable action with optional test data and an expected result."
           : "Update the step's instruction, data, or expected result."
       }
       size="md"
       footer={
-        <div className="flex items-center justify-end gap-sm">
-          <Button variant="ghost" onClick={onClose} disabled={saving}>
-            Cancel
-          </Button>
-          <Button variant="primary" onClick={handleSubmit} loading={saving}>
-            {saving
-              ? mode === "create" ? "Creating..." : "Saving..."
-              : mode === "create" ? "Add Step" : "Save Changes"}
-          </Button>
+        <div className="flex items-center justify-between gap-sm w-full">
+          {mode === "create" && onSaveBulk ? (
+            <button
+              type="button"
+              className="text-label-sm text-secondary hover:underline"
+              onClick={() => {
+                setBulkMode((v) => !v);
+                setErrors({});
+              }}
+              disabled={busy}
+            >
+              {bulkMode ? "Single step form" : "Paste multiple steps"}
+            </button>
+          ) : (
+            <span />
+          )}
+          <div className="flex items-center gap-sm">
+            <Button variant="ghost" onClick={onClose} disabled={busy}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={handleSubmit} loading={busy}>
+              {busy
+                ? mode === "create" ? "Creating..." : "Saving..."
+                : mode === "create"
+                  ? bulkMode
+                    ? bulkLines.length > 1
+                      ? `Add ${bulkLines.length} steps`
+                      : "Add Step"
+                    : "Add Step"
+                  : "Save Changes"}
+            </Button>
+          </div>
         </div>
       }
     >
       <div className="space-y-md">
-        <Field
-          label="Instruction"
-          required
-          htmlFor="st-instruction"
-          error={errors.instruction}
-          helper="A clear, single action for the tester to perform."
-        >
-          <Textarea
-            id="st-instruction"
-            rows={3}
-            value={form.instruction}
-            onChange={(e) => set("instruction", e.target.value)}
-            placeholder="e.g. Log in with the test account credentials"
-            invalid={!!errors.instruction}
-          />
-        </Field>
+        {mode === "create" && bulkMode ? (
+          <Field
+            label="Steps (one per line)"
+            required
+            htmlFor="st-bulk"
+            helper={
+              bulkLines.length > 0
+                ? `${bulkLines.length} step${bulkLines.length === 1 ? "" : "s"} will be created`
+                : "Paste from Excel, Word, or a checklist — each line becomes a step."
+            }
+          >
+            <Textarea
+              id="st-bulk"
+              rows={8}
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              placeholder={"Navigate to the home page\nSelect the customer account\nClick Submit and verify success"}
+            />
+          </Field>
+        ) : (
+          <>
+            <Field
+              label="Instruction"
+              required
+              htmlFor="st-instruction"
+              error={errors.instruction}
+              helper="A clear, single action for the tester to perform."
+            >
+              <Textarea
+                id="st-instruction"
+                rows={3}
+                value={form.instruction}
+                onChange={(e) => set("instruction", e.target.value)}
+                placeholder="e.g. Log in with the test account credentials"
+                invalid={!!errors.instruction}
+              />
+            </Field>
 
-        <Field
-          label="Test Data"
-          htmlFor="st-test-data"
-          error={errors.test_data}
-          helper="Optional. Input values, accounts, or fixtures the tester should use."
-        >
-          <Textarea
-            id="st-test-data"
-            rows={2}
-            value={form.test_data}
-            onChange={(e) => set("test_data", e.target.value)}
-            placeholder="e.g. Account: test.user@example.com / Password: Test123!"
-            invalid={!!errors.test_data}
-          />
-        </Field>
+            <Field
+              label="Test Data"
+              htmlFor="st-test-data"
+              error={errors.test_data}
+              helper="Optional. Input values, accounts, or fixtures the tester should use."
+            >
+              <Textarea
+                id="st-test-data"
+                rows={2}
+                value={form.test_data}
+                onChange={(e) => set("test_data", e.target.value)}
+                placeholder="e.g. Account: test.user@example.com / Password: Test123!"
+                invalid={!!errors.test_data}
+              />
+            </Field>
 
-        <Field
-          label="Expected Result"
-          htmlFor="st-expected"
-          error={errors.expected_result}
-          helper="Optional. What the tester should see if the system behaves correctly."
-        >
-          <Textarea
-            id="st-expected"
-            rows={2}
-            value={form.expected_result}
-            onChange={(e) => set("expected_result", e.target.value)}
-            placeholder="e.g. Dashboard loads with the user's account summary visible."
-            invalid={!!errors.expected_result}
-          />
-        </Field>
+            <Field
+              label="Expected Result"
+              htmlFor="st-expected"
+              error={errors.expected_result}
+              helper="Optional. What the tester should see if the system behaves correctly."
+            >
+              <Textarea
+                id="st-expected"
+                rows={2}
+                value={form.expected_result}
+                onChange={(e) => set("expected_result", e.target.value)}
+                placeholder="e.g. Dashboard loads with the user's account summary visible."
+                invalid={!!errors.expected_result}
+              />
+            </Field>
+          </>
+        )}
 
         {mode === "edit" && initial?.id && (
           <AttachmentManager stepId={initial.id} />

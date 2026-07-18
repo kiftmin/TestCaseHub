@@ -181,6 +181,7 @@ router.get("/:projectId", async (req: AuthenticatedRequest, res, next) => {
                 steps: {
                   orderBy: sql`CAST(${schema.testSteps.step_number} AS INTEGER)`,
                 },
+                preconditionLinks: { with: { precondition: true } },
               },
             },
           },
@@ -191,7 +192,32 @@ router.get("/:projectId", async (req: AuthenticatedRequest, res, next) => {
     if (!project) { res.status(404).json({ message: "Project not found" }); return; }
     const { testRuns, ...rest } = project;
     const attachmentCount = await getSingleAttachmentCount(projectId);
-    res.json({ ...rest, useCaseCount: project.useCases.length, testRunCount: testRuns.length, attachmentCount });
+    const useCases = (rest.useCases ?? []).map((uc) => ({
+      ...uc,
+      testCases: (uc.testCases ?? []).map((tc) => {
+        const linked = (tc.preconditionLinks ?? []).map((l) => ({
+          id: l.precondition.id,
+          text: l.precondition.text,
+        }));
+        const parts = [
+          ...linked.map((l) => l.text.trim()).filter(Boolean),
+          ...(tc.precondition?.trim() ? [tc.precondition.trim()] : []),
+        ];
+        const { preconditionLinks: _pl, ...tcRest } = tc;
+        return {
+          ...tcRest,
+          linkedPreconditions: linked,
+          resolvedPrecondition: parts.length > 0 ? parts.join("\n") : null,
+        };
+      }),
+    }));
+    res.json({
+      ...rest,
+      useCases,
+      useCaseCount: project.useCases.length,
+      testRunCount: testRuns.length,
+      attachmentCount,
+    });
   } catch (err) { next(err); }
 });
 

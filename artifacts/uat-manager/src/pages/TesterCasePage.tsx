@@ -1086,6 +1086,22 @@ function StepWizard({
             </div>
           </div>
 
+          {(testCase.resolvedPrecondition || testCase.precondition) && (
+            <div className="bg-surface-container-high border-l-4 border-outline rounded-xl p-md flex gap-md">
+              <div className="shrink-0 w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center">
+                <span className="material-symbols-outlined text-[18px]">fact_check</span>
+              </div>
+              <div className="min-w-0">
+                <p className="text-label-sm uppercase tracking-wider font-bold text-on-surface-variant mb-1">
+                  Preconditions
+                </p>
+                <p className="text-body-base text-on-surface whitespace-pre-wrap">
+                  {testCase.resolvedPrecondition || testCase.precondition}
+                </p>
+              </div>
+            </div>
+          )}
+
           {testCase.acceptance_criteria && (
             <div className="bg-secondary-container border-l-4 border-secondary rounded-xl p-md flex gap-md">
               <div className="shrink-0 w-8 h-8 rounded-full bg-secondary text-on-secondary flex items-center justify-center">
@@ -1759,6 +1775,22 @@ function QuickWizard({
           </div>
         </div>
       </div>
+
+      {(testCase.resolvedPrecondition || testCase.precondition) && (
+        <div className="bg-surface-container-high border-l-4 border-outline rounded-xl p-md flex gap-md">
+          <div className="shrink-0 w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center">
+            <span className="material-symbols-outlined text-[18px]">fact_check</span>
+          </div>
+          <div className="min-w-0">
+            <p className="text-label-sm uppercase tracking-wider font-bold text-on-surface-variant mb-1">
+              Preconditions
+            </p>
+            <p className="text-body-base text-on-surface whitespace-pre-wrap">
+              {testCase.resolvedPrecondition || testCase.precondition}
+            </p>
+          </div>
+        </div>
+      )}
 
       {testCase.acceptance_criteria && (
         <div className="bg-secondary-container border-l-4 border-secondary rounded-xl p-md flex gap-md">

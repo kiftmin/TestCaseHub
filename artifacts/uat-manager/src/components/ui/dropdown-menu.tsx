@@ -29,9 +29,11 @@ export function DropdownMenu({
       <div onClick={() => setOpen(!open)}>{trigger}</div>
       {open && (
         <div
-          className={`absolute top-full mt-1 z-50 min-w-[180px] bg-surface-container-lowest border border-outline-variant rounded-lg shadow-lg py-1 ${
+          role="menu"
+          className={`absolute top-full mt-1 z-50 min-w-[200px] bg-surface-container-lowest border border-outline-variant rounded-lg shadow-lg py-1 ${
             align === "right" ? "right-0" : "left-0"
           }`}
+          onClick={() => setOpen(false)}
         >
           {children}
         </div>

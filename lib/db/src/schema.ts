@@ -67,8 +67,19 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   assignments: many(projectAssignments),
   testRuns: many(testRuns),
   useCases: many(useCases),
+  preconditions: many(projectPreconditions),
+  sharedStepBlocks: many(projectSharedStepBlocks),
   auditLogs: many(statusAuditLog), // per spec: status_audit_log references projects
 }));
+
+// 2b. project_preconditions — reusable precondition snippets per project
+export const projectPreconditions = pgTable("project_preconditions", {
+  id: serial("id").primaryKey(),
+  project_id: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  text: text("text").notNull(),
+  sort_order: integer("sort_order").default(0).notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
 
 // 3. project_assignments
 export const projectAssignments = pgTable("project_assignments", {
@@ -124,6 +135,33 @@ export const testCasesRelations = relations(testCases, ({ one, many }) => ({
   steps: many(testSteps),
   executions: many(executions),
   defects: many(defects),
+  preconditionLinks: many(testCasePreconditions),
+}));
+
+// 5b. test_case_preconditions — attach library snippets to cases
+export const testCasePreconditions = pgTable(
+  "test_case_preconditions",
+  {
+    id: serial("id").primaryKey(),
+    test_case_id: integer("test_case_id").notNull().references(() => testCases.id, { onDelete: "cascade" }),
+    precondition_id: integer("precondition_id").notNull().references(() => projectPreconditions.id, { onDelete: "cascade" }),
+  },
+  (t) => ({
+    uniq: uniqueIndex("test_case_preconditions_unique").on(t.test_case_id, t.precondition_id),
+  }),
+);
+
+export const projectPreconditionsRelations = relations(projectPreconditions, ({ one, many }) => ({
+  project: one(projects, { fields: [projectPreconditions.project_id], references: [projects.id] }),
+  testCaseLinks: many(testCasePreconditions),
+}));
+
+export const testCasePreconditionsRelations = relations(testCasePreconditions, ({ one }) => ({
+  testCase: one(testCases, { fields: [testCasePreconditions.test_case_id], references: [testCases.id] }),
+  precondition: one(projectPreconditions, {
+    fields: [testCasePreconditions.precondition_id],
+    references: [projectPreconditions.id],
+  }),
 }));
 
 // 6. test_steps
@@ -140,6 +178,39 @@ export const testSteps = pgTable("test_steps", {
 export const testStepsRelations = relations(testSteps, ({ one, many }) => ({
   testCase: one(testCases, { fields: [testSteps.test_case_id], references: [testCases.id] }),
   stepResults: many(stepResults),
+}));
+
+// 6b. project_shared_step_blocks — reusable multi-step templates (copy-on-insert into cases)
+export const projectSharedStepBlocks = pgTable("project_shared_step_blocks", {
+  id: serial("id").primaryKey(),
+  project_id: integer("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  sort_order: integer("sort_order").default(0).notNull(),
+  created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const projectSharedStepItems = pgTable("project_shared_step_items", {
+  id: serial("id").primaryKey(),
+  block_id: integer("block_id")
+    .notNull()
+    .references(() => projectSharedStepBlocks.id, { onDelete: "cascade" }),
+  step_number: text("step_number").notNull(),
+  instruction: text("instruction").notNull(),
+  test_data: text("test_data"),
+  expected_result: text("expected_result"),
+  sort_order: integer("sort_order").default(0).notNull(),
+});
+
+export const projectSharedStepBlocksRelations = relations(projectSharedStepBlocks, ({ one, many }) => ({
+  project: one(projects, { fields: [projectSharedStepBlocks.project_id], references: [projects.id] }),
+  items: many(projectSharedStepItems),
+}));
+
+export const projectSharedStepItemsRelations = relations(projectSharedStepItems, ({ one }) => ({
+  block: one(projectSharedStepBlocks, {
+    fields: [projectSharedStepItems.block_id],
+    references: [projectSharedStepBlocks.id],
+  }),
 }));
 
 // 7. attachments

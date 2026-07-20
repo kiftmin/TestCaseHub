@@ -132,11 +132,63 @@ export interface TesterOverview {
   retestQueue: QueueDefectItem[];
 }
 
+export interface AdminProjectFlag {
+  projectId: number;
+  name: string;
+  projectCode?: string;
+}
+
+export interface AdminSignOffItem {
+  projectId: number;
+  name: string;
+  testLeadSigned: boolean;
+  businessOwnerSigned: boolean;
+  signedOff: boolean;
+  testLeadName: string | null;
+}
+
+export interface AdminAtRiskRun {
+  id: number;
+  name: string;
+  status: string;
+  projectId: number;
+  projectName: string;
+  idleDays: number;
+  reason: string;
+}
+
+export interface AdminOverview {
+  role: "ADMIN";
+  kpis: {
+    totalProjects: number;
+    activeUsers: number;
+    inactiveUsers: number;
+    totalUsers: number;
+    adminUsers: number;
+    openDefects: number;
+    newDefects: number;
+    criticalOpen: number;
+    activeRuns: number;
+    totalTestRuns: number;
+    projectsWithoutLead: number;
+    incompleteSignOff: number;
+    stalledRuns: number;
+  };
+  projectsWithoutLead: AdminProjectFlag[];
+  projectsWithNoTeam: AdminProjectFlag[];
+  incompleteSignOff: AdminSignOffItem[];
+  atRiskRuns: AdminAtRiskRun[];
+  agingDefects: QueueDefectItem[];
+  openByStatus: Record<string, number>;
+  openBySeverity: Record<string, number>;
+}
+
 export type RoleOverview =
   | TestLeadOverview
   | BusinessOverview
   | DeveloperOverview
-  | TesterOverview;
+  | TesterOverview
+  | AdminOverview;
 
 export interface SignOffStatusItem {
   projectId: number;

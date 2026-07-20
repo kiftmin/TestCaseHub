@@ -532,26 +532,52 @@ router.put("/:projectId", async (req: AuthenticatedRequest, res, next) => {
     });
     const data = bodySchema.parse(req.body);
 
-    const [project] = await db.update(schema.projects)
-      .set({ ...data, updated_at: new Date() })
-      .where(eq(schema.projects.id, projectId))
-      .returning();
+    const existingProject = await db.query.projects.findFirst({
+      where: eq(schema.projects.id, projectId),
+      columns: { id: true, test_lead_id: true },
+    });
+    if (!existingProject) {
+      res.status(404).json({ message: "Project not found" });
+      return;
+    }
 
-    // Sync project_assignments when test_lead_id changes
-    if (data.test_lead_id !== undefined) {
-      // Remove existing TEST_LEAD assignment for this project
-      await db.delete(schema.projectAssignments)
-        .where(and(
+    await db.update(schema.projects)
+      .set({ ...data, updated_at: new Date() })
+      .where(eq(schema.projects.id, projectId));
+
+    // Sync project_assignments when test_lead_id changes.
+    // Unique (project_id, user_id): promote existing membership to TEST_LEAD instead of bare insert
+    // (which fails if the user already has another role on the project).
+    if (data.test_lead_id !== undefined && data.test_lead_id !== existingProject.test_lead_id) {
+      // Remove TEST_LEAD assignment rows for this project (previous lead loses TL role)
+      await db.delete(schema.projectAssignments).where(
+        and(
           eq(schema.projectAssignments.project_id, projectId),
           eq(schema.projectAssignments.role, "TEST_LEAD"),
-        ));
-      // Add new TEST_LEAD assignment if a user was selected
+        ),
+      );
+
       if (data.test_lead_id !== null) {
-        await db.insert(schema.projectAssignments).values({
-          project_id: projectId,
-          user_id: data.test_lead_id,
-          role: "TEST_LEAD",
+        const existingForNewLead = await db.query.projectAssignments.findFirst({
+          where: and(
+            eq(schema.projectAssignments.project_id, projectId),
+            eq(schema.projectAssignments.user_id, data.test_lead_id),
+          ),
         });
+        if (existingForNewLead) {
+          // Promote existing membership (e.g. TESTER → TEST_LEAD)
+          await db
+            .update(schema.projectAssignments)
+            .set({ role: "TEST_LEAD", is_qa: false })
+            .where(eq(schema.projectAssignments.id, existingForNewLead.id));
+        } else {
+          await db.insert(schema.projectAssignments).values({
+            project_id: projectId,
+            user_id: data.test_lead_id,
+            role: "TEST_LEAD",
+            is_qa: false,
+          });
+        }
       }
     }
 

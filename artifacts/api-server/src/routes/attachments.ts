@@ -75,6 +75,38 @@ async function resolveProjectId(entityType: string, entityId: number): Promise<n
       });
       return run?.project_id ?? null;
     }
+    case "test_step":
+    case "test-step": {
+      // test_steps → test_cases → use_cases → project_id
+      const step = await db.query.testSteps.findFirst({
+        where: eq(schema.testSteps.id, entityId),
+        columns: { test_case_id: true },
+      });
+      if (!step) return null;
+      const testCase = await db.query.testCases.findFirst({
+        where: eq(schema.testCases.id, step.test_case_id),
+        columns: { use_case_id: true },
+      });
+      if (!testCase) return null;
+      const useCase = await db.query.useCases.findFirst({
+        where: eq(schema.useCases.id, testCase.use_case_id),
+        columns: { project_id: true },
+      });
+      return useCase?.project_id ?? null;
+    }
+    case "test_case":
+    case "test-case": {
+      const testCase = await db.query.testCases.findFirst({
+        where: eq(schema.testCases.id, entityId),
+        columns: { use_case_id: true },
+      });
+      if (!testCase) return null;
+      const useCase = await db.query.useCases.findFirst({
+        where: eq(schema.useCases.id, testCase.use_case_id),
+        columns: { project_id: true },
+      });
+      return useCase?.project_id ?? null;
+    }
     default:
       return null;
   }
@@ -156,7 +188,7 @@ router.get("/uploads/:filename", authenticateUploadAccess, async (req: Authentic
 });
 
 // POST /api/attachments
-router.post("/attachments", async (req: AuthenticatedRequest, res, next) => {
+router.post("/attachments", authenticate, async (req: AuthenticatedRequest, res, next) => {
   try {
     const parsed = z
       .object({
@@ -201,7 +233,7 @@ router.post("/attachments", async (req: AuthenticatedRequest, res, next) => {
 });
 
 // GET /api/attachments/:entityType/:entityId
-router.get("/attachments/:entityType/:entityId", async (req: AuthenticatedRequest, res, next) => {
+router.get("/attachments/:entityType/:entityId", authenticate, async (req: AuthenticatedRequest, res, next) => {
   try {
     const entityType = req.params.entityType;
     const entityId = Number(req.params.entityId);
@@ -222,7 +254,7 @@ router.get("/attachments/:entityType/:entityId", async (req: AuthenticatedReques
 });
 
 // DELETE /api/attachments/:attachmentId
-router.delete("/attachments/:attachmentId", async (req: AuthenticatedRequest, res, next) => {
+router.delete("/attachments/:attachmentId", authenticate, async (req: AuthenticatedRequest, res, next) => {
   try {
     const attachmentId = Number(req.params.attachmentId);
 

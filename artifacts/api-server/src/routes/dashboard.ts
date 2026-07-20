@@ -424,6 +424,14 @@ router.get("/role-overview", async (req: AuthenticatedRequest, res, next) => {
     const userId = req.user!.userId;
     const role = resolveScopeRole(req);
 
+    if (role === "ADMIN") {
+      if (req.user!.role !== "ADMIN") {
+        res.status(403).json({ message: "Forbidden" });
+        return;
+      }
+      res.json(await buildAdminOverview());
+      return;
+    }
     if (role === "TESTER") {
       res.json(await buildTesterOverview(userId));
       return;
@@ -437,15 +445,202 @@ router.get("/role-overview", async (req: AuthenticatedRequest, res, next) => {
       res.json(await buildBusinessOverview(projectIds));
       return;
     }
-    // TEST_LEAD, TEST_AUTHOR, ADMIN, default
-    const projectIds = role === "ADMIN" && req.user!.role === "ADMIN"
-      ? await getAllAccessibleProjectIds(userId, "ADMIN")
-      : await getProjectIdsForUser(userId, role === "ADMIN" ? "TEST_LEAD" : role);
+    // TEST_LEAD, TEST_AUTHOR, default
+    const projectIds = await getProjectIdsForUser(userId, role);
     res.json(await buildTestLeadOverview(projectIds));
   } catch (err) {
     next(err);
   }
 });
+
+/** System-wide portfolio + governance metrics for ADMIN. */
+async function buildAdminOverview() {
+  const STALE_RUN_DAYS = 7;
+  const AGING_DEFECT_DAYS = 7;
+
+  const [projects, users, runs, defects, assignments] = await Promise.all([
+    db.query.projects.findMany({
+      columns: {
+        id: true,
+        name: true,
+        project_code: true,
+        test_lead_id: true,
+        is_signed_off: true,
+        sign_off_data: true,
+        updated_at: true,
+      },
+      with: {
+        testLead: { columns: { id: true, username: true } },
+      },
+    }),
+    db.query.users.findMany({
+      columns: { id: true, username: true, role: true, is_active: true },
+    }),
+    db.query.testRuns.findMany({
+      columns: {
+        id: true,
+        name: true,
+        status: true,
+        project_id: true,
+        scheduled_at: true,
+        updated_at: true,
+        created_at: true,
+      },
+    }),
+    db.query.defects.findMany({
+      columns: {
+        id: true,
+        status: true,
+        severity: true,
+        project_id: true,
+        created_at: true,
+        updated_at: true,
+        is_blocked: true,
+      },
+      with: {
+        project: { columns: { id: true, name: true } },
+        testCase: { columns: { id: true, title: true } },
+      },
+      orderBy: desc(schema.defects.created_at),
+    }),
+    db.query.projectAssignments.findMany({
+      columns: { project_id: true, user_id: true, role: true },
+    }),
+  ]);
+
+  const projectName = new Map(projects.map((p) => [p.id, p.name]));
+  const openDefects = defects.filter((d) => !TERMINAL_DEFECT.has(d.status));
+  const activeRuns = runs.filter((r) => r.status === "in_progress" || r.status === "scheduled");
+
+  const activeUsers = users.filter((u) => u.is_active).length;
+  const inactiveUsers = users.filter((u) => !u.is_active).length;
+  const adminUsers = users.filter((u) => u.role === "ADMIN" && u.is_active).length;
+
+  const withoutLead = projects.filter((p) => p.test_lead_id == null);
+  const projectsWithoutLead = withoutLead.slice(0, 12).map((p) => ({
+    projectId: p.id,
+    name: p.name,
+    projectCode: p.project_code,
+  }));
+
+  const incompleteSignOff = projects
+    .filter((p) => p.is_signed_off !== 1)
+    .map((p) => {
+      const so = parseSignOff(p.sign_off_data);
+      const testLeadSigned = !!so.testLead;
+      const businessOwnerSigned = !!so.businessOwner;
+      return {
+        projectId: p.id,
+        name: p.name,
+        testLeadSigned,
+        businessOwnerSigned,
+        signedOff: false,
+        testLeadName: p.testLead?.username ?? null,
+      };
+    })
+    .filter((p) => !p.testLeadSigned || !p.businessOwnerSigned)
+    .slice(0, 12);
+
+  const now = Date.now();
+  const stalledRuns = runs
+    .filter((r) => r.status === "in_progress")
+    .map((r) => {
+      const updated = r.updated_at ?? r.created_at;
+      const days = ageDays(updated);
+      return {
+        id: r.id,
+        name: r.name,
+        status: r.status,
+        projectId: r.project_id,
+        projectName: projectName.get(r.project_id) ?? "",
+        idleDays: days,
+        reason: days >= STALE_RUN_DAYS ? `No update in ${days}d` : "",
+      };
+    })
+    .filter((r) => r.reason)
+    .sort((a, b) => b.idleDays - a.idleDays)
+    .slice(0, 10);
+
+  // Also flag scheduled runs past date
+  const overdueScheduled = runs
+    .filter((r) => r.status === "scheduled" && r.scheduled_at && new Date(r.scheduled_at).getTime() < now)
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      status: r.status,
+      projectId: r.project_id,
+      projectName: projectName.get(r.project_id) ?? "",
+      idleDays: ageDays(r.scheduled_at),
+      reason: "Past scheduled start",
+    }))
+    .slice(0, 5);
+
+  const atRiskRuns = [...stalledRuns, ...overdueScheduled]
+    .filter((v, i, arr) => arr.findIndex((x) => x.id === v.id) === i)
+    .slice(0, 12);
+
+  const agingDefects = openDefects
+    .map((d) => ({
+      id: d.id,
+      severity: d.severity,
+      status: d.status,
+      projectId: d.project_id,
+      projectName: d.project?.name ?? "",
+      title: d.testCase?.title ?? `Defect #${d.id}`,
+      ageDays: ageDays(d.updated_at ?? d.created_at),
+      is_blocked: d.is_blocked ?? false,
+    }))
+    .filter((d) => d.ageDays >= AGING_DEFECT_DAYS || d.is_blocked || (d.severity && HIGH_SEV.has(d.severity)))
+    .sort((a, b) => b.ageDays - a.ageDays)
+    .slice(0, 12);
+
+  const openByStatus: Record<string, number> = {};
+  for (const d of openDefects) {
+    openByStatus[d.status] = (openByStatus[d.status] ?? 0) + 1;
+  }
+
+  const openBySeverity: Record<string, number> = {};
+  for (const d of openDefects) {
+    const sev = d.severity ?? "Unspecified";
+    openBySeverity[sev] = (openBySeverity[sev] ?? 0) + 1;
+  }
+
+  // Projects with zero team assignments (besides optional lead)
+  const assignedProjectIds = new Set(assignments.map((a) => a.project_id));
+  const projectsWithNoTeam = projects
+    .filter((p) => !assignedProjectIds.has(p.id))
+    .slice(0, 8)
+    .map((p) => ({ projectId: p.id, name: p.name, projectCode: p.project_code }));
+
+  const newDefects = openDefects.filter((d) => d.status === "NEW").length;
+  const criticalOpen = openDefects.filter((d) => d.severity === "Critical").length;
+
+  return {
+    role: "ADMIN" as const,
+    kpis: {
+      totalProjects: projects.length,
+      activeUsers,
+      inactiveUsers,
+      totalUsers: users.length,
+      adminUsers,
+      openDefects: openDefects.length,
+      newDefects,
+      criticalOpen,
+      activeRuns: activeRuns.length,
+      totalTestRuns: runs.length,
+      projectsWithoutLead: withoutLead.length,
+      incompleteSignOff: incompleteSignOff.length,
+      stalledRuns: stalledRuns.length,
+    },
+    projectsWithoutLead,
+    projectsWithNoTeam,
+    incompleteSignOff,
+    atRiskRuns,
+    agingDefects,
+    openByStatus,
+    openBySeverity,
+  };
+}
 
 async function loadActiveProjectContext(projectIds: number[]) {
   if (projectIds.length === 0) {

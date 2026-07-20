@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { CameraCapture } from "../components/CameraCapture";
+import { AuthenticatedImage, openAuthenticatedUpload } from "../components/AuthenticatedImage";
 import {
   BackBar,
   EmptyState,
@@ -44,6 +45,73 @@ export interface ExecutionEntry {
 }
 
 const EMPTY_ENTRY: ExecutionEntry = { passed: null, actual_result: "", comments: "" };
+
+function extractPhotoUrl(comments: string | undefined | null): string | null {
+  if (!comments) return null;
+  const match = comments.match(/\[photo:\s*(\/uploads\/[^\]]+)\]/);
+  return match ? match[1] : null;
+}
+
+function setPhotoInComments(comments: string | undefined | null, url: string): string {
+  const cleaned = (comments ?? "").replace(/\n?\[photo:\s*\/uploads\/[^\]]+\]/g, "").trim();
+  return cleaned ? `${cleaned}\n[photo: ${url}]` : `[photo: ${url}]`;
+}
+
+function removePhotoFromComments(comments: string | undefined | null): string {
+  return (comments ?? "").replace(/\n?\[photo:\s*\/uploads\/[^\]]+\]/g, "").trim();
+}
+
+/** Reference images attached to a test step in the Test Plan (authoring-time guidance). */
+function StepReferenceImages({
+  stepId,
+  compact = false,
+}: {
+  stepId: number;
+  compact?: boolean;
+}) {
+  const { data: images = [] } = useQuery({
+    queryKey: ["step-attachments", stepId],
+    queryFn: async () => {
+      const data = await customFetch<{ id: number; file_url: string; file_name?: string }[]>(
+        `/attachments/test_step/${stepId}`,
+      );
+      return data;
+    },
+    enabled: !!stepId,
+    staleTime: 60_000,
+  });
+
+  if (images.length === 0) return null;
+
+  return (
+    <div className={compact ? "space-y-1" : "space-y-sm"}>
+      <p className="text-label-sm uppercase tracking-wider font-bold text-on-surface-variant inline-flex items-center gap-1">
+        <span className="material-symbols-outlined text-[14px]">image</span>
+        Reference {images.length === 1 ? "image" : "images"}
+      </p>
+      <div className={`flex flex-wrap gap-sm ${compact ? "" : ""}`}>
+        {images.map((a) => (
+          <AuthenticatedImage
+            key={a.id}
+            fileUrl={a.file_url}
+            alt={a.file_name ?? "Step reference"}
+            className={
+              compact
+                ? "w-16 h-16 object-cover rounded-lg border border-outline-variant cursor-pointer hover:opacity-90"
+                : "w-28 h-28 sm:w-36 sm:h-36 object-cover rounded-lg border border-outline-variant cursor-pointer hover:opacity-90 shadow-sm"
+            }
+            title="Click to enlarge"
+            onClick={() => {
+              openAuthenticatedUpload(a.file_url).catch(() => {
+                toast.error("Could not open image");
+              });
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 type CaseFilter = "all" | "not_started" | "in_progress" | "completed" | "blocked";
 
@@ -298,6 +366,9 @@ function ExecutionEngine({
 
   // Per-step entries — the single source of truth for both wizards.
   const [entries, setEntries] = useState<Map<number, ExecutionEntry>>(new Map());
+  // Mirror of entries for synchronous reads (Pass/Fail right after photo upload).
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
   // Optimistic pass/fail per step — survives mode switches.
   const [localResults, setLocalResults] = useState<Map<number, boolean>>(new Map());
   // Tracks in-flight step-result mutations so we can block navigation while saves are pending.
@@ -402,6 +473,7 @@ function ExecutionEngine({
       const next = new Map(prev);
       const current = next.get(stepId) ?? { ...EMPTY_ENTRY };
       next.set(stepId, { ...current, ...patch });
+      entriesRef.current = next;
       return next;
     });
     // Keep localResults in sync with the draft's `passed` so the Step wizard
@@ -444,6 +516,7 @@ function ExecutionEngine({
     execution,
     persistedStepResults,
     entries,
+    entriesRef,
     setEntries,
     setEntry,
     localResults,
@@ -855,6 +928,7 @@ function StepWizard({
   steps,
   execution,
   entries,
+  entriesRef,
   setEntry,
   localResults,
   setLocalResults,
@@ -872,6 +946,7 @@ function StepWizard({
   steps: TestStep[];
   execution: Execution | undefined;
   entries: Map<number, ExecutionEntry>;
+  entriesRef: React.MutableRefObject<Map<number, ExecutionEntry>>;
   setEntries: React.Dispatch<React.SetStateAction<Map<number, ExecutionEntry>>>;
   setEntry: (stepId: number, patch: Partial<ExecutionEntry>) => void;
   localResults: Map<number, boolean>;
@@ -910,28 +985,36 @@ function StepWizard({
   }, [execution?.stepResults, testCase?.stepResults, localResults, entries]);
 
   const submitStepMut = useMutation({
-    mutationFn: (data: { passed: boolean; actual_result: string; comments: string }) =>
-      customFetch(`/executions/${execution!.id}/steps/${currentStep!.id}/result`, {
+    mutationFn: ({
+      stepId,
+      data,
+      quiet,
+    }: {
+      stepId: number;
+      data: { passed: boolean; actual_result: string; comments: string };
+      quiet?: boolean;
+    }) =>
+      customFetch(`/executions/${execution!.id}/steps/${stepId}/result`, {
         method: "POST",
         body: JSON.stringify(data),
       }),
     onMutate: (vars) => {
       pendingMutations.current++;
-      const stepId = currentStep!.id;
-      const previous = localResults.get(stepId) ?? null;
+      const previous = localResults.get(vars.stepId) ?? null;
       setLocalResults((prev) => {
         const next = new Map(prev);
-        next.set(stepId, vars.passed);
+        next.set(vars.stepId, vars.data.passed);
         return next;
       });
-      return { stepId, previous };
+      return { stepId: vars.stepId, previous, quiet: vars.quiet };
     },
     onSuccess: (_data, vars) => {
       // Clear sessionStorage draft only — keep entries so the textarea
       // does not blank while queries refetch (see merge hydrate above).
-      const stepId = currentStep!.id;
-      sessionStorage.removeItem(draftKey(testRunId, testCaseId, stepId));
-      toast.success(`Step ${stepIndex + 1} recorded as ${vars.passed ? "Pass" : "Fail"}`);
+      sessionStorage.removeItem(draftKey(testRunId, testCaseId, vars.stepId));
+      if (!vars.quiet) {
+        toast.success(`Step ${stepIndex + 1} recorded as ${vars.data.passed ? "Pass" : "Fail"}`);
+      }
       queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
       queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
       queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
@@ -949,6 +1032,75 @@ function StepWizard({
     },
     onSettled: () => { pendingMutations.current--; },
   });
+
+  /** Persist step result using the latest entry map (avoids stale closure after photo upload). */
+  const persistStepResult = (stepId: number, passed: boolean, opts?: { quiet?: boolean }) => {
+    if (!execution || isReadOnly) return;
+    const current = entriesRef.current.get(stepId) ?? { ...EMPTY_ENTRY };
+    const nextEntry = { ...current, passed };
+    setEntry(stepId, { passed });
+    submitStepMut.mutate({
+      stepId,
+      quiet: opts?.quiet,
+      data: {
+        passed,
+        actual_result: nextEntry.actual_result,
+        comments: nextEntry.comments,
+      },
+    });
+  };
+
+  const saveStepComments = (
+    stepId: number,
+    comments: string,
+    actual_result: string,
+    passed: boolean,
+  ) => {
+    if (!execution || isReadOnly) return;
+    pendingMutations.current++;
+    customFetch(`/executions/${execution.id}/steps/${stepId}/result`, {
+      method: "POST",
+      body: JSON.stringify({ passed, actual_result, comments }),
+    })
+      .then(() => {
+        sessionStorage.removeItem(draftKey(testRunId, testCaseId, stepId));
+        queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+        queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+        queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
+      })
+      .catch((e: Error) => toast.error(e.message || "Failed to save photo"))
+      .finally(() => { pendingMutations.current--; });
+  };
+
+  const handlePhotoUploaded = (stepId: number, url: string) => {
+    const current = entriesRef.current.get(stepId) ?? { ...EMPTY_ENTRY };
+    const comments = setPhotoInComments(current.comments, url);
+    setEntry(stepId, { comments });
+
+    const passed =
+      current.passed ??
+      localResults.get(stepId) ??
+      execution?.stepResults?.find((r) => r.step_id === stepId)?.passed ??
+      null;
+    if (passed != null) {
+      saveStepComments(stepId, comments, current.actual_result, passed);
+    }
+  };
+
+  const handlePhotoRemoved = (stepId: number) => {
+    const current = entriesRef.current.get(stepId) ?? { ...EMPTY_ENTRY };
+    const comments = removePhotoFromComments(current.comments);
+    setEntry(stepId, { comments });
+
+    const passed =
+      current.passed ??
+      localResults.get(stepId) ??
+      execution?.stepResults?.find((r) => r.step_id === stepId)?.passed ??
+      null;
+    if (passed != null) {
+      saveStepComments(stepId, comments, current.actual_result, passed);
+    }
+  };
 
   // Is the current step recorded? (used to enable Next)
   const currentStepRecorded =
@@ -1156,6 +1308,8 @@ function StepWizard({
                 {currentStep.expected_result || "Not provided"}
               </p>
             </div>
+
+            <StepReferenceImages stepId={currentStep.id} />
           </div>
 
           <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-md space-y-md">
@@ -1190,15 +1344,13 @@ function StepWizard({
               </div>
             )}
 
-            {!isReadOnly && (
-              <CameraCapture
-                key={currentStep.id}
-                onUploaded={(url) => {
-                  const prev = entry?.comments ?? "";
-                  setEntry(currentStep.id, { comments: `${prev}\n[photo: ${url}]` });
-                }}
-              />
-            )}
+            <CameraCapture
+              key={currentStep.id}
+              readOnly={isReadOnly}
+              initialUrl={extractPhotoUrl(entry?.comments)}
+              onUploaded={(url) => handlePhotoUploaded(currentStep.id, url)}
+              onRemoved={() => handlePhotoRemoved(currentStep.id)}
+            />
           </div>
         </div>
       </div>
@@ -1228,12 +1380,7 @@ function StepWizard({
               aria-checked={stepResultsByStep.get(currentStep!.id) === false}
               onClick={() => {
                 if (isReadOnly) return;
-                setEntry(currentStep!.id, { passed: false });
-                submitStepMut.mutate({
-                  passed: false,
-                  actual_result: entry?.actual_result ?? "",
-                  comments: entry?.comments ?? "",
-                });
+                persistStepResult(currentStep!.id, false);
               }}
               disabled={submitStepMut.isPending || isReadOnly}
               className={`inline-flex items-center gap-xs px-lg py-sm rounded-md font-label-md text-label-sm transition-all ${
@@ -1252,12 +1399,7 @@ function StepWizard({
               aria-checked={stepResultsByStep.get(currentStep!.id) === true}
               onClick={() => {
                 if (isReadOnly) return;
-                setEntry(currentStep!.id, { passed: true });
-                submitStepMut.mutate({
-                  passed: true,
-                  actual_result: entry?.actual_result ?? "",
-                  comments: entry?.comments ?? "",
-                });
+                persistStepResult(currentStep!.id, true);
               }}
               disabled={submitStepMut.isPending || isReadOnly}
               className={`inline-flex items-center gap-xs px-lg py-sm rounded-md font-label-md text-label-sm transition-all ${
@@ -1286,14 +1428,14 @@ function StepWizard({
 
                 // Snapshot the full result set from local state before any mutations
                 const stepSnapshot = steps.map((s) => {
-                  const e = entries.get(s.id);
+                  const e = entriesRef.current.get(s.id);
                   const persisted = execution.stepResults?.find((r) => r.step_id === s.id);
                   return {
                     stepId: s.id,
                     passed: e?.passed ?? persisted?.passed ?? null,
                     actual_result: e?.actual_result ?? persisted?.actual_result ?? "",
                     comments: e?.comments ?? persisted?.comments ?? "",
-                    needsSave: entries.has(s.id),
+                    needsSave: entriesRef.current.has(s.id),
                   };
                 });
 
@@ -1479,6 +1621,7 @@ function QuickWizard({
   steps,
   execution,
   entries,
+  entriesRef,
   setEntry,
   localResults,
   setLocalResults,
@@ -1496,6 +1639,7 @@ function QuickWizard({
   steps: TestStep[];
   execution: Execution | undefined;
   entries: Map<number, ExecutionEntry>;
+  entriesRef: React.MutableRefObject<Map<number, ExecutionEntry>>;
   setEntries: React.Dispatch<React.SetStateAction<Map<number, ExecutionEntry>>>;
   setEntry: (stepId: number, patch: Partial<ExecutionEntry>) => void;
   localResults: Map<number, boolean>;
@@ -1537,21 +1681,77 @@ function QuickWizard({
     onSettled: () => { pendingMutations.current--; },
   });
 
-  // Save a single step result when pass/fail is toggled
-  const handleQuickStepResult = (stepId: number, passed: boolean, entry: ExecutionEntry) => {
+  // Save a single step result when pass/fail is toggled — always read latest entry from map
+  const handleQuickStepResult = (stepId: number, passed: boolean) => {
+    const current = entriesRef.current.get(stepId) ?? { ...EMPTY_ENTRY };
+    setEntry(stepId, { passed });
     setLocalResults((prev) => {
       const next = new Map(prev);
       next.set(stepId, passed);
       return next;
     });
-    saveStepMut.mutate({
-      stepId,
-      data: {
-        passed,
-        actual_result: entry.actual_result,
-        comments: entry.comments,
-      },
-    });
+    if (execution) {
+      saveStepMut.mutate({
+        stepId,
+        data: {
+          passed,
+          actual_result: current.actual_result,
+          comments: current.comments,
+        },
+      });
+    }
+  };
+
+  const saveQuickStepComments = (
+    stepId: number,
+    comments: string,
+    actual_result: string,
+    passed: boolean,
+  ) => {
+    if (!execution || isReadOnly) return;
+    pendingMutations.current++;
+    customFetch(`/executions/${execution.id}/steps/${stepId}/result`, {
+      method: "POST",
+      body: JSON.stringify({ passed, actual_result, comments }),
+    })
+      .then(() => {
+        sessionStorage.removeItem(draftKey(testRunId, testCaseId, stepId));
+        queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+        queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+        queryClient.invalidateQueries({ queryKey: ["test-case", testCaseId] });
+      })
+      .catch((e: Error) => toast.error(e.message || "Failed to save photo"))
+      .finally(() => { pendingMutations.current--; });
+  };
+
+  const handleQuickPhotoUploaded = (stepId: number, url: string) => {
+    const current = entriesRef.current.get(stepId) ?? { ...EMPTY_ENTRY };
+    const comments = setPhotoInComments(current.comments, url);
+    setEntry(stepId, { comments });
+
+    const passed =
+      current.passed ??
+      localResults.get(stepId) ??
+      execution?.stepResults?.find((r) => r.step_id === stepId)?.passed ??
+      null;
+    if (passed != null) {
+      saveQuickStepComments(stepId, comments, current.actual_result, passed);
+    }
+  };
+
+  const handleQuickPhotoRemoved = (stepId: number) => {
+    const current = entriesRef.current.get(stepId) ?? { ...EMPTY_ENTRY };
+    const comments = removePhotoFromComments(current.comments);
+    setEntry(stepId, { comments });
+
+    const passed =
+      current.passed ??
+      localResults.get(stepId) ??
+      execution?.stepResults?.find((r) => r.step_id === stepId)?.passed ??
+      null;
+    if (passed != null) {
+      saveQuickStepComments(stepId, comments, current.actual_result, passed);
+    }
   };
 
   // Persisted pass/fail only — used for sidebar indicators and per-step status
@@ -1616,14 +1816,14 @@ function QuickWizard({
     // Snapshot the full result set NOW before any state mutations.
     // For each step: prefer in-memory entry, fall back to persisted result.
     const stepSnapshot = steps.map((s) => {
-      const e = entries.get(s.id);
+      const e = entriesRef.current.get(s.id);
       const persistedResult = execution.stepResults?.find((r) => r.step_id === s.id);
       return {
         stepId: s.id,
         passed: e?.passed ?? persistedResult?.passed ?? null,
         actual_result: e?.actual_result ?? persistedResult?.actual_result ?? "",
         comments: e?.comments ?? persistedResult?.comments ?? "",
-        needsSave: entries.has(s.id),
+        needsSave: entriesRef.current.has(s.id),
       };
     });
 
@@ -1871,6 +2071,10 @@ function QuickWizard({
                 </div>
               </div>
 
+              <div className="pl-0 sm:pl-13">
+                <StepReferenceImages stepId={s.id} compact />
+              </div>
+
               <div className="space-y-sm pl-0 sm:pl-13">
                 <label className="text-label-md font-label-md text-on-surface block">
                   What actually happened?
@@ -1883,14 +2087,18 @@ function QuickWizard({
                   disabled={isReadOnly}
                   className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base text-on-surface placeholder:text-on-surface-variant/60 focus:ring-2 focus:ring-secondary/20 focus:border-secondary outline-none transition-all resize-y disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-gray-50"
                 />
+                <CameraCapture
+                  key={s.id}
+                  readOnly={isReadOnly}
+                  initialUrl={extractPhotoUrl(e.comments)}
+                  onUploaded={(url) => handleQuickPhotoUploaded(s.id, url)}
+                  onRemoved={() => handleQuickPhotoRemoved(s.id)}
+                />
                 <div className="flex items-center gap-sm">
                   <button
                     onClick={() => {
                       if (isReadOnly) return;
-                      setEntry(s.id, { passed: true });
-                      if (execution) {
-                        handleQuickStepResult(s.id, true, entries.get(s.id) ?? EMPTY_ENTRY);
-                      }
+                      handleQuickStepResult(s.id, true);
                     }}
                     disabled={saveStepMut.isPending || isReadOnly}
                     className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-xs px-lg py-sm rounded-lg font-label-md text-label-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
@@ -1911,10 +2119,7 @@ function QuickWizard({
                         toast.error('Please describe "What actually happened" before marking as Fail');
                         return;
                       }
-                      setEntry(s.id, { passed: false });
-                      if (execution) {
-                        handleQuickStepResult(s.id, false, entry_);
-                      }
+                      handleQuickStepResult(s.id, false);
                     }}
                     disabled={saveStepMut.isPending || isReadOnly}
                     className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-xs px-lg py-sm rounded-lg font-label-md text-label-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed ${

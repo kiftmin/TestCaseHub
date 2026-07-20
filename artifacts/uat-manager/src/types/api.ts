@@ -15,12 +15,18 @@ export interface ProjectAssignment {
   role: string;
   is_qa?: boolean;
   assigned_at: string;
-  user: {
+  user?: {
     id: number;
     username: string;
     name: string;
     email: string;
   };
+  /** Present on GET /users/:id/projects */
+  project?: {
+    id: number;
+    name: string;
+    project_code?: string;
+  } | null;
 }
 
 export interface Project {

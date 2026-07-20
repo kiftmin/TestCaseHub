@@ -1,5 +1,5 @@
 import express from "express";
-import { eq, and, inArray, notInArray } from "drizzle-orm";
+import { eq, and, inArray, notInArray, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
@@ -63,6 +63,19 @@ router.post("/projects/:projectId/users", async (req: AuthenticatedRequest, res,
     // is_qa is only meaningful on DEVELOPER assignments — force it to false otherwise.
     const isQa = data.role === "DEVELOPER" ? (data.isQa ?? false) : false;
 
+    if (data.role === "TEST_LEAD") {
+      await db.delete(schema.projectAssignments).where(
+        and(
+          eq(schema.projectAssignments.project_id, projectId),
+          eq(schema.projectAssignments.role, "TEST_LEAD"),
+        ),
+      );
+      await db
+        .update(schema.projects)
+        .set({ test_lead_id: data.userId, updated_at: new Date() })
+        .where(eq(schema.projects.id, projectId));
+    }
+
     const [assignment] = await db.insert(schema.projectAssignments)
       .values({ project_id: projectId, user_id: data.userId, role: data.role, is_qa: isQa })
       .returning();
@@ -97,6 +110,32 @@ router.patch("/projects/:projectId/users/:userId", async (req: AuthenticatedRequ
 
     const resultingRole = data.role ?? existing.role;
     const isQa = resultingRole === "DEVELOPER" ? (data.isQa ?? existing.is_qa ?? false) : false;
+
+    // Keep projects.test_lead_id and single TEST_LEAD assignment in sync
+    if (data.role === "TEST_LEAD") {
+      await db.delete(schema.projectAssignments).where(
+        and(
+          eq(schema.projectAssignments.project_id, projectId),
+          eq(schema.projectAssignments.role, "TEST_LEAD"),
+          ne(schema.projectAssignments.user_id, userId),
+        ),
+      );
+      await db
+        .update(schema.projects)
+        .set({ test_lead_id: userId, updated_at: new Date() })
+        .where(eq(schema.projects.id, projectId));
+    } else if (data.role !== undefined && existing.role === "TEST_LEAD" && data.role !== "TEST_LEAD") {
+      // Demoting the current test lead — clear project.test_lead_id if it pointed here
+      await db
+        .update(schema.projects)
+        .set({ test_lead_id: null, updated_at: new Date() })
+        .where(
+          and(
+            eq(schema.projects.id, projectId),
+            eq(schema.projects.test_lead_id, userId),
+          ),
+        );
+    }
 
     const updateValues: Record<string, unknown> = { is_qa: isQa };
     if (data.role !== undefined) updateValues.role = data.role;

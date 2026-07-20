@@ -149,6 +149,11 @@ function ProjectHeader({ projectId }: { projectId: number }) {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.invalidateQueries({ queryKey: ["project-users", projectId] });
+      // Dashboard role tabs depend on memberships + test_lead_id
+      queryClient.invalidateQueries({ queryKey: ["userProjects"] });
+      queryClient.invalidateQueries({ queryKey: ["roleOverview"] });
       setEditOpen(false);
       toast.success("Project updated");
     },
@@ -407,6 +412,10 @@ function TeamTab({ projectId }: { projectId: number }) {
 
   const invalidate = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["project-users", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+    // Dashboard role tabs / scope banners
+    queryClient.invalidateQueries({ queryKey: ["userProjects"] });
+    queryClient.invalidateQueries({ queryKey: ["roleOverview"] });
   }, [queryClient, projectId]);
 
   const addMutation = useMutation({
@@ -424,14 +433,17 @@ function TeamTab({ projectId }: { projectId: number }) {
   });
 
   const patchMutation = useMutation({
-    mutationFn: (d: { userId: number; isQa: boolean }) =>
+    mutationFn: (d: { userId: number; isQa?: boolean; role?: string }) =>
       customFetch(`/projects/${projectId}/users/${d.userId}`, {
         method: "PATCH",
-        body: JSON.stringify({ isQa: d.isQa }),
+        body: JSON.stringify({
+          ...(d.isQa !== undefined ? { isQa: d.isQa } : {}),
+          ...(d.role !== undefined ? { role: d.role } : {}),
+        }),
       }),
     onSuccess: () => {
       invalidate();
-      toast.success("QA flag updated");
+      toast.success("Member updated");
     },
     onError: (e: Error) => toast.error(e.message),
   });

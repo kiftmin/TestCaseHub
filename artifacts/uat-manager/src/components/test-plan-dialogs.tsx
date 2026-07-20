@@ -5,7 +5,8 @@ import { Dialog } from "./ui/dialog";
 import { Field, inputBaseClass, inputInvalidClass, inputValidClass } from "./ui/field";
 import { Textarea } from "./ui/textarea";
 import { Select } from "./ui/select";
-import { uploadUrl, customFetch } from "../lib/api-client";
+import { customFetch } from "../lib/api-client";
+import { AuthenticatedImage, openAuthenticatedUpload } from "./AuthenticatedImage";
 import { PreconditionPicker } from "./precondition-library";
 import type { TestStep, UseCase, TestCase } from "../types/api";
 
@@ -763,7 +764,8 @@ function AttachmentManager({ stepId }: { stepId: number }) {
         <div>
           <p className="text-label-md font-label-md text-on-surface">Reference Images</p>
           <p className="text-label-sm text-on-surface-variant mt-0.5">
-            Optional screenshots or diagrams for the tester.
+            Optional screenshots or diagrams shown to the tester during execution.
+            JPEG, PNG, GIF, or WebP · max 10 MB each.
           </p>
         </div>
         <Button
@@ -808,11 +810,13 @@ function AttachmentManager({ stepId }: { stepId: number }) {
               key={a.id}
               className="relative group aspect-square rounded-lg overflow-hidden border border-outline-variant bg-surface-container-low"
             >
-              <img
-                 src={uploadUrl(a.file_url)}
+              <AuthenticatedImage
+                fileUrl={a.file_url}
                 alt={a.file_name ?? "Reference"}
                 className="w-full h-full object-cover cursor-pointer"
-                 onClick={() => window.open(uploadUrl(a.file_url), "_blank")}
+                onClick={() => {
+                  openAuthenticatedUpload(a.file_url).catch(() => {});
+                }}
               />
               <button
                 type="button"

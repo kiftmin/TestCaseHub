@@ -73,6 +73,11 @@ api.use("/auth", authLimiter, authRoutes);
 api.use("/health", healthRoutes);
 api.use(apiLimiter);
 
+// Uploads must be mounted BEFORE any api.use("/", authenticate, ...) mounts.
+// Those catch-all mounts run authenticate for every path under /, which would
+// 401 <img src="...?token=..."> requests before this router can accept ?token=.
+api.use("/", attachmentRoutes); // /upload, /uploads/:file, /attachments
+
 // Protected — specific mounts first
 api.use("/users", authenticate, userRoutes);
 api.use("/projects", authenticate, projectRoutes);
@@ -83,13 +88,12 @@ api.use("/test-runs", authenticate, testRunRoutes);
 api.use("/test-runs/:testRunId/checklist", authenticate, checklistRoutes);
 api.use("/dashboard", authenticate, dashboardRoutes);
 
-// Mount routers with full embedded paths at root level 
+// Mount routers with full embedded paths at root level
 api.use("/", authenticate, executionRoutes);   // /test-runs/:id/test-cases/:id/execute, /executions/:id, /tester/:id/test-runs
 api.use("/", authenticate, assignmentRoutes);  // /projects/:id/users, /users/:id/projects
 api.use("/", authenticate, defectRoutes);      // /defects, /test-runs/:id/defects
 // api.use("/", authenticate, bugRoutes);        // /bugs — deprecated
 api.use("/", authenticate, discussionRoutes);   // /discussions, /test-runs/:id/discussions
-api.use("/", authenticate, attachmentRoutes);   // /upload, /attachments
 api.use("/", authenticate, importRoutes);       // /projects/:projectId/import
 api.use("/", authenticate, preconditionRoutes); // /projects/:id/preconditions, /preconditions/:id
 api.use("/", authenticate, sharedStepRoutes);   // /projects/:id/shared-step-blocks, insert-shared-steps

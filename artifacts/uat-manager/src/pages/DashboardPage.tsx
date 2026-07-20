@@ -10,7 +10,7 @@ import { useAuth } from "../hooks/useAuth";
 import type { ProjectAssignment, StatusAuditLog } from "../types/api";
 import type {
   RoleOverview, TestLeadOverview, BusinessOverview, DeveloperOverview,
-  TesterOverview, QueueDefectItem, Readiness, SignOffStatusItem,
+  TesterOverview, AdminOverview, QueueDefectItem, Readiness, SignOffStatusItem,
 } from "../types/dashboard";
 import { useState, useEffect, useMemo } from "react";
 import { KpiCard } from "../components/ui";
@@ -94,6 +94,95 @@ function uniqueRoles(assignments: ProjectAssignment[] | undefined): string[] {
 
 function roleLabel(role: string) {
   return role.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
+}
+
+/** Projects this user holds a given project role on (from memberships). */
+function projectsForRole(
+  assignments: ProjectAssignment[] | undefined,
+  role: string,
+): Array<{ id: number; name: string; code?: string }> {
+  if (!assignments?.length) return [];
+  const map = new Map<number, { id: number; name: string; code?: string }>();
+  for (const a of assignments) {
+    if (a.role !== role) continue;
+    const id = a.project_id;
+    const name = a.project?.name ?? `Project #${id}`;
+    const code = a.project?.project_code;
+    if (!map.has(id)) map.set(id, { id, name, code });
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function RoleScopeBanner({
+  role,
+  projects,
+  navigate,
+}: {
+  role: string;
+  projects: Array<{ id: number; name: string; code?: string }>;
+  navigate: (p: string) => void;
+}) {
+  if (role === "ADMIN") {
+    return (
+      <div className="rounded-xl border border-secondary/30 bg-secondary-container/40 px-md py-sm flex flex-wrap items-start gap-sm">
+        <span className="material-symbols-outlined text-secondary text-[20px] mt-0.5">public</span>
+        <div className="min-w-0 flex-1">
+          <p className="font-label-md text-label-md text-on-surface">Scope: entire system</p>
+          <p className="text-label-sm text-on-surface-variant mt-0.5">
+            Admin metrics cover all projects and users — not limited to a project role assignment.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const label = roleLabel(role);
+  if (projects.length === 0) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-md py-sm flex flex-wrap items-start gap-sm">
+        <span className="material-symbols-outlined text-amber-700 text-[20px] mt-0.5">info</span>
+        <div className="min-w-0 flex-1">
+          <p className="font-label-md text-label-md text-amber-900">No projects in scope for {label}</p>
+          <p className="text-label-sm text-amber-800/90 mt-0.5">
+            You are not assigned as {label} on any project. This tab should disappear after your memberships refresh.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-outline-variant bg-surface-container-lowest px-md py-sm space-y-sm">
+      <div className="flex flex-wrap items-start gap-sm">
+        <span className="material-symbols-outlined text-secondary text-[20px] mt-0.5">filter_alt</span>
+        <div className="min-w-0 flex-1">
+          <p className="font-label-md text-label-md text-on-surface">
+            Scope: your {label} projects only ({projects.length})
+          </p>
+          <p className="text-label-sm text-on-surface-variant mt-0.5">
+            KPIs and queues below are rolled up across these projects — not the whole portfolio.
+          </p>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-xs pl-0 sm:pl-7">
+        {projects.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => navigate(`/projects/${p.id}`)}
+            className="inline-flex items-center gap-1 max-w-full px-sm py-0.5 rounded-full bg-surface-container-high border border-outline-variant text-label-sm text-on-surface hover:bg-secondary-container hover:border-secondary/40 transition-colors"
+            title={p.name}
+          >
+            <span className="material-symbols-outlined text-[14px] text-secondary">folder</span>
+            <span className="truncate max-w-[14rem]">
+              {p.code ? `[${p.code}] ` : ""}
+              {p.name}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ReadinessBadge({ readiness }: { readiness: Readiness }) {
@@ -226,7 +315,15 @@ function QuickLinks({
 
 /* ─── Role panels ─── */
 
-function TestLeadPanel({ data, navigate }: { data: TestLeadOverview; navigate: (p: string) => void }) {
+function TestLeadPanel({
+  data,
+  navigate,
+  scopedProjects,
+}: {
+  data: TestLeadOverview;
+  navigate: (p: string) => void;
+  scopedProjects: Array<{ id: number; name: string; code?: string }>;
+}) {
   const chartData = data.progressByProject
     .filter((p) => p.total > 0)
     .slice(0, 8)
@@ -243,6 +340,7 @@ function TestLeadPanel({ data, navigate }: { data: TestLeadOverview; navigate: (
 
   return (
     <div className="space-y-lg">
+      <RoleScopeBanner role="TEST_LEAD" projects={scopedProjects} navigate={navigate} />
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-md">
         <KpiCard
           icon="trending_up"
@@ -349,7 +447,15 @@ function TestLeadPanel({ data, navigate }: { data: TestLeadOverview; navigate: (
   );
 }
 
-function BusinessOwnerPanel({ data, navigate }: { data: BusinessOverview; navigate: (p: string) => void }) {
+function BusinessOwnerPanel({
+  data,
+  navigate,
+  scopedProjects,
+}: {
+  data: BusinessOverview;
+  navigate: (p: string) => void;
+  scopedProjects: Array<{ id: number; name: string; code?: string }>;
+}) {
   const chartData = data.projectReadiness.map((p) => ({
     name: p.name.length > 16 ? p.name.slice(0, 14) + "…" : p.name,
     fullName: p.name,
@@ -364,6 +470,7 @@ function BusinessOwnerPanel({ data, navigate }: { data: BusinessOverview; naviga
 
   return (
     <div className="space-y-lg">
+      <RoleScopeBanner role="BUSINESS_OWNER" projects={scopedProjects} navigate={navigate} />
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-md">
         <KpiCard
           icon="flag"
@@ -506,7 +613,15 @@ function BusinessOwnerPanel({ data, navigate }: { data: BusinessOverview; naviga
   );
 }
 
-function DeveloperPanel({ data, navigate }: { data: DeveloperOverview; navigate: (p: string) => void }) {
+function DeveloperPanel({
+  data,
+  navigate,
+  scopedProjects,
+}: {
+  data: DeveloperOverview;
+  navigate: (p: string) => void;
+  scopedProjects: Array<{ id: number; name: string; code?: string }>;
+}) {
   const [chartMode, setChartMode] = useState<"severity" | "age">("severity");
 
   const severityData = Object.entries(data.bySeverity).map(([name, value]) => ({ name, value }));
@@ -514,6 +629,7 @@ function DeveloperPanel({ data, navigate }: { data: DeveloperOverview; navigate:
 
   return (
     <div className="space-y-lg">
+      <RoleScopeBanner role="DEVELOPER" projects={scopedProjects} navigate={navigate} />
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-md">
         <KpiCard icon="bug_report" label="My open" value={data.kpis.myOpen} tone={data.kpis.myOpen > 0 ? "info" : "success"}
           onClick={() => document.getElementById("dev-inbox")?.scrollIntoView({ behavior: "smooth" })} />
@@ -605,7 +721,15 @@ function DeveloperPanel({ data, navigate }: { data: DeveloperOverview; navigate:
   );
 }
 
-function TesterHomePanel({ data, navigate }: { data: TesterOverview; navigate: (p: string) => void }) {
+function TesterHomePanel({
+  data,
+  navigate,
+  scopedProjects,
+}: {
+  data: TesterOverview;
+  navigate: (p: string) => void;
+  scopedProjects: Array<{ id: number; name: string; code?: string }>;
+}) {
   const pieData = [
     { name: "To do", value: data.todayProgress.todo, color: "#94a3b8" },
     { name: "In progress", value: data.todayProgress.inProgress, color: "#f59e0b" },
@@ -616,6 +740,7 @@ function TesterHomePanel({ data, navigate }: { data: TesterOverview; navigate: (
 
   return (
     <div className="space-y-lg">
+      <RoleScopeBanner role="TESTER" projects={scopedProjects} navigate={navigate} />
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-md">
         <KpiCard icon="today" label="Due / active" value={data.kpis.dueToday} tone="info" onClick={() => navigate("/tester")} />
         <KpiCard icon="pending_actions" label="My remaining" value={data.kpis.myRemaining} tone={data.kpis.myRemaining > 0 ? "warning" : "success"} />
@@ -700,6 +825,237 @@ function TesterHomePanel({ data, navigate }: { data: TesterOverview; navigate: (
   );
 }
 
+function AdminPanel({ data, navigate }: { data: AdminOverview; navigate: (p: string) => void }) {
+  const severityData = Object.entries(data.openBySeverity)
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
+
+  const statusData = Object.entries(data.openByStatus)
+    .map(([name, value]) => ({ name: name.replace(/_/g, " "), value, raw: name }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8);
+
+  return (
+    <div className="space-y-lg">
+      <RoleScopeBanner role="ADMIN" projects={[]} navigate={navigate} />
+      <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-4 gap-md">
+        <KpiCard
+          icon="folder"
+          label="Projects"
+          value={data.kpis.totalProjects}
+          hint={`${data.kpis.activeRuns} active run${data.kpis.activeRuns === 1 ? "" : "s"}`}
+          onClick={() => navigate("/projects")}
+        />
+        <KpiCard
+          icon="group"
+          label="Active users"
+          value={data.kpis.activeUsers}
+          hint={`${data.kpis.inactiveUsers} inactive · ${data.kpis.adminUsers} admin`}
+          onClick={() => navigate("/users")}
+        />
+        <KpiCard
+          icon="bug_report"
+          label="Open defects"
+          value={data.kpis.openDefects}
+          hint={`${data.kpis.newDefects} NEW · ${data.kpis.criticalOpen} Critical`}
+          tone={data.kpis.openDefects > 0 ? (data.kpis.criticalOpen > 0 ? "danger" : "warning") : "success"}
+          onClick={() => document.getElementById("admin-aging")?.scrollIntoView({ behavior: "smooth" })}
+        />
+        <KpiCard
+          icon="health_and_safety"
+          label="Portfolio risk"
+          value={data.kpis.projectsWithoutLead + data.kpis.stalledRuns + data.kpis.incompleteSignOff}
+          hint={`${data.kpis.projectsWithoutLead} no lead · ${data.kpis.stalledRuns} stalled · ${data.kpis.incompleteSignOff} unsigned`}
+          tone={
+            data.kpis.projectsWithoutLead + data.kpis.stalledRuns + data.kpis.incompleteSignOff > 0
+              ? "warning"
+              : "success"
+          }
+        />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-lg">
+        <SectionCard
+          title="Open defects by severity"
+          empty={severityData.length === 0}
+          emptyIcon="pie_chart"
+          emptyCta="View projects"
+          onEmptyCta={() => navigate("/projects")}
+        >
+          <div className="p-md h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={severityData}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={48}
+                  outerRadius={80}
+                  paddingAngle={2}
+                >
+                  {severityData.map((entry) => (
+                    <Cell key={entry.name} fill={SEVERITY_COLORS[entry.name] ?? "#94a3b8"} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Open defects by status"
+          empty={statusData.length === 0}
+          emptyIcon="bar_chart"
+        >
+          <div className="p-md h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={statusData} layout="vertical" margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" allowDecimals={false} />
+                <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 11 }} />
+                <Tooltip />
+                <Bar dataKey="value" fill="#6366f1" radius={[0, 4, 4, 0]} name="Defects" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-lg">
+        <SectionCard
+          title="Governance — needs attention"
+          empty={
+            data.projectsWithoutLead.length === 0 &&
+            data.projectsWithNoTeam.length === 0 &&
+            data.incompleteSignOff.length === 0
+          }
+          emptyIcon="verified_user"
+          emptyCta="All clear — open projects"
+          onEmptyCta={() => navigate("/projects")}
+        >
+          <div className="divide-y divide-outline-variant">
+            {data.projectsWithoutLead.map((p) => (
+              <button
+                key={`lead-${p.projectId}`}
+                type="button"
+                onClick={() => navigate(`/projects/${p.projectId}`)}
+                className="w-full text-left px-md py-sm hover:bg-surface-container-low flex items-start gap-sm"
+              >
+                <span className="material-symbols-outlined text-amber-600 text-[20px] mt-0.5">person_off</span>
+                <div className="min-w-0 flex-1">
+                  <p className="font-label-md text-on-surface truncate">{p.name}</p>
+                  <p className="text-label-sm text-on-surface-variant">No Test Lead assigned</p>
+                </div>
+                <span className="material-symbols-outlined text-on-surface-variant text-[18px]">chevron_right</span>
+              </button>
+            ))}
+            {data.projectsWithNoTeam.map((p) => (
+              <button
+                key={`team-${p.projectId}`}
+                type="button"
+                onClick={() => navigate(`/projects/${p.projectId}`)}
+                className="w-full text-left px-md py-sm hover:bg-surface-container-low flex items-start gap-sm"
+              >
+                <span className="material-symbols-outlined text-blue-600 text-[20px] mt-0.5">group_off</span>
+                <div className="min-w-0 flex-1">
+                  <p className="font-label-md text-on-surface truncate">{p.name}</p>
+                  <p className="text-label-sm text-on-surface-variant">No team members assigned</p>
+                </div>
+                <span className="material-symbols-outlined text-on-surface-variant text-[18px]">chevron_right</span>
+              </button>
+            ))}
+            {data.incompleteSignOff.map((p) => (
+              <button
+                key={`so-${p.projectId}`}
+                type="button"
+                onClick={() => navigate(`/projects/${p.projectId}/sign-off`)}
+                className="w-full text-left px-md py-sm hover:bg-surface-container-low flex items-start gap-sm"
+              >
+                <span className="material-symbols-outlined text-purple-600 text-[20px] mt-0.5">draw</span>
+                <div className="min-w-0 flex-1">
+                  <p className="font-label-md text-on-surface truncate">{p.name}</p>
+                  <p className="text-label-sm text-on-surface-variant">
+                    Sign-off incomplete
+                    {!p.testLeadSigned ? " · Test Lead pending" : ""}
+                    {!p.businessOwnerSigned ? " · Business Owner pending" : ""}
+                    {p.testLeadName ? ` · Lead: ${p.testLeadName}` : ""}
+                  </p>
+                </div>
+                <span className="material-symbols-outlined text-on-surface-variant text-[18px]">chevron_right</span>
+              </button>
+            ))}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="At-risk / stalled runs"
+          empty={data.atRiskRuns.length === 0}
+          emptyIcon="schedule"
+          emptyCta="View projects"
+          onEmptyCta={() => navigate("/projects")}
+        >
+          <div className="divide-y divide-outline-variant">
+            {data.atRiskRuns.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => navigate(`/projects/${r.projectId}/test-runs`)}
+                className="w-full text-left px-md py-sm hover:bg-surface-container-low flex items-start gap-sm"
+              >
+                <span className="material-symbols-outlined text-red-600 text-[20px] mt-0.5">timelapse</span>
+                <div className="min-w-0 flex-1">
+                  <p className="font-label-md text-on-surface truncate">{r.name}</p>
+                  <p className="text-label-sm text-on-surface-variant">
+                    {r.projectName} · {r.reason}
+                  </p>
+                </div>
+                <span className="text-label-sm font-bold text-on-surface-variant shrink-0">{r.status}</span>
+              </button>
+            ))}
+          </div>
+        </SectionCard>
+      </div>
+
+      <div id="admin-aging">
+        <SectionCard
+          title="Aging / high-priority open defects"
+          empty={data.agingDefects.length === 0}
+          emptyIcon="bug_report"
+          emptyCta="No aging defects"
+        >
+          <DefectQueueTable
+            items={data.agingDefects}
+            onRow={(d) => navigate(`/projects/${d.projectId}/defects`)}
+          />
+        </SectionCard>
+      </div>
+
+      <div className="flex flex-wrap gap-sm justify-center">
+        <button
+          type="button"
+          onClick={() => navigate("/projects")}
+          className="inline-flex items-center gap-xs bg-primary text-on-primary px-lg py-sm rounded-lg font-label-md hover:opacity-90"
+        >
+          <span className="material-symbols-outlined text-[18px]">folder</span>
+          Manage projects
+        </button>
+        <button
+          type="button"
+          onClick={() => navigate("/users")}
+          className="inline-flex items-center gap-xs bg-surface-container-high text-on-surface px-lg py-sm rounded-lg font-label-md hover:bg-surface-container"
+        >
+          <span className="material-symbols-outlined text-[18px]">group</span>
+          Manage users
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function GenericPanel({
   navigate, isAdmin,
 }: {
@@ -739,6 +1095,9 @@ export function DashboardPage() {
     queryKey: ["userProjects", user?.userId],
     queryFn: () => customFetch<ProjectAssignment[]>(`/users/${user!.userId}/projects`),
     enabled: !!user?.userId,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
   });
 
   const roles = useMemo(() => {
@@ -748,6 +1107,18 @@ export function DashboardPage() {
   }, [assignments, isAdmin]);
 
   const topRole = roles[0] ?? (isAdmin ? "ADMIN" : null);
+
+  const scopedProjects = useMemo(() => {
+    if (!currentRole || currentRole === "ADMIN") return [];
+    if (currentRole === "BUSINESS_OWNER" || currentRole === "UAT_COORDINATOR") {
+      const bo = projectsForRole(assignments, "BUSINESS_OWNER");
+      const uc = projectsForRole(assignments, "UAT_COORDINATOR");
+      const map = new Map<number, { id: number; name: string; code?: string }>();
+      for (const p of [...bo, ...uc]) map.set(p.id, p);
+      return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return projectsForRole(assignments, currentRole);
+  }, [assignments, currentRole]);
 
   useEffect(() => {
     if (!currentRole && topRole) setCurrentRole(topRole);
@@ -764,7 +1135,7 @@ export function DashboardPage() {
   const { data: overview, isLoading, error, refetch } = useQuery({
     queryKey: ["roleOverview", currentRole, user?.userId],
     queryFn: () => customFetch<RoleOverview>(`/dashboard/role-overview?role=${currentRole}`),
-    enabled: !!currentRole && currentRole !== "ADMIN",
+    enabled: !!currentRole,
   });
 
   const { data: activity } = useQuery({
@@ -837,7 +1208,7 @@ export function DashboardPage() {
     if (currentRole === "TESTER") return "What do you run today?";
     if (currentRole === "BUSINESS_OWNER" || currentRole === "UAT_COORDINATOR") return "Can you accept this release?";
     if (currentRole === "TEST_LEAD") return "Can UAT finish on time with acceptable risk?";
-    if (currentRole === "ADMIN") return "System administration overview.";
+    if (currentRole === "ADMIN") return "Portfolio health, access hygiene, and system risk.";
     return `Welcome back, ${user?.username?.split(" ")[0] ?? "User"}.`;
   }, [currentRole, user?.username]);
 
@@ -879,20 +1250,22 @@ export function DashboardPage() {
         )}
       </div>
 
-      {isLoading && currentRole && currentRole !== "ADMIN" ? (
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-md">
-          {[1, 2, 3, 4, 5].map((i) => (
+      {isLoading && currentRole ? (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-md">
+          {[1, 2, 3, 4].map((i) => (
             <div key={i} className="h-24 rounded-xl bg-surface-container-low animate-pulse" />
           ))}
         </div>
+      ) : currentRole === "ADMIN" && overview?.role === "ADMIN" ? (
+        <AdminPanel data={overview} navigate={navigate} />
       ) : currentRole === "TEST_LEAD" && overview?.role === "TEST_LEAD" ? (
-        <TestLeadPanel data={overview} navigate={navigate} />
+        <TestLeadPanel data={overview} navigate={navigate} scopedProjects={scopedProjects} />
       ) : (currentRole === "BUSINESS_OWNER" || currentRole === "UAT_COORDINATOR") && overview && (overview.role === "BUSINESS_OWNER") ? (
-        <BusinessOwnerPanel data={overview as BusinessOverview} navigate={navigate} />
+        <BusinessOwnerPanel data={overview as BusinessOverview} navigate={navigate} scopedProjects={scopedProjects} />
       ) : currentRole === "DEVELOPER" && overview?.role === "DEVELOPER" ? (
-        <DeveloperPanel data={overview} navigate={navigate} />
+        <DeveloperPanel data={overview} navigate={navigate} scopedProjects={scopedProjects} />
       ) : currentRole === "TESTER" && overview?.role === "TESTER" ? (
-        <TesterHomePanel data={overview} navigate={navigate} />
+        <TesterHomePanel data={overview} navigate={navigate} scopedProjects={scopedProjects} />
       ) : (
         <GenericPanel navigate={navigate} isAdmin={isAdmin} />
       )}

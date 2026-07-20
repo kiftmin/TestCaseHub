@@ -7,7 +7,8 @@ import { Badge } from "./ui/badge";
 import { EmptyState } from "./ui/empty-state";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs";
 import { DropdownMenu, DropdownMenuItem } from "./ui/dropdown-menu";
-import { customFetch, uploadUrl } from "../lib/api-client";
+import { customFetch } from "../lib/api-client";
+import { AuthenticatedImage, openAuthenticatedUpload } from "./AuthenticatedImage";
 import { useProjectRole } from "../hooks/useProjectRole";
 import { useConfirmDialog } from "../hooks/use-confirm-dialog";
 import {
@@ -1516,12 +1517,14 @@ function StepItem({
           {images.length > 0 && (
             <div className="flex gap-xs flex-wrap pt-xs">
               {images.map((url, i) => (
-                <img
+                <AuthenticatedImage
                   key={i}
-                   src={uploadUrl(url)}
+                  fileUrl={url}
                   alt="Step reference"
                   className="w-12 h-12 object-cover rounded border border-outline-variant cursor-pointer hover:opacity-80"
-                   onClick={() => window.open(uploadUrl(url), "_blank")}
+                  onClick={() => {
+                    openAuthenticatedUpload(url).catch(() => {});
+                  }}
                 />
               ))}
             </div>

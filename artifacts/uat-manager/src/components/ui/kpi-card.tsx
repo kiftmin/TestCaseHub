@@ -5,8 +5,9 @@ interface KpiCardProps {
   label: string;
   value: React.ReactNode;
   hint?: string;
-  tone?: "default" | "success" | "warning" | "info";
+  tone?: "default" | "success" | "warning" | "info" | "danger";
   className?: string;
+  onClick?: () => void;
 }
 
 const toneStyles: Record<NonNullable<KpiCardProps["tone"]>, { bg: string; icon: string; ring: string }> = {
@@ -30,6 +31,11 @@ const toneStyles: Record<NonNullable<KpiCardProps["tone"]>, { bg: string; icon: 
     icon: "text-blue-700",
     ring: "ring-blue-200",
   },
+  danger: {
+    bg: "bg-red-50",
+    icon: "text-red-700",
+    ring: "ring-red-200",
+  },
 };
 
 export function KpiCard({
@@ -39,12 +45,15 @@ export function KpiCard({
   hint,
   tone = "default",
   className = "",
+  onClick,
 }: KpiCardProps) {
   const toneStyle = toneStyles[tone];
-  return (
-    <div
-      className={`relative overflow-hidden rounded-xl border border-outline-variant ${toneStyle.bg} p-md flex items-start gap-md ${className}`}
-    >
+  const interactive = !!onClick;
+  const classNames = `relative overflow-hidden rounded-xl border border-outline-variant ${toneStyle.bg} p-md flex items-start gap-md text-left w-full ${
+    interactive ? "hover:shadow-md hover:border-secondary/40 cursor-pointer transition-all active:scale-[0.99]" : ""
+  } ${className}`;
+  const body = (
+    <>
       <div
         className={`shrink-0 w-10 h-10 rounded-lg bg-surface-container-highest flex items-center justify-center ${toneStyle.icon}`}
       >
@@ -61,6 +70,17 @@ export function KpiCard({
           <p className="text-label-sm text-on-surface-variant mt-1">{hint}</p>
         )}
       </div>
-    </div>
+      {interactive && (
+        <span className="material-symbols-outlined text-on-surface-variant text-[18px] opacity-50 self-center">chevron_right</span>
+      )}
+    </>
   );
+  if (interactive) {
+    return (
+      <button type="button" onClick={onClick} className={classNames}>
+        {body}
+      </button>
+    );
+  }
+  return <div className={classNames}>{body}</div>;
 }

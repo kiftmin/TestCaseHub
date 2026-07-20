@@ -42,6 +42,7 @@ export function Sidebar({
 
   const isActive = (href: string) => {
     if (href === "/dashboard") return location === "/dashboard";
+    if (href === "/tester") return location === "/tester" || location.startsWith("/tester/");
     if (href === "/projects") return location === "/projects" || (isProjectPage && !projectSubLinks.some((s) => s.href && location.includes(s.href)));
     return location.startsWith(href);
   };

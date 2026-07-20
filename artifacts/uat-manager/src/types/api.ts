@@ -389,6 +389,7 @@ export interface DashboardSummary {
   totalTestRuns: number;
   totalTestCases: number;
   totalDefects: number;
+  openDefects?: number;
 }
 
 export interface Attachment {

@@ -1,16 +1,35 @@
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  Legend, Cell, PieChart, Pie,
+} from "recharts";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import { useAuth } from "../hooks/useAuth";
-import type { DashboardSummary, Defect, ProjectAssignment, TestRunUseCase, StatusAuditLog } from "../types/api";
+import type { ProjectAssignment, StatusAuditLog } from "../types/api";
+import type {
+  RoleOverview, TestLeadOverview, BusinessOverview, DeveloperOverview,
+  TesterOverview, QueueDefectItem, Readiness, SignOffStatusItem,
+} from "../types/dashboard";
 import { useState, useEffect, useMemo } from "react";
+import { KpiCard } from "../components/ui";
 
-const severityColors: Record<string, string> = {
-  Critical: "text-error",
-  Major: "text-amber-600",
-  Minor: "text-blue-600",
-  Cosmetic: "text-green-600",
+const SEVERITY_COLORS: Record<string, string> = {
+  Critical: "#ef4444",
+  Major: "#f97316",
+  High: "#f97316",
+  Minor: "#fbbf24",
+  Cosmetic: "#94a3b8",
+  Unspecified: "#94a3b8",
+};
+
+const AGE_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444"];
+
+const READINESS_STYLE: Record<Readiness, { label: string; className: string; icon: string }> = {
+  ready: { label: "Ready", className: "bg-green-100 text-green-800 border-green-200", icon: "check_circle" },
+  at_risk: { label: "At Risk", className: "bg-amber-100 text-amber-800 border-amber-200", icon: "warning" },
+  not_ready: { label: "Not Ready", className: "bg-red-100 text-red-800 border-red-200", icon: "cancel" },
 };
 
 const defectStatusColors: Record<string, string> = {
@@ -19,10 +38,12 @@ const defectStatusColors: Record<string, string> = {
   ASSIGNED: "bg-amber-100 text-amber-700",
   IN_PROGRESS: "bg-blue-100 text-blue-700",
   RESOLVED_DEV: "bg-green-100 text-green-700",
+  QA_PASSED: "bg-teal-100 text-teal-700",
   READY_FOR_VERIFICATION: "bg-purple-100 text-purple-700",
   REGRESSED: "bg-red-100 text-red-700",
   CLOSED: "bg-surface-container-high text-on-surface-variant",
   PASSED_BY_AGREEMENT: "bg-green-100 text-green-700",
+  PENDING_BIZ_ACCEPTANCE: "bg-orange-100 text-orange-800",
 };
 
 interface RecentExecution {
@@ -47,15 +68,666 @@ interface ActivityResponse {
   recentDefects?: RecentDefect[];
   auditLogs?: AuditLogEntry[];
 }
-interface GroupedRun {
-  id: number;
-  name: string;
-  status: string;
-  updated_at?: string;
-  scheduled_at?: string | null;
-  project?: { name: string };
-  useCases: TestRunUseCase[];
+
+function timeAgo(dateStr: string) {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
+
+function uniqueRoles(assignments: ProjectAssignment[] | undefined): string[] {
+  if (!assignments?.length) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const a of assignments) {
+    if (!seen.has(a.role)) {
+      seen.add(a.role);
+      out.push(a.role);
+    }
+  }
+  return out;
+}
+
+function roleLabel(role: string) {
+  return role.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
+}
+
+function ReadinessBadge({ readiness }: { readiness: Readiness }) {
+  const s = READINESS_STYLE[readiness];
+  return (
+    <span className={`inline-flex items-center gap-xs px-sm py-xs rounded-lg border text-label-sm font-bold ${s.className}`}>
+      <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 1" }}>{s.icon}</span>
+      {s.label}
+    </span>
+  );
+}
+
+function SectionCard({
+  title, action, children, empty, emptyIcon = "inbox", emptyCta, onEmptyCta,
+}: {
+  title: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+  empty?: boolean;
+  emptyIcon?: string;
+  emptyCta?: string;
+  onEmptyCta?: () => void;
+}) {
+  return (
+    <div className="bg-surface-container-lowest rounded-xl border border-outline-variant overflow-hidden">
+      <div className="p-lg border-b border-outline-variant flex justify-between items-center gap-md">
+        <h4 className="font-title-sm text-title-sm">{title}</h4>
+        {action}
+      </div>
+      {empty ? (
+        <div className="p-xl text-center text-on-surface-variant">
+          <span className="material-symbols-outlined text-4xl mb-sm block opacity-50">{emptyIcon}</span>
+          <p className="font-body-sm mb-md">Nothing here right now.</p>
+          {emptyCta && onEmptyCta && (
+            <button onClick={onEmptyCta} className="text-secondary font-label-md text-label-md hover:underline">
+              {emptyCta}
+            </button>
+          )}
+        </div>
+      ) : children}
+    </div>
+  );
+}
+
+function DefectQueueTable({
+  items, onRow, showAge = true,
+}: {
+  items: QueueDefectItem[];
+  onRow: (d: QueueDefectItem) => void;
+  showAge?: boolean;
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left">
+        <thead className="bg-surface-container-low font-label-md text-label-md text-on-surface-variant">
+          <tr>
+            <th className="px-lg py-md">ID</th>
+            <th className="px-lg py-md">Severity</th>
+            <th className="px-lg py-md">Issue</th>
+            <th className="px-lg py-md">Project</th>
+            {showAge && <th className="px-lg py-md">Age</th>}
+            <th className="px-lg py-md">Status</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-outline-variant font-body-sm text-body-sm">
+          {items.map((d) => (
+            <tr
+              key={d.id}
+              className="hover:bg-surface-container-low transition-colors cursor-pointer"
+              onClick={() => onRow(d)}
+            >
+              <td className="px-lg py-md font-bold">#{d.id}</td>
+              <td className="px-lg py-md">
+                <span className="font-bold" style={{ color: SEVERITY_COLORS[d.severity ?? ""] ?? undefined }}>
+                  {d.severity ?? "—"}
+                </span>
+              </td>
+              <td className="px-lg py-md font-medium max-w-[220px] truncate">{d.title}</td>
+              <td className="px-lg py-md text-on-surface-variant">{d.projectName}</td>
+              {showAge && (
+                <td className="px-lg py-md text-on-surface-variant">{d.ageDays}d</td>
+              )}
+              <td className="px-lg py-md">
+                <span className={`px-sm py-xs rounded text-xs font-bold ${defectStatusColors[d.status] ?? "bg-surface-container-high"}`}>
+                  {d.status.replace(/_/g, " ")}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function QuickLinks({
+  role, isAdmin, navigate,
+}: {
+  role: string | null;
+  isAdmin: boolean;
+  navigate: (path: string) => void;
+}) {
+  const links: { icon: string; label: string; href: string; show?: boolean }[] = [
+    { icon: "inventory_2", label: "All Projects", href: "/projects" },
+    { icon: "people", label: "User Management", href: "/users", show: isAdmin },
+    { icon: "play_circle", label: "My Test Runs", href: "/tester", show: role === "TESTER" || !role },
+    { icon: "bug_report", label: "Open Projects", href: "/projects", show: role === "DEVELOPER" || role === "TEST_LEAD" },
+    { icon: "verified", label: "Sign-off", href: "/projects", show: role === "BUSINESS_OWNER" || role === "UAT_COORDINATOR" || role === "TEST_LEAD" },
+  ];
+
+  return (
+    <div className="bg-surface-container-lowest p-lg rounded-xl border border-outline-variant h-fit">
+      <h4 className="font-title-sm text-title-sm mb-lg">Shortcuts</h4>
+      <div className="grid grid-cols-1 gap-sm">
+        {links.filter((l) => l.show !== false).map((l) => (
+          <button
+            key={l.label}
+            onClick={() => navigate(l.href)}
+            className="flex items-center gap-md p-md bg-surface-container-low hover:bg-surface-container-high rounded-lg transition-colors group text-left"
+          >
+            <span className="material-symbols-outlined text-secondary">{l.icon}</span>
+            <span className="font-label-md text-label-md flex-1">{l.label}</span>
+            <span className="material-symbols-outlined opacity-0 group-hover:opacity-100 transition-opacity">chevron_right</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Role panels ─── */
+
+function TestLeadPanel({ data, navigate }: { data: TestLeadOverview; navigate: (p: string) => void }) {
+  const chartData = data.progressByProject
+    .filter((p) => p.total > 0)
+    .slice(0, 8)
+    .map((p) => ({
+      name: p.name.length > 18 ? p.name.slice(0, 16) + "…" : p.name,
+      fullName: p.name,
+      projectId: p.projectId,
+      Done: p.done,
+      "In progress": p.inProgress,
+      "Not started": p.notStarted,
+    }));
+
+  const goDefect = (d: QueueDefectItem) => navigate(`/projects/${d.projectId}/defects`);
+
+  return (
+    <div className="space-y-lg">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-md">
+        <KpiCard
+          icon="trending_up"
+          label="Execution"
+          value={`${data.kpis.executionProgress}%`}
+          hint={`${data.kpis.doneScenarios}/${data.kpis.totalScenarios} scenarios`}
+          tone={data.kpis.executionProgress >= 80 ? "success" : data.kpis.executionProgress >= 50 ? "warning" : "danger"}
+          onClick={() => navigate("/projects")}
+        />
+        <KpiCard
+          icon="verified"
+          label="Pass Rate"
+          value={data.kpis.passRate != null ? `${data.kpis.passRate}%` : "—"}
+          hint="Of executed scenarios"
+          tone={data.kpis.passRate == null ? "default" : data.kpis.passRate >= 85 ? "success" : "warning"}
+        />
+        <KpiCard
+          icon="priority_high"
+          label="Triage Backlog"
+          value={data.kpis.triageBacklog}
+          hint="NEW defects"
+          tone={data.kpis.triageBacklog > 0 ? "danger" : "success"}
+          onClick={() => document.getElementById("tl-triage")?.scrollIntoView({ behavior: "smooth" })}
+        />
+        <KpiCard
+          icon="report"
+          label="Blocked / Critical"
+          value={data.kpis.blockedOrCritical}
+          hint="Needs attention"
+          tone={data.kpis.blockedOrCritical > 0 ? "warning" : "success"}
+        />
+        <KpiCard
+          icon="flag"
+          label="UAT Readiness"
+          value={<ReadinessBadge readiness={data.kpis.readiness} />}
+          hint={data.kpis.readinessReasons[0] ?? ""}
+          tone={data.kpis.readiness === "ready" ? "success" : data.kpis.readiness === "at_risk" ? "warning" : "danger"}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-lg">
+        <SectionCard title="Execution by project" empty={chartData.length === 0} emptyIcon="bar_chart" emptyCta="View projects" onEmptyCta={() => navigate("/projects")}>
+          <div className="p-md h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" allowDecimals={false} />
+                <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 11 }} />
+                <Tooltip
+                  formatter={(value: number | undefined) => value ?? 0}
+                  labelFormatter={(_, payload) => (payload?.[0]?.payload as { fullName?: string })?.fullName ?? ""}
+                />
+                <Legend />
+                <Bar dataKey="Done" stackId="a" fill="#22c55e" cursor="pointer" onClick={(e) => {
+                  const id = (e as unknown as { projectId?: number }).projectId;
+                  if (id) navigate(`/projects/${id}/test-runs`);
+                }} />
+                <Bar dataKey="In progress" stackId="a" fill="#3b82f6" cursor="pointer" onClick={(e) => {
+                  const id = (e as unknown as { projectId?: number }).projectId;
+                  if (id) navigate(`/projects/${id}/test-runs`);
+                }} />
+                <Bar dataKey="Not started" stackId="a" fill="#e2e8f0" cursor="pointer" onClick={(e) => {
+                  const id = (e as unknown as { projectId?: number }).projectId;
+                  if (id) navigate(`/projects/${id}/test-runs`);
+                }} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="At-risk runs"
+          empty={!data.atRiskRuns?.length}
+          emptyIcon="health_and_safety"
+          emptyCta="All runs look healthy"
+        >
+          <ul className="divide-y divide-outline-variant">
+            {(data.atRiskRuns ?? []).map((r) => (
+              <li
+                key={r.id}
+                className="px-lg py-md flex items-center justify-between gap-md cursor-pointer hover:bg-surface-container-low"
+                onClick={() => navigate(`/test-runs/${r.id}`)}
+              >
+                <div className="min-w-0">
+                  <p className="font-label-md text-label-md truncate">{r.name}</p>
+                  <p className="text-label-sm text-on-surface-variant">{r.projectName} · {r.progressPct}%</p>
+                </div>
+                <span className="shrink-0 px-sm py-xs rounded bg-amber-100 text-amber-800 text-xs font-bold">{r.reason}</span>
+              </li>
+            ))}
+          </ul>
+        </SectionCard>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-lg" id="tl-triage">
+        <SectionCard title="Triage now" empty={!data.triageQueue.length} emptyIcon="done_all" emptyCta="No NEW defects">
+          <DefectQueueTable items={data.triageQueue} onRow={goDefect} />
+        </SectionCard>
+        <SectionCard title="Needs retest / verification" empty={!data.retestQueue.length} emptyIcon="replay">
+          <DefectQueueTable items={data.retestQueue} onRow={goDefect} />
+        </SectionCard>
+      </div>
+    </div>
+  );
+}
+
+function BusinessOwnerPanel({ data, navigate }: { data: BusinessOverview; navigate: (p: string) => void }) {
+  const chartData = data.projectReadiness.map((p) => ({
+    name: p.name.length > 16 ? p.name.slice(0, 14) + "…" : p.name,
+    fullName: p.name,
+    projectId: p.projectId,
+    value: p.readiness === "ready" ? 3 : p.readiness === "at_risk" ? 2 : 1,
+    readiness: p.readiness,
+    executionPct: p.executionPct,
+  }));
+
+  const readinessColor = (r: Readiness) =>
+    r === "ready" ? "#22c55e" : r === "at_risk" ? "#f59e0b" : "#ef4444";
+
+  return (
+    <div className="space-y-lg">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-md">
+        <KpiCard
+          icon="flag"
+          label="Acceptance readiness"
+          value={<ReadinessBadge readiness={data.kpis.readiness} />}
+          hint={data.kpis.readinessReasons[0] ?? ""}
+          tone={data.kpis.readiness === "ready" ? "success" : data.kpis.readiness === "at_risk" ? "warning" : "danger"}
+        />
+        <KpiCard
+          icon="error"
+          label="Critical open"
+          value={data.kpis.criticalOpen}
+          hint="Business-blocking issues"
+          tone={data.kpis.criticalOpen > 0 ? "danger" : "success"}
+          onClick={() => document.getElementById("bo-risk")?.scrollIntoView({ behavior: "smooth" })}
+        />
+        <KpiCard
+          icon="task_alt"
+          label="UAT completion"
+          value={`${data.kpis.uatCompletion}%`}
+          hint="Scenarios done"
+          tone={data.kpis.uatCompletion >= 95 ? "success" : data.kpis.uatCompletion >= 80 ? "warning" : "danger"}
+        />
+        <KpiCard
+          icon="pending_actions"
+          label="Pending my decision"
+          value={data.kpis.pendingMyDecision}
+          hint="Acceptance or sign-off"
+          tone={data.kpis.pendingMyDecision > 0 ? "warning" : "success"}
+          onClick={() => document.getElementById("bo-decisions")?.scrollIntoView({ behavior: "smooth" })}
+        />
+        <KpiCard
+          icon="verified"
+          label="Signed off"
+          value={`${data.kpis.signedOffCount}/${data.kpis.totalProjects}`}
+          hint="Projects fully signed"
+          tone="info"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-lg">
+        <SectionCard title="Readiness by project" empty={!chartData.length} emptyIcon="analytics" emptyCta="View projects" onEmptyCta={() => navigate("/projects")}>
+          <div className="p-md h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData} margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                <YAxis domain={[0, 3]} ticks={[1, 2, 3]} tickFormatter={(v) => (v === 3 ? "Ready" : v === 2 ? "Risk" : "No")} />
+                <Tooltip
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.[0]) return null;
+                    const p = payload[0].payload as typeof chartData[0];
+                    return (
+                      <div className="bg-surface-container-lowest border border-outline-variant rounded-lg p-sm shadow-md text-label-sm">
+                        <p className="font-bold">{p.fullName}</p>
+                        <p>Status: {READINESS_STYLE[p.readiness as Readiness].label}</p>
+                        <p>Execution: {p.executionPct}%</p>
+                      </div>
+                    );
+                  }}
+                />
+                <Bar
+                  dataKey="value"
+                  radius={[6, 6, 0, 0]}
+                  cursor="pointer"
+                  onClick={(e) => {
+                    const id = (e as unknown as { projectId?: number }).projectId;
+                    if (id) navigate(`/projects/${id}/uat-summary`);
+                  }}
+                >
+                  {chartData.map((entry) => (
+                    <Cell key={entry.projectId} fill={readinessColor(entry.readiness as Readiness)} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Sign-off status" empty={!data.projectReadiness.length}>
+          <ul className="divide-y divide-outline-variant">
+            {data.projectReadiness.map((p) => (
+              <li
+                key={p.projectId}
+                className="px-lg py-md flex flex-col sm:flex-row sm:items-center justify-between gap-sm cursor-pointer hover:bg-surface-container-low"
+                onClick={() => navigate(`/projects/${p.projectId}/sign-off`)}
+              >
+                <div className="min-w-0">
+                  <p className="font-label-md text-label-md">{p.name}</p>
+                  <p className="text-label-sm text-on-surface-variant">
+                    TL {p.testLeadSigned ? "✓" : "—"} · BO {p.businessOwnerSigned ? "✓" : "—"} · {p.executionPct}% done
+                  </p>
+                  {p.reasons[0] && !p.signedOff && (
+                    <p className="text-label-sm text-on-surface-variant mt-xs">{p.reasons[0]}</p>
+                  )}
+                </div>
+                <ReadinessBadge readiness={p.readiness} />
+              </li>
+            ))}
+          </ul>
+        </SectionCard>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-lg" id="bo-decisions">
+        <SectionCard title="Decisions needed" empty={!data.decisionsNeeded.length} emptyIcon="thumb_up">
+          <DefectQueueTable
+            items={data.decisionsNeeded}
+            onRow={(d) => navigate(`/projects/${d.projectId}/defects`)}
+          />
+        </SectionCard>
+        <div id="bo-risk">
+          <SectionCard title="Residual risk" empty={!data.residualRisk.length} emptyIcon="shield">
+            <DefectQueueTable
+              items={data.residualRisk}
+              onRow={(d) => navigate(`/projects/${d.projectId}/defects`)}
+            />
+          </SectionCard>
+        </div>
+      </div>
+
+      {data.pendingSignOff.length > 0 && (
+        <SectionCard title="Ready for your sign-off">
+          <ul className="divide-y divide-outline-variant">
+            {data.pendingSignOff.map((p) => (
+              <li
+                key={p.projectId}
+                className="px-lg py-md flex items-center justify-between cursor-pointer hover:bg-surface-container-low"
+                onClick={() => navigate(`/projects/${p.projectId}/sign-off`)}
+              >
+                <span className="font-label-md">{p.name}</span>
+                <button className="bg-secondary text-on-secondary px-md py-xs rounded-lg font-label-md text-label-sm">
+                  Sign off
+                </button>
+              </li>
+            ))}
+          </ul>
+        </SectionCard>
+      )}
+    </div>
+  );
+}
+
+function DeveloperPanel({ data, navigate }: { data: DeveloperOverview; navigate: (p: string) => void }) {
+  const [chartMode, setChartMode] = useState<"severity" | "age">("severity");
+
+  const severityData = Object.entries(data.bySeverity).map(([name, value]) => ({ name, value }));
+  const ageData = Object.entries(data.ageBuckets).map(([name, value]) => ({ name, value }));
+
+  return (
+    <div className="space-y-lg">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-md">
+        <KpiCard icon="bug_report" label="My open" value={data.kpis.myOpen} tone={data.kpis.myOpen > 0 ? "info" : "success"}
+          onClick={() => document.getElementById("dev-inbox")?.scrollIntoView({ behavior: "smooth" })} />
+        <KpiCard icon="engineering" label="In progress" value={data.kpis.inProgress} tone="info" />
+        <KpiCard icon="hourglass_top" label="Awaiting QA / retest" value={data.kpis.awaitingQa} tone={data.kpis.awaitingQa > 0 ? "warning" : "default"} />
+        <KpiCard icon="schedule" label="Aging (>7d)" value={data.kpis.aging} tone={data.kpis.aging > 0 ? "danger" : "success"}
+          onClick={() => setChartMode("age")} />
+        <KpiCard icon="task_alt" label="Resolved this month" value={data.kpis.resolvedThisMonth} tone="success" />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-lg">
+        <SectionCard
+          title={chartMode === "severity" ? "Open by severity" : "Open by age"}
+          action={
+            <div className="flex gap-xs bg-surface-container p-xs rounded-lg">
+              <button
+                onClick={() => setChartMode("severity")}
+                className={`px-sm py-xs rounded text-label-sm font-bold ${chartMode === "severity" ? "bg-surface-container-lowest shadow-sm" : ""}`}
+              >
+                Severity
+              </button>
+              <button
+                onClick={() => setChartMode("age")}
+                className={`px-sm py-xs rounded text-label-sm font-bold ${chartMode === "age" ? "bg-surface-container-lowest shadow-sm" : ""}`}
+              >
+                Age
+              </button>
+            </div>
+          }
+          empty={(chartMode === "severity" ? severityData : ageData).length === 0}
+          emptyIcon="celebration"
+        >
+          <div className="p-md h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              {chartMode === "severity" ? (
+                <BarChart data={severityData} layout="vertical" margin={{ left: 8, right: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                  <XAxis type="number" allowDecimals={false} />
+                  <YAxis type="category" dataKey="name" width={90} tick={{ fontSize: 11 }} />
+                  <Tooltip />
+                  <Bar dataKey="value" radius={[0, 6, 6, 0]}>
+                    {severityData.map((e) => (
+                      <Cell key={e.name} fill={SEVERITY_COLORS[e.name] ?? "#94a3b8"} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              ) : (
+                <BarChart data={ageData} margin={{ left: 8, right: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip />
+                  <Bar dataKey="value" radius={[6, 6, 0, 0]}>
+                    {ageData.map((e, i) => (
+                      <Cell key={e.name} fill={AGE_COLORS[i % AGE_COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              )}
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
+
+        <div className="xl:col-span-2 space-y-lg" id="dev-inbox">
+          <SectionCard title="My defect inbox" empty={!data.inbox.length} emptyIcon="inbox" emptyCta="No assigned defects">
+            <DefectQueueTable
+              items={data.inbox}
+              onRow={(d) => navigate(`/projects/${d.projectId}/defects`)}
+            />
+          </SectionCard>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-lg">
+        <SectionCard title="Blocked" empty={!data.blockedQueue.length} emptyIcon="lock_open">
+          <DefectQueueTable
+            items={data.blockedQueue}
+            onRow={(d) => navigate(`/projects/${d.projectId}/defects`)}
+          />
+        </SectionCard>
+        <SectionCard title="Returned / regressed" empty={!data.returnedQueue.length} emptyIcon="replay">
+          <DefectQueueTable
+            items={data.returnedQueue}
+            onRow={(d) => navigate(`/projects/${d.projectId}/defects`)}
+          />
+        </SectionCard>
+      </div>
+    </div>
+  );
+}
+
+function TesterHomePanel({ data, navigate }: { data: TesterOverview; navigate: (p: string) => void }) {
+  const pieData = [
+    { name: "To do", value: data.todayProgress.todo, color: "#94a3b8" },
+    { name: "In progress", value: data.todayProgress.inProgress, color: "#f59e0b" },
+    { name: "Done", value: data.todayProgress.done, color: "#22c55e" },
+  ].filter((d) => d.value > 0);
+
+  const total = data.todayProgress.todo + data.todayProgress.inProgress + data.todayProgress.done;
+
+  return (
+    <div className="space-y-lg">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-md">
+        <KpiCard icon="today" label="Due / active" value={data.kpis.dueToday} tone="info" onClick={() => navigate("/tester")} />
+        <KpiCard icon="pending_actions" label="My remaining" value={data.kpis.myRemaining} tone={data.kpis.myRemaining > 0 ? "warning" : "success"} />
+        <KpiCard icon="task_alt" label="Completed today" value={data.kpis.completedToday} tone="success" />
+        <KpiCard
+          icon="percent"
+          label="My pass rate"
+          value={data.kpis.passRate != null ? `${data.kpis.passRate}%` : "—"}
+          hint="Your recorded steps"
+          tone={data.kpis.passRate != null && data.kpis.passRate < 70 ? "warning" : "default"}
+        />
+        <KpiCard icon="bug_report" label="Defects I found (open)" value={data.kpis.openDefectsFound} tone={data.kpis.openDefectsFound > 0 ? "info" : "default"} />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-lg">
+        <SectionCard title="My progress" empty={total === 0} emptyIcon="play_circle" emptyCta="Open My Runs" onEmptyCta={() => navigate("/tester")}>
+          <div className="p-md h-56 relative">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={50} outerRadius={75} paddingAngle={2}>
+                  {pieData.map((e) => (
+                    <Cell key={e.name} fill={e.color} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Continue" empty={!data.continueQueue.length} emptyIcon="play_arrow" emptyCta="Nothing in progress">
+          <ul className="divide-y divide-outline-variant">
+            {data.continueQueue.map((s) => (
+              <li
+                key={s.trucId}
+                className="px-lg py-md cursor-pointer hover:bg-surface-container-low"
+                onClick={() => navigate(`/tester/run/${s.runId}`)}
+              >
+                <p className="font-label-md text-label-md">{s.scenarioCode} · {s.scenarioName}</p>
+                <p className="text-label-sm text-on-surface-variant">{s.projectName} · {s.runName}</p>
+              </li>
+            ))}
+          </ul>
+        </SectionCard>
+
+        <SectionCard title="Up next" empty={!data.upNext.length} emptyIcon="upcoming">
+          <ul className="divide-y divide-outline-variant">
+            {data.upNext.map((s) => (
+              <li
+                key={s.trucId}
+                className="px-lg py-md cursor-pointer hover:bg-surface-container-low"
+                onClick={() => navigate(`/tester/run/${s.runId}`)}
+              >
+                <p className="font-label-md text-label-md">{s.scenarioCode} · {s.scenarioName}</p>
+                <p className="text-label-sm text-on-surface-variant">{s.projectName} · {s.runName}</p>
+              </li>
+            ))}
+          </ul>
+        </SectionCard>
+      </div>
+
+      {data.retestQueue.length > 0 && (
+        <SectionCard title="Retest / verification">
+          <DefectQueueTable
+            items={data.retestQueue}
+            onRow={(d) => navigate(d.runId ? `/tester/run/${d.runId}` : `/projects/${d.projectId}/defects`)}
+          />
+        </SectionCard>
+      )}
+
+      <div className="flex justify-center">
+        <button
+          onClick={() => navigate("/tester")}
+          className="inline-flex items-center gap-sm bg-primary text-on-primary px-lg py-md rounded-xl font-label-md hover:opacity-90"
+        >
+          Open full My Runs workspace
+          <span className="material-symbols-outlined">arrow_forward</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function GenericPanel({
+  navigate, isAdmin,
+}: {
+  navigate: (p: string) => void;
+  isAdmin: boolean;
+}) {
+  return (
+    <div className="bg-surface-container-lowest rounded-xl border border-outline-variant p-xl text-center">
+      <span className="material-symbols-outlined text-5xl text-secondary mb-md">dashboard</span>
+      <h3 className="font-title-md text-title-md mb-sm">Operational overview</h3>
+      <p className="text-on-surface-variant font-body-sm mb-lg max-w-md mx-auto">
+        Select a project role above for role-specific KPIs, or open projects to continue.
+      </p>
+      <div className="flex flex-wrap gap-sm justify-center">
+        <button onClick={() => navigate("/projects")} className="bg-primary text-on-primary px-md py-sm rounded-lg font-label-md">
+          Projects
+        </button>
+        {isAdmin && (
+          <button onClick={() => navigate("/users")} className="bg-surface-container-high px-md py-sm rounded-lg font-label-md">
+            Users
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Main page ─── */
 
 export function DashboardPage() {
   const user = getStoredUser();
@@ -63,9 +735,36 @@ export function DashboardPage() {
   const [, navigate] = useLocation();
   const [currentRole, setCurrentRole] = useState<string | null>(null);
 
-  const { data: summary, isLoading: summaryLoading, error: summaryError, refetch: refetchSummary } = useQuery({
-    queryKey: ["dashboardSummary"],
-    queryFn: () => customFetch<DashboardSummary>("/dashboard/summary"),
+  const { data: assignments } = useQuery({
+    queryKey: ["userProjects", user?.userId],
+    queryFn: () => customFetch<ProjectAssignment[]>(`/users/${user!.userId}/projects`),
+    enabled: !!user?.userId,
+  });
+
+  const roles = useMemo(() => {
+    const r = uniqueRoles(assignments);
+    if (isAdmin && !r.includes("ADMIN")) r.unshift("ADMIN");
+    return r;
+  }, [assignments, isAdmin]);
+
+  const topRole = roles[0] ?? (isAdmin ? "ADMIN" : null);
+
+  useEffect(() => {
+    if (!currentRole && topRole) setCurrentRole(topRole);
+    else if (currentRole && roles.length && !roles.includes(currentRole)) setCurrentRole(topRole);
+  }, [topRole, currentRole, roles]);
+
+  // Testers: land on My Runs as primary home
+  useEffect(() => {
+    if (currentRole === "TESTER" && roles.length === 1) {
+      navigate("/tester", { replace: true });
+    }
+  }, [currentRole, roles, navigate]);
+
+  const { data: overview, isLoading, error, refetch } = useQuery({
+    queryKey: ["roleOverview", currentRole, user?.userId],
+    queryFn: () => customFetch<RoleOverview>(`/dashboard/role-overview?role=${currentRole}`),
+    enabled: !!currentRole && currentRole !== "ADMIN",
   });
 
   const { data: activity } = useQuery({
@@ -74,53 +773,10 @@ export function DashboardPage() {
     enabled: !!currentRole,
   });
 
-  const { data: assignments } = useQuery({
-    queryKey: ["userProjects", user?.userId],
-    queryFn: () => customFetch<ProjectAssignment[]>(`/users/${user!.userId}/projects`),
-    enabled: !!user?.userId,
-  });
-
-  const topRole = useMemo(() => assignments?.[0]?.role ?? null, [assignments]);
-
-  useEffect(() => {
-    if (!currentRole && topRole) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setCurrentRole(topRole);
-    } else if (currentRole && !assignments?.some((a) => a.role === currentRole)) {
-      // currentRole is stale; fall back to top role if any, else null
-      setCurrentRole(topRole);
-    }
-  }, [topRole, currentRole, assignments]);
-
-  const { data: myDefects } = useQuery({
-    queryKey: ["myDefects", user?.userId],
-    queryFn: () => customFetch<Defect[]>(`/dashboard/developer/${user!.userId}/defects`),
-    enabled: currentRole === "DEVELOPER" && !!user?.userId,
-  });
-
-  const { data: myRunsRaw } = useQuery({
-    queryKey: ["testerRuns", user?.userId],
-    queryFn: () => customFetch<(TestRunUseCase & { testRun?: { id: number; name: string; status: string; updated_at?: string; scheduled_at?: string | null; project?: { name: string } } })[]>(`/dashboard/tester/${user!.userId}/test-runs`),
-    enabled: currentRole === "TESTER" && !!user?.userId,
-  });
-
-  const myRunsGrouped = useMemo(() => {
-    if (!myRunsRaw) return [];
-    const map: Record<number, GroupedRun> = {};
-    for (const uc of myRunsRaw) {
-      const runId = uc.test_run_id;
-      if (!map[runId]) {
-        const tr = uc.testRun;
-        map[runId] = { id: runId, name: tr?.name ?? `Run #${runId}`, status: tr?.status ?? "scheduled", updated_at: tr?.updated_at, scheduled_at: tr?.scheduled_at, project: tr?.project, useCases: [] };
-      }
-      map[runId].useCases.push(uc);
-    }
-    return Object.values(map);
-  }, [myRunsRaw]);
-
-  const { data: signOffStatus } = useQuery({
-    queryKey: ["signOffStatus"],
-    queryFn: () => customFetch<{ projectId: number; name: string; signedOff: boolean }[]>("/dashboard/sign-off-status"),
+  // Prefetch sign-off for BO (overview already includes it)
+  useQuery({
+    queryKey: ["signOffStatus", currentRole],
+    queryFn: () => customFetch<SignOffStatusItem[]>("/dashboard/sign-off-status?role=" + currentRole),
     enabled: currentRole === "BUSINESS_OWNER" || currentRole === "UAT_COORDINATOR",
   });
 
@@ -128,51 +784,29 @@ export function DashboardPage() {
     document.title = "Dashboard | TestCaseHub";
   }, []);
 
-  const myOpenDefects = useMemo(
-    () => myDefects?.filter(d => d.status !== "CLOSED" && d.status !== "PASSED_BY_AGREEMENT") ?? [],
-    [myDefects],
-  );
-  const myInProgress = useMemo(
-    () => myDefects?.filter(d => d.status === "IN_PROGRESS" || d.status === "ASSIGNED" || d.status === "TRIAGED") ?? [],
-    [myDefects],
-  );
-  const myResolved = useMemo(
-    () => myDefects?.filter(d => d.status === "RESOLVED_DEV" || d.status === "CLOSED" || d.status === "PASSED_BY_AGREEMENT") ?? [],
-    [myDefects],
-  );
-
-  const testerRunStats = useMemo(() => {
-    if (!myRunsGrouped || myRunsGrouped.length === 0) return null;
-    return {
-      assigned: myRunsGrouped.length,
-      completedToday: myRunsGrouped.filter(
-        (r) => r.status === "completed" && r.updated_at && new Date(r.updated_at).toDateString() === new Date().toDateString(),
-      ).length,
-      openDefectsFound: 0,
-    };
-  }, [myRunsGrouped]);
-
   const recentEvents = useMemo(() => {
     const events: Array<{ icon: string; iconBg: string; description: string; timestamp: string; detail: string }> = [];
     activity?.auditLogs?.forEach((l) => {
       const action = l.to_status === "created" ? "created" : l.to_status === "deleted" ? "deleted" : l.to_status === "updated" ? "updated" : l.to_status ?? "updated";
-      const entityMap: Record<string, string> = { user: "User", project: "Project", test_run: "Test Run", execution: "Execution", defect: "Defect", test_scenario: "Scenario", test_case: "Test Case", test_step: "Test Step" };
+      const entityMap: Record<string, string> = {
+        user: "User", project: "Project", test_run: "Test Run", execution: "Execution",
+        defect: "Defect", test_scenario: "Scenario", test_case: "Test Case",
+      };
       const entity = entityMap[l.entity_type] ?? l.entity_type;
-      const label = l.reason ?? `#${l.entity_id}`;
       const by = l.changedBy?.username ?? "system";
       let icon = "info";
       let iconBg = "bg-surface-container-high text-on-surface-variant";
-      if (l.entity_type === "user") { icon = "person"; }
+      if (l.entity_type === "defect") { icon = "warning"; iconBg = "bg-amber-100 text-amber-700"; }
+      else if (l.entity_type === "execution") {
+        icon = l.to_status === "passed" ? "check_circle" : l.to_status === "failed" ? "cancel" : "play_circle";
+        iconBg = l.to_status === "passed" ? "bg-green-100 text-green-700" : l.to_status === "failed" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700";
+      } else if (l.entity_type === "test_run") { icon = "playlist_play"; iconBg = "bg-purple-100 text-purple-700"; }
       else if (l.entity_type === "project") { icon = "folder"; }
-      else if (l.entity_type === "defect") { icon = "warning"; iconBg = "bg-amber-100 text-amber-700"; }
-      else if (l.entity_type === "execution") { icon = l.to_status === "passed" ? "check_circle" : l.to_status === "failed" ? "cancel" : "play_circle"; iconBg = l.to_status === "passed" ? "bg-green-100 text-green-700" : l.to_status === "failed" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"; }
-      else if (l.entity_type === "test_run") { icon = "playlist_play"; iconBg = "bg-purple-100 text-purple-700"; }
-      else if (l.entity_type === "test_scenario") { icon = "feature_search"; iconBg = "bg-blue-100 text-blue-700"; }
-      else if (l.entity_type === "test_case") { icon = "checklist"; iconBg = "bg-teal-100 text-teal-700"; }
+      else if (l.entity_type === "user") { icon = "person"; }
       events.push({
         icon,
         iconBg,
-        description: `${entity} ${action}: ${label}`,
+        description: `${entity} ${action}: ${l.reason ?? `#${l.entity_id}`}`,
         timestamp: l.changed_at,
         detail: `by ${by}`,
       });
@@ -181,7 +815,7 @@ export function DashboardPage() {
       events.push({
         icon: e.overall_result === "passed" ? "check_circle" : "cancel",
         iconBg: e.overall_result === "passed" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700",
-        description: `Execution #${e.id} ${e.overall_result === "passed" ? "passed" : "failed"} for test case "${e.testCase?.title ?? ""}"`,
+        description: `Execution #${e.id} ${e.overall_result === "passed" ? "passed" : "failed"} — "${e.testCase?.title ?? ""}"`,
         timestamp: e.executed_at ?? new Date().toISOString(),
         detail: e.testRun?.name ?? "",
       });
@@ -195,26 +829,23 @@ export function DashboardPage() {
         detail: d.testCase?.title ?? "",
       });
     });
-    return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 10);
+    return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 8);
   }, [activity]);
 
-  function timeAgo(dateStr: string) {
-    // eslint-disable-next-line react-hooks/purity -- display helper, fine to use Date.now
-    const diff = Date.now() - new Date(dateStr).getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return "Just now";
-    if (mins < 60) return `${mins}m ago`;
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    return `${days}d ago`;
-  }
+  const subtitle = useMemo(() => {
+    if (currentRole === "DEVELOPER") return "What should you fix next?";
+    if (currentRole === "TESTER") return "What do you run today?";
+    if (currentRole === "BUSINESS_OWNER" || currentRole === "UAT_COORDINATOR") return "Can you accept this release?";
+    if (currentRole === "TEST_LEAD") return "Can UAT finish on time with acceptable risk?";
+    if (currentRole === "ADMIN") return "System administration overview.";
+    return `Welcome back, ${user?.username?.split(" ")[0] ?? "User"}.`;
+  }, [currentRole, user?.username]);
 
-  if (summaryError) {
+  if (error) {
     return (
       <div className="bg-error-container border border-error rounded-xl p-lg">
-        <p className="text-error font-body-sm">Something went wrong — {summaryError.message}</p>
-        <button onClick={() => refetchSummary()} className="mt-md bg-error text-on-error px-md py-sm rounded-lg font-label-md">
+        <p className="text-error font-body-sm">Something went wrong — {(error as Error).message}</p>
+        <button onClick={() => refetch()} className="mt-md bg-error text-on-error px-md py-sm rounded-lg font-label-md">
           Retry
         </button>
       </div>
@@ -223,218 +854,54 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-xl">
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col md:flex-row md:justify-between md:items-end gap-md">
         <div>
           <h1 className="font-display-lg text-display-lg text-primary">Dashboard</h1>
-          <p className="font-body-base text-body-base text-on-surface-variant">
-            {currentRole === "DEVELOPER" ? "System Health: Stable. Track your assigned bugs." :
-             currentRole === "TESTER" ? `Good ${new Date().getHours() < 12 ? "morning" : "afternoon"}, ${user?.username?.split(" ")[0] ?? "Tester"}.` :
-             `Welcome back, ${user?.username?.split(" ")[0] ?? "User"}. Here is your operational overview.`}
-          </p>
+          <p className="font-body-base text-body-base text-on-surface-variant">{subtitle}</p>
         </div>
-        <div className="flex gap-xs bg-surface-container p-xs rounded-lg">
-          {(assignments ?? []).slice(0, 4).map((a) => (
-            <button
-              key={a.id}
-              onClick={() => setCurrentRole(a.role)}
-              className={`px-md py-xs rounded-md font-label-sm text-label-sm transition-colors ${
-                currentRole === a.role ? "bg-surface-container-lowest shadow-sm" : "hover:bg-surface-container-high"
-              }`}
-            >
-              {a.role.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}
-            </button>
+        {roles.length > 0 && (
+          <div className="flex flex-wrap gap-xs bg-surface-container p-xs rounded-lg">
+            {roles.slice(0, 6).map((role) => (
+              <button
+                key={role}
+                onClick={() => {
+                  if (role === "TESTER" && roles.length === 1) navigate("/tester");
+                  else setCurrentRole(role);
+                }}
+                className={`px-md py-xs rounded-md font-label-sm text-label-sm transition-colors ${
+                  currentRole === role ? "bg-surface-container-lowest shadow-sm" : "hover:bg-surface-container-high"
+                }`}
+              >
+                {roleLabel(role)}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {isLoading && currentRole && currentRole !== "ADMIN" ? (
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-md">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="h-24 rounded-xl bg-surface-container-low animate-pulse" />
           ))}
         </div>
-      </div>
+      ) : currentRole === "TEST_LEAD" && overview?.role === "TEST_LEAD" ? (
+        <TestLeadPanel data={overview} navigate={navigate} />
+      ) : (currentRole === "BUSINESS_OWNER" || currentRole === "UAT_COORDINATOR") && overview && (overview.role === "BUSINESS_OWNER") ? (
+        <BusinessOwnerPanel data={overview as BusinessOverview} navigate={navigate} />
+      ) : currentRole === "DEVELOPER" && overview?.role === "DEVELOPER" ? (
+        <DeveloperPanel data={overview} navigate={navigate} />
+      ) : currentRole === "TESTER" && overview?.role === "TESTER" ? (
+        <TesterHomePanel data={overview} navigate={navigate} />
+      ) : (
+        <GenericPanel navigate={navigate} isAdmin={isAdmin} />
+      )}
 
-      {/* Stat Bar */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-lg">
-        <div className="bg-surface-container-lowest p-lg rounded-xl border border-outline-variant">
-          <div className="flex justify-between items-start mb-md">
-            <span className="material-symbols-outlined text-secondary text-3xl">folder_shared</span>
-          </div>
-          <p className="font-label-md text-label-md text-on-surface-variant">
-              {currentRole === "DEVELOPER" ? "My Open Defects" : currentRole === "TESTER" ? "Assigned Runs" : "Active Projects"}
-          </p>
-          <h3 className="font-headline-md text-headline-md mt-xs">
-            {summaryLoading ? <span className="skeleton inline-block w-16 h-8 rounded" /> :
-             currentRole === "DEVELOPER" ? myOpenDefects.length :
-             currentRole === "TESTER" ? (testerRunStats?.assigned ?? summary?.totalTestRuns ?? 0) :
-             summary?.totalProjects ?? 0}
-          </h3>
-        </div>
-        <div className="bg-surface-container-lowest p-lg rounded-xl border border-outline-variant">
-          <div className="flex justify-between items-start mb-md">
-            <span className="material-symbols-outlined text-secondary text-3xl">play_circle</span>
-          </div>
-          <p className="font-label-md text-label-md text-on-surface-variant">
-            {currentRole === "DEVELOPER" ? "My In-Progress" : currentRole === "TESTER" ? "Completed Today" : "Test Runs"}
-          </p>
-          <h3 className="font-headline-md text-headline-md mt-xs">
-            {summaryLoading ? <span className="skeleton inline-block w-16 h-8 rounded" /> :
-             currentRole === "DEVELOPER" ? myInProgress.length :
-             currentRole === "TESTER" ? (testerRunStats?.completedToday ?? 0) :
-             summary?.totalTestRuns ?? 0}
-          </h3>
-        </div>
-        <div className="bg-surface-container-lowest p-lg rounded-xl border border-outline-variant">
-          <div className="flex justify-between items-start mb-md">
-            <span className="material-symbols-outlined text-secondary text-3xl">fact_check</span>
-          </div>
-          <p className="font-label-md text-label-md text-on-surface-variant">
-            {currentRole === "DEVELOPER" ? "My Resolved (This Month)" : currentRole === "TESTER" ? "Open Defects Found" : "Test Cases"}
-          </p>
-          <h3 className="font-headline-md text-headline-md mt-xs">
-            {summaryLoading ? <span className="skeleton inline-block w-16 h-8 rounded" /> :
-             currentRole === "DEVELOPER" ? myResolved.length :
-             currentRole === "TESTER" ? (testerRunStats?.openDefectsFound ?? 0) :
-             summary?.totalTestCases ?? 0}
-          </h3>
-        </div>
-        <div className="bg-surface-container-lowest p-lg rounded-xl border border-outline-variant">
-          <div className="flex justify-between items-start mb-md">
-            <span className="material-symbols-outlined text-error text-3xl">bug_report</span>
-          </div>
-          <p className="font-label-md text-label-md text-on-surface-variant">Open Defects</p>
-          <h3 className="font-headline-md text-headline-md mt-xs">
-            {summaryLoading ? <span className="skeleton inline-block w-16 h-8 rounded" /> : summary?.totalDefects ?? 0}
-          </h3>
-        </div>
-      </div>
-
-      {/* Role-specific content */}
-      {currentRole === "DEVELOPER" ? (
-        <div className="bg-surface-container-lowest rounded-xl border border-outline-variant overflow-hidden">
-          <div className="p-lg border-b border-outline-variant flex justify-between items-center">
-            <h4 className="font-title-sm text-title-sm">My Defect Inbox</h4>
-          </div>
-          {myDefects && myDefects.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead className="bg-surface-container-low font-label-md text-label-md text-on-surface-variant">
-                  <tr>
-                    <th className="px-lg py-md">ID</th>
-                    <th className="px-lg py-md">Severity</th>
-                    <th className="px-lg py-md">Issue Title</th>
-                    <th className="px-lg py-md">Project</th>
-                    <th className="px-lg py-md">Reported</th>
-                    <th className="px-lg py-md">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-outline-variant font-body-sm text-body-sm">
-                  {[...myDefects].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()).map((defect) => (
-                    <tr key={defect.id} className="hover:bg-surface-container-low transition-colors cursor-pointer"
-                      onClick={() => navigate(`/projects/${defect.project_id}/defects`)}
-                    >
-                      <td className="px-lg py-md font-bold">#{defect.id}</td>
-                      <td className="px-lg py-md">
-                        <span className={`flex items-center gap-xs font-bold ${severityColors[defect.severity ?? ""] ?? ""}`}>
-                          <span className="material-symbols-outlined text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>error</span>
-                          {defect.severity ?? "—"}
-                        </span>
-                      </td>
-                      <td className="px-lg py-md font-medium">{defect.testCase?.title ?? `Defect #${defect.id}`}</td>
-                      <td className="px-lg py-md text-on-surface-variant">{defect.project?.name ?? ""}</td>
-                      <td className="px-lg py-md text-on-surface-variant">{timeAgo(defect.created_at)}</td>
-                      <td className="px-lg py-md">
-                        <span className={`px-sm py-xs rounded text-xs font-bold ${defectStatusColors[defect.status] ?? ""}`}>
-                          {defect.status.replace(/_/g, " ")}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="p-lg text-center text-on-surface-variant">
-              <span className="material-symbols-outlined text-4xl mb-md">bug_report</span>
-              <p>No defects assigned to you yet.</p>
-            </div>
-          )}
-        </div>
-      ) : currentRole === "TESTER" ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-lg">
-          {myRunsGrouped.length > 0 ? (
-            myRunsGrouped.map((run) => {
-              const total = run.useCases.length;
-              const done = run.useCases.filter((uc) => uc.status !== "pending").length;
-              const progress = total > 0 ? Math.round((done / total) * 100) : 0;
-              return (
-                <div key={run.id} className="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden">
-                  <div className="p-lg space-y-md">
-                    <div className="flex justify-between">
-                      <span className="px-sm py-xs bg-error-container text-error rounded font-label-sm text-label-sm font-bold uppercase tracking-wider">
-                        {run.status === "completed" ? "Completed" : run.status === "in_progress" ? "Active" : "Scheduled"}
-                      </span>
-                      {run.scheduled_at && (
-                        <span className="font-label-md text-label-md text-on-surface-variant flex items-center gap-xs">
-                          <span className="material-symbols-outlined text-sm">schedule</span>
-                          {timeAgo(run.scheduled_at)}
-                        </span>
-                      )}
-                    </div>
-                    <div>
-                      <h5 className="font-title-sm text-title-sm mb-xs">{run.name}</h5>
-                      <p className="font-body-sm text-body-sm text-on-surface-variant">Project: {run.project?.name ?? ""}</p>
-                    </div>
-                    <div className="space-y-sm">
-                      <div className="flex justify-between font-label-sm text-label-sm">
-                        <span>Progress</span>
-                        <span>{progress}%</span>
-                      </div>
-                      <div className="w-full bg-surface-container h-1.5 rounded-full overflow-hidden">
-                        <div className="bg-secondary h-full" style={{ width: `${progress}%` }} />
-                      </div>
-                    </div>
-                  </div>
-                  <div className="bg-surface-container-low px-lg py-md border-t border-outline-variant flex justify-between items-center">
-                    <span className="font-label-sm text-label-sm text-on-surface-variant">{done}/{total} Cases Executed</span>
-                    <button onClick={() => navigate(`/test-runs/${run.id}`)}
-                      className="bg-secondary text-on-secondary px-md py-xs rounded-lg font-label-md text-label-md">
-                      {run.status === "completed" ? "Review" : "Resume"}
-                    </button>
-                  </div>
-                </div>
-              );
-            })
-          ) : (
-            <div className="col-span-full text-center text-on-surface-variant py-xl">
-              <span className="material-symbols-outlined text-4xl mb-md">play_circle</span>
-              <p>No test runs assigned yet.</p>
-            </div>
-          )}
-        </div>
-      ) : currentRole === "BUSINESS_OWNER" || currentRole === "UAT_COORDINATOR" ? (
-        <div className="bg-surface-container-lowest rounded-xl border border-outline-variant overflow-hidden">
-          <div className="p-lg border-b border-outline-variant">
-            <h4 className="font-title-sm text-title-sm">Sign-off Status</h4>
-          </div>
-          {signOffStatus && signOffStatus.length > 0 ? (
-            <div className="divide-y divide-outline-variant">
-              {signOffStatus.map((p) => (
-                <div key={p.projectId} className="px-lg py-md flex items-center justify-between">
-                  <span className="font-body-base">{p.name}</span>
-                  <span className={`px-sm py-xs rounded text-label-sm font-bold ${p.signedOff ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
-                    {p.signedOff ? "Signed Off" : "Pending"}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="p-lg text-center text-on-surface-variant">
-              <p>No projects available.</p>
-            </div>
-          )}
-        </div>
-      ) : null}
-
-      {/* Recent Activity + Quick Links (shown for all roles) */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-lg">
         <div className="xl:col-span-2 bg-surface-container-lowest p-lg rounded-xl border border-outline-variant">
           <div className="flex justify-between items-center mb-xl">
-            <h4 className="font-title-sm text-title-sm">Recent Activity</h4>
-            <button onClick={() => navigate("/projects")} className="text-secondary font-label-md text-label-md">View All</button>
+            <h4 className="font-title-sm text-title-sm">Recent activity</h4>
+            <button onClick={() => navigate("/projects")} className="text-secondary font-label-md text-label-md">View projects</button>
           </div>
           {recentEvents.length > 0 ? (
             <div className="space-y-lg">
@@ -443,9 +910,9 @@ export function DashboardPage() {
                   <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${evt.iconBg}`}>
                     <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>{evt.icon}</span>
                   </div>
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     <p className="font-body-base text-body-base">{evt.description}</p>
-                    <p className="font-label-sm text-label-sm text-on-surface-variant mt-xs">{timeAgo(evt.timestamp)} • {evt.detail}</p>
+                    <p className="font-label-sm text-label-sm text-on-surface-variant mt-xs">{timeAgo(evt.timestamp)} · {evt.detail}</p>
                   </div>
                 </div>
               ))}
@@ -456,28 +923,7 @@ export function DashboardPage() {
             </div>
           )}
         </div>
-        <div className="bg-surface-container-lowest p-lg rounded-xl border border-outline-variant h-fit">
-          <h4 className="font-title-sm text-title-sm mb-lg">Quick Links</h4>
-          <div className="grid grid-cols-1 gap-sm">
-            <button onClick={() => navigate("/projects")} className="flex items-center gap-md p-md bg-surface-container-low hover:bg-surface-container-high rounded-lg transition-colors group text-left">
-              <span className="material-symbols-outlined text-secondary">inventory_2</span>
-              <span className="font-label-md text-label-md flex-1">All Projects</span>
-              <span className="material-symbols-outlined opacity-0 group-hover:opacity-100 transition-opacity">chevron_right</span>
-            </button>
-            {isAdmin && (
-              <button onClick={() => navigate("/users")} className="flex items-center gap-md p-md bg-surface-container-low hover:bg-surface-container-high rounded-lg transition-colors group text-left">
-                <span className="material-symbols-outlined text-secondary">people</span>
-                <span className="font-label-md text-label-md flex-1">User Management</span>
-                <span className="material-symbols-outlined opacity-0 group-hover:opacity-100 transition-opacity">chevron_right</span>
-              </button>
-            )}
-            <button onClick={() => navigate("/tester")} className="flex items-center gap-md p-md bg-surface-container-low hover:bg-surface-container-high rounded-lg transition-colors group text-left">
-              <span className="material-symbols-outlined text-secondary">play_circle</span>
-              <span className="font-label-md text-label-md flex-1">My Test Runs</span>
-              <span className="material-symbols-outlined opacity-0 group-hover:opacity-100 transition-opacity">chevron_right</span>
-            </button>
-          </div>
-        </div>
+        <QuickLinks role={currentRole} isAdmin={isAdmin} navigate={navigate} />
       </div>
     </div>
   );

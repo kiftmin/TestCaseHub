@@ -1,6 +1,7 @@
 import { useLocation } from "wouter";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 import { customFetch } from "../lib/api-client";
 import { getStoredUser } from "../lib/auth";
 import {
@@ -12,9 +13,9 @@ import {
   KpiCard,
   FilterTabs,
   type FilterTab,
-  PRIORITY_BADGE_VARIANT,
 } from "../components/ui";
 import type { TestRunUseCase, Execution } from "../types/api";
+import type { TesterOverview } from "../types/dashboard";
 
 /* ────────────────────────────────────────────────────────────────────
    Types
@@ -221,6 +222,12 @@ export function TesterDashboardPage() {
     enabled: !!user?.userId,
   });
 
+  const { data: overview } = useQuery({
+    queryKey: ["roleOverview", "TESTER", user?.userId],
+    queryFn: () => customFetch<TesterOverview>("/dashboard/role-overview?role=TESTER"),
+    enabled: !!user?.userId,
+  });
+
   const grouped = useMemo<RunGroup[]>(() => {
     const map = new Map<number, RunGroup>();
     runs?.forEach((r) => {
@@ -308,32 +315,48 @@ export function TesterDashboardPage() {
   }, [runs]);
 
   const kpis = useMemo(() => {
-    // API already returns ONLY this tester's assigned scenarios — no further filtering needed
     const allUseCases = grouped.flatMap((g) => g.useCases);
     const totalRuns = grouped.length;
     const activeRuns = grouped.filter((g) => g.run.status !== "completed").length;
     const totalScenarios = allUseCases.length;
-    const completedToday = allUseCases.filter(
-      (uc) => (uc.status === "passed" || uc.status === "failed" || uc.status === "passed_by_agreement") && isToday(uc.updated_at)
+    const remaining = allUseCases.filter(
+      (uc) => uc.status !== "passed" && uc.status !== "failed" && uc.status !== "passed_by_agreement" && !uc.tester_sign_off,
     ).length;
+    const completedToday = allUseCases.filter(
+      (uc) => (uc.status === "passed" || uc.status === "failed" || uc.status === "passed_by_agreement" || uc.tester_sign_off) && isToday(uc.updated_at)
+    ).length;
+    const dueToday = grouped.filter((g) => isToday(g.run.scheduled_at) || g.run.status === "in_progress").length;
 
-    // Pass rate = % of steps that passed across all this tester's test cases.
-    // Each scenario's test cases have executions on testRun.executions — we collect
-    // all step results from those executions scoped to this tester's test case IDs.
     const myTcIds = new Set(
-      allUseCases.flatMap((uc) => (uc.useCase?.testCases ?? []).map((tc: any) => tc.id))
+      allUseCases.flatMap((uc) => (uc.useCase?.testCases ?? []).map((tc: { id: number }) => tc.id))
     );
-    const allExecs = grouped.flatMap((g) => (g.run as any).executions ?? []);
-    const myExecs = allExecs.filter((e: any) => myTcIds.has(e.test_case_id));
-    const allStepResults = myExecs.flatMap((e: any) => e.stepResults ?? []);
-    const recordedSteps = allStepResults.filter((sr: any) => sr.passed != null);
-    const passedSteps = recordedSteps.filter((sr: any) => sr.passed === true);
-    const passRate = recordedSteps.length > 0
+    const allExecs = grouped.flatMap((g) => (g.run as { executions?: Execution[] }).executions ?? []);
+    const myExecs = allExecs.filter((e) => myTcIds.has(e.test_case_id));
+    const allStepResults = myExecs.flatMap((e) => (e as Execution & { stepResults?: { passed: boolean | null }[] }).stepResults ?? []);
+    const recordedSteps = allStepResults.filter((sr) => sr.passed != null);
+    const passedSteps = recordedSteps.filter((sr) => sr.passed === true);
+    const localPassRate = recordedSteps.length > 0
       ? Math.round((passedSteps.length / recordedSteps.length) * 100)
       : null;
 
-    return { totalRuns, activeRuns, totalScenarios, completedToday, passRate };
-  }, [grouped]);
+    const todo = grouped.reduce((s, g) => s + g.notStarted, 0);
+    const inProgress = grouped.reduce((s, g) => s + g.inProgress, 0);
+    const done = grouped.reduce((s, g) => s + g.completed, 0);
+
+    return {
+      totalRuns,
+      activeRuns,
+      totalScenarios,
+      remaining: overview?.kpis.myRemaining ?? remaining,
+      completedToday: overview?.kpis.completedToday ?? completedToday,
+      dueToday: overview?.kpis.dueToday ?? dueToday,
+      passRate: overview?.kpis.passRate ?? localPassRate,
+      openDefectsFound: overview?.kpis.openDefectsFound ?? 0,
+      todo: overview?.todayProgress.todo ?? todo,
+      inProgressCount: overview?.todayProgress.inProgress ?? inProgress,
+      doneCount: overview?.todayProgress.done ?? done,
+    };
+  }, [grouped, overview]);
 
   const filteredGroups = useMemo(() => {
     return grouped.filter((g) => {
@@ -402,44 +425,108 @@ export function TesterDashboardPage() {
     <div className="space-y-lg max-w-7xl mx-auto w-full">
       <PageHeader
         icon="play_circle"
-        eyebrow="Execution Engine"
+        eyebrow="Tester workspace"
         title="My Runs"
         description={
           grouped.length > 0
-            ? `${kpis.activeRuns} active test run${kpis.activeRuns === 1 ? "" : "s"} • ${kpis.totalScenarios} scenario${kpis.totalScenarios === 1 ? "" : "s"} assigned to you`
+            ? `What do you run today? · ${kpis.activeRuns} active run${kpis.activeRuns === 1 ? "" : "s"} · ${kpis.remaining} scenario${kpis.remaining === 1 ? "" : "s"} remaining`
             : "No test runs are assigned to you yet."
         }
       />
 
-      <section className="grid grid-cols-2 lg:grid-cols-4 gap-md" aria-label="Key metrics">
+      <section className="grid grid-cols-2 lg:grid-cols-5 gap-md" aria-label="Key metrics">
         <KpiCard
-          icon="inventory_2"
-          label="Total Runs"
-          value={kpis.totalRuns}
-          hint={kpis.activeRuns > 0 ? `${kpis.activeRuns} active` : "All complete"}
+          icon="today"
+          label="Due / active"
+          value={kpis.dueToday}
+          hint={kpis.activeRuns > 0 ? `${kpis.activeRuns} active runs` : "Nothing due"}
           tone="info"
+          onClick={() => setFilter("today")}
         />
         <KpiCard
-          icon="checklist"
-          label="My Scenarios"
-          value={kpis.totalScenarios}
-          hint={`Across ${kpis.totalRuns} run${kpis.totalRuns === 1 ? "" : "s"}`}
+          icon="pending_actions"
+          label="My remaining"
+          value={kpis.remaining}
+          hint={`${kpis.totalScenarios} assigned total`}
+          tone={kpis.remaining > 0 ? "warning" : "success"}
+          onClick={() => setFilter("active")}
         />
         <KpiCard
           icon="task_alt"
-          label="Completed Today"
+          label="Completed today"
           value={kpis.completedToday}
-          hint={kpis.completedToday === 0 ? "Nothing finished today" : "Nice work today"}
+          hint={kpis.completedToday === 0 ? "Nothing finished today" : "Nice work"}
           tone="success"
         />
         <KpiCard
           icon="percent"
-          label="Pass Rate"
+          label="My pass rate"
           value={kpis.passRate != null ? `${kpis.passRate}%` : "—"}
-          hint={kpis.passRate != null ? "Your steps passed vs total recorded" : "No step results yet"}
+          hint={kpis.passRate != null ? "Your steps" : "No results yet"}
           tone={kpis.passRate != null && kpis.passRate < 70 ? "warning" : "default"}
         />
+        <KpiCard
+          icon="bug_report"
+          label="Defects I found (open)"
+          value={kpis.openDefectsFound}
+          hint="From your executions"
+          tone={kpis.openDefectsFound > 0 ? "info" : "default"}
+        />
       </section>
+
+      {(kpis.todo + kpis.inProgressCount + kpis.doneCount) > 0 && (
+        <section className="bg-surface-container-lowest border border-outline-variant rounded-xl p-md md:p-lg grid grid-cols-1 md:grid-cols-3 gap-md items-center">
+          <div className="md:col-span-1 h-40">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={[
+                    { name: "To do", value: kpis.todo, color: "#94a3b8" },
+                    { name: "In progress", value: kpis.inProgressCount, color: "#f59e0b" },
+                    { name: "Done", value: kpis.doneCount, color: "#22c55e" },
+                  ].filter((d) => d.value > 0)}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius={40}
+                  outerRadius={60}
+                  paddingAngle={2}
+                >
+                  {[
+                    { name: "To do", value: kpis.todo, color: "#94a3b8" },
+                    { name: "In progress", value: kpis.inProgressCount, color: "#f59e0b" },
+                    { name: "Done", value: kpis.doneCount, color: "#22c55e" },
+                  ].filter((d) => d.value > 0).map((e) => (
+                    <Cell key={e.name} fill={e.color} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="md:col-span-2 space-y-sm">
+            <h4 className="font-title-sm text-title-sm">Today&apos;s progress</h4>
+            <p className="text-body-sm text-on-surface-variant">
+              {kpis.doneCount} done · {kpis.inProgressCount} in progress · {kpis.todo} to do across your assigned scenarios.
+            </p>
+            <div className="flex flex-wrap gap-sm">
+              <button
+                onClick={() => setFilter("in_progress")}
+                className="inline-flex items-center gap-xs px-md py-sm rounded-lg bg-primary text-on-primary font-label-md text-label-sm"
+              >
+                Continue testing
+                <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
+              </button>
+              <button
+                onClick={() => setFilter("today")}
+                className="inline-flex items-center gap-xs px-md py-sm rounded-lg bg-surface-container-high font-label-md text-label-sm"
+              >
+                Scheduled today
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
 
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-lg">

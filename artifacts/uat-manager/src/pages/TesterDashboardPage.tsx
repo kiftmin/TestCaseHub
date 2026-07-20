@@ -511,7 +511,14 @@ export function TesterDashboardPage() {
             </p>
             <div className="flex flex-wrap gap-sm">
               <button
-                onClick={() => setFilter(kpis.inProgressCount > 0 ? "in_progress" : "active")}
+                onClick={() => {
+                  const firstActive = grouped.find((g) => g.run.status !== "completed");
+                  if (firstActive) {
+                    navigate(`/tester/run/${firstActive.run.id}`);
+                  } else {
+                    setFilter("active");
+                  }
+                }}
                 className="inline-flex items-center gap-xs px-md py-sm rounded-lg bg-primary text-on-primary font-label-md text-label-sm"
               >
                 {kpis.inProgressCount > 0 ? "Continue testing" : "Start testing"}

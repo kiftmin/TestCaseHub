@@ -511,10 +511,10 @@ export function TesterDashboardPage() {
             </p>
             <div className="flex flex-wrap gap-sm">
               <button
-                onClick={() => setFilter("in_progress")}
+                onClick={() => setFilter(kpis.inProgressCount > 0 ? "in_progress" : "active")}
                 className="inline-flex items-center gap-xs px-md py-sm rounded-lg bg-primary text-on-primary font-label-md text-label-sm"
               >
-                Continue testing
+                {kpis.inProgressCount > 0 ? "Continue testing" : "Start testing"}
                 <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
               </button>
               <button

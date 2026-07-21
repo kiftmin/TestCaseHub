@@ -630,11 +630,11 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
     if (activeTab === "my") return (allDefects ?? []).filter((d) => d.assigned_to_user_id === user?.userId);
     if (activeTab === "business") {
       const valid = new Set([...DEFECT_VIEWS.BUSINESS.active, ...DEFECT_VIEWS.BUSINESS.withDev, ...DEFECT_VIEWS.BUSINESS.historical]);
-      return (allDefects ?? []).filter((d) => valid.has(d.status));
+      return (allDefects ?? []).filter((d) => valid.has(d.status as any));
     }
     if (activeTab === "developer") {
       const valid = new Set([...DEFECT_VIEWS.DEVELOPER.actionable, ...DEFECT_VIEWS.DEVELOPER.recentlyResolved]);
-      return (allDefects ?? []).filter((d) => valid.has(d.status));
+      return (allDefects ?? []).filter((d) => valid.has(d.status as any));
     }
     return allDefects ?? [];
   }, [allDefects, activeTab, user?.userId]);
@@ -938,7 +938,7 @@ export function DefectLogPage({ params }: { params: { id: string } }) {
                 >
                   <option value="all">All Developers</option>
                   {developers.map((d) => (
-                    <option key={d.user_id} value={d.user_id}>{d.user.name}</option>
+                    <option key={d.user_id} value={d.user_id}>{d.user?.name ?? ""}</option>
                   ))}
                 </select>
               </div>
@@ -2262,7 +2262,8 @@ function DefectRow({
                             continue;
                           }
 
-                          if (n.action === 'CREATED' || n.action === 'NEW') {
+                          const sn = n as DefectNote & { action?: string };
+                          if (sn.action === 'CREATED' || sn.action === 'NEW') {
                             deduped.push(n);
                             continue;
                           }
@@ -2796,7 +2797,7 @@ function ClassifyForm({ projectId, onSave, loading, isBlocked, showAssignOption 
           <select value={assignedId ?? ""} onChange={(e) => setAssignedId(e.target.value ? Number(e.target.value) : null)} className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm">
             <option value="">— Not assigned —</option>
             {developers.map((d) => (
-              <option key={d.user_id} value={d.user_id}>{d.user.name} ({d.user.username})</option>
+              <option key={d.user_id} value={d.user_id}>{d.user?.name ?? ""} ({d.user?.username ?? ""})</option>
             ))}
           </select>
         </div>
@@ -2972,7 +2973,7 @@ function AssignDeveloperForm({ projectId, onAssign, loading }: { projectId: numb
               <option value="" disabled>Choose a developer...</option>
               {developers.map((d) => (
                 <option key={d.user_id} value={d.user_id}>
-                  {d.user.name} ({d.user.username})
+                    {d.user?.name ?? ""} ({d.user?.username ?? ""})
                 </option>
               ))}
             </select>
@@ -3479,7 +3480,7 @@ function ReassignForm({
         >
           <option value="">— Select developer —</option>
           {developers.map((d) => (
-            <option key={d.user_id} value={d.user_id}>{d.user.name} ({d.user.username}){d.is_qa ? " · QA" : ""}</option>
+            <option key={d.user_id} value={d.user_id}>{d.user?.name ?? ""} ({d.user?.username ?? ""}){d.is_qa ? " · QA" : ""}</option>
           ))}
         </select>
       </div>
@@ -3553,7 +3554,7 @@ function RetryAfterRegressionForm({
         >
           <option value="">— Keep current developer —</option>
           {developers.map((d) => (
-            <option key={d.user_id} value={d.user_id}>{d.user.name} ({d.user.username})</option>
+            <option key={d.user_id} value={d.user_id}>{d.user?.name ?? ""} ({d.user?.username ?? ""})</option>
           ))}
         </select>
       </div>

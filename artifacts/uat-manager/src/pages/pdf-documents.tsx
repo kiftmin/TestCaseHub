@@ -1,4 +1,3 @@
-import React from "react";
 import { Document, Page, View, Text, StyleSheet } from "@react-pdf/renderer";
 import type { SignOffData } from "../types/api";
 
@@ -551,6 +550,7 @@ export function SignOffCertificatePDF({
   businessDecisions?: SignOffData["businessDecisions"];
   isFullySigned?: boolean;
 }) {
+  void scope; void objectives; void outOfScope; void entryCriteria; void exitCriteria; void businessDecisions;
   return (
     <Document>
       <Page size="A4" style={styles.certPage}>

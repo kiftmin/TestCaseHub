@@ -245,13 +245,13 @@ export function TestRunDetailPage({ params }: { params: { id: string } }) {
         testRunId={testRunId}
         scheduledAt={testRun?.scheduled_at ?? null}
         completedAt={testRun?.created_at ?? null}
-        preparedBy={storedUser?.name ?? null}
+        preparedBy={storedUser?.username ?? null}
         useCases={allUcs}
         executions={allExecs}
         defects={allDefs}
       />
     );
-  }, [testRun, testRunId, fullReport, storedUser?.name]);
+  }, [testRun, testRunId, fullReport, storedUser?.username]);
 
   const [resultReportGenerating, setResultReportGenerating] = useState(false);
   const handleDownloadResultReport = useCallback(async () => {
@@ -854,11 +854,11 @@ function AssignTester({
 
   const eligibleUsers = (assignments ?? [])
     .filter((a) => a.role === "TEST_LEAD" || a.role === "TESTER")
-    .map((a) => ({ id: a.user_id, name: a.user.name }));
+    .map((a) => ({ id: a.user_id, name: a.user?.name ?? "" }));
 
   const currentUser = assignments?.find((a) => a.user_id === currentTesterId);
   if (currentUser && !eligibleUsers.some((u) => u.id === currentUser.user_id)) {
-    eligibleUsers.push({ id: currentUser.user_id, name: currentUser.user.name });
+    eligibleUsers.push({ id: currentUser.user_id, name: currentUser.user?.name ?? "" });
   }
 
   return (
@@ -1817,6 +1817,7 @@ function QuickMode({
   testerNotes: string;
   onTesterNotes: ((v: string) => void) | undefined;
 }) {
+  void onOverallResult;
   return (
     <div className="space-y-md">
       <p className="font-label-sm text-label-sm text-on-surface-variant">

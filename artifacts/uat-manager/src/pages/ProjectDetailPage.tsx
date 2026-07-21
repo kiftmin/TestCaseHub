@@ -740,7 +740,11 @@ function TestRunsTab({ projectId }: { projectId: number }) {
       includeRegression?: boolean;
       regressionTestCaseIds?: number[];
     }) =>
-      customFetch(`/projects/${projectId}/test-runs/retest`, {
+      customFetch<{
+        verify_case_count?: number;
+        regression_case_count?: number;
+        blocked_case_count?: number;
+      }>(`/projects/${projectId}/test-runs/retest`, {
         method: "POST",
         body: JSON.stringify(d),
       }),
@@ -1023,6 +1027,7 @@ function RetestRunDialog({
   onClose: () => void;
   saving: boolean;
 }) {
+  void projectId;
   const [name, setName] = useState("Verification Run");
   const [scheduledAt, setScheduledAt] = useState("");
   const [includeRegression, setIncludeRegression] = useState(false);

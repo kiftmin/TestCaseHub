@@ -993,11 +993,13 @@ function StepWizard({
       stepId: number;
       data: { passed: boolean; actual_result: string; comments: string };
       quiet?: boolean;
-    }) =>
-      customFetch(`/executions/${execution!.id}/steps/${stepId}/result`, {
+    }) => {
+      void quiet;
+      return customFetch(`/executions/${execution!.id}/steps/${stepId}/result`, {
         method: "POST",
         body: JSON.stringify(data),
-      }),
+      });
+    },
     onMutate: (vars) => {
       pendingMutations.current++;
       const previous = localResults.get(vars.stepId) ?? null;

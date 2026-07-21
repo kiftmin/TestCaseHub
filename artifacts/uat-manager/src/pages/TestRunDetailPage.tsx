@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { pdf } from "@react-pdf/renderer";
 import { customFetch, uploadUrl } from "../lib/api-client";
+import { openAuthenticatedUpload } from "../components/AuthenticatedImage";
 import { triggerDownload } from "../lib/csv-utils";
 import { getStoredUser } from "../lib/auth";
 import { useProjectRole } from "../hooks/useProjectRole";
@@ -1027,16 +1028,25 @@ function ExecutionModal({
           `/attachments/execution/${existing.id}`
         ).catch(() => [] as { id: number; field: string; file_url: string }[]);
         if (cancelled) return;
-        if (attachments.length > 0) {
-          const imgMap: Record<number, string> = {};
-          attachments.forEach((a) => {
-            if (a.field?.startsWith("step_")) {
-              const stepId = Number(a.field.replace("step_", ""));
-              if (!isNaN(stepId)) imgMap[stepId] = uploadUrl(a.file_url);
+        const imgMap: Record<number, string> = {};
+        attachments.forEach((a) => {
+          if (a.field?.startsWith("step_")) {
+            const stepId = Number(a.field.replace("step_", ""));
+            if (!isNaN(stepId)) imgMap[stepId] = uploadUrl(a.file_url);
+          }
+        });
+        // Also extract photos embedded in step comments by the tester wizard
+        if (existing.stepResults) {
+          existing.stepResults.forEach((sr) => {
+            if (sr.comments) {
+              const match = sr.comments.match(/\[photo:\s*(\/uploads\/[^\]]+)\]/);
+              if (match && !imgMap[sr.step_id]) {
+                imgMap[sr.step_id] = uploadUrl(match[1]);
+              }
             }
           });
-          if (Object.keys(imgMap).length > 0) setProofImages(imgMap);
         }
+        if (Object.keys(imgMap).length > 0) setProofImages(imgMap);
       }
     };
 
@@ -1745,7 +1755,13 @@ function GuidedMode({
       <div className="md:col-span-5 space-y-md">
         <div className="aspect-video bg-surface-container rounded-lg border border-outline-variant flex items-center justify-center overflow-hidden relative">
           {proofImage ? (
-            <img src={proofImage} alt="Proof" className="w-full h-full object-cover" />
+            <img
+              src={proofImage}
+              alt="Proof"
+              className="w-full h-full object-cover cursor-pointer"
+              onClick={() => openAuthenticatedUpload(proofImage).catch(() => {})}
+              title="Click to enlarge"
+            />
           ) : (
             <div className="flex flex-col items-center gap-xs text-on-surface-variant">
               <span className="material-symbols-outlined text-[48px]">image</span>

@@ -684,28 +684,30 @@ const tplanRpt = StyleSheet.create({
     borderBottomColor: "#d0d0d6",
   },
   infoGrid: {
-    flexDirection: "row",
-    gap: 8,
-    marginBottom: 8,
+    flexDirection: "column",
+    marginBottom: 10,
   },
   infoCard: {
-    flex: 1,
+    width: "100%",
     borderWidth: 0.75,
     borderColor: "#d0d0d6",
-    padding: 7,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
     backgroundColor: "#fafafa",
+    marginBottom: 6,
   },
   infoLabel: {
     fontSize: 7,
+    fontFamily: "Helvetica-Bold",
     color: "#45464d",
     letterSpacing: 0.6,
     textTransform: "uppercase",
-    marginBottom: 2,
+    marginBottom: 3,
   },
   infoValue: {
     fontSize: 8,
     color: "#1b1b1d",
-    lineHeight: 1.35,
+    lineHeight: 1.4,
   },
   scenarioHeader: {
     backgroundColor: "#1a2744",
@@ -797,18 +799,20 @@ const tplanRpt = StyleSheet.create({
     marginTop: 2,
     marginBottom: 4,
   },
-  /* ── Detailed step table ── */
+  /* ── Detailed step table (flex-basis columns — more reliable than % width in react-pdf) ── */
   stepTable: {
     borderWidth: 0.75,
     borderColor: "#d0d0d6",
     marginTop: 4,
     marginBottom: 4,
+    width: "100%",
   },
   stepTableHeader: {
     flexDirection: "row",
     backgroundColor: "#eef0f5",
     borderBottomWidth: 0.75,
     borderBottomColor: "#d0d0d6",
+    alignItems: "stretch",
   },
   stepTableHeaderCell: {
     paddingVertical: 4,
@@ -822,24 +826,30 @@ const tplanRpt = StyleSheet.create({
     flexDirection: "row",
     borderBottomWidth: 0.5,
     borderBottomColor: "#e0e0e5",
-    minHeight: 18,
+    alignItems: "flex-start",
   },
   stepTableRowAlt: {
     backgroundColor: "#fafafa",
   },
   stepTableCell: {
-    paddingVertical: 3,
+    paddingVertical: 4,
     paddingHorizontal: 4,
     fontSize: 7.5,
     color: "#1b1b1d",
+    lineHeight: 1.35,
   },
   stepTableCellMuted: {
-    paddingVertical: 3,
+    paddingVertical: 4,
     paddingHorizontal: 4,
     fontSize: 7.5,
     color: "#45464d",
     fontStyle: "italic",
+    lineHeight: 1.35,
   },
+  colNum: { width: "7%" },
+  colInstruction: { width: "41%" },
+  colData: { width: "26%" },
+  colExpected: { width: "26%" },
 });
 
 function countSteps(useCases: { testCases?: { steps?: unknown[] }[] }[]) {
@@ -881,13 +891,6 @@ export function TestPlanDocumentPDF({
   const caseCount = useCases.reduce((s, uc) => s + (uc.testCases?.length ?? 0), 0);
   const stepCount = countSteps(useCases);
 
-  const STEP_COLS = {
-    num: "6%",
-    instruction: "42%",
-    data: "24%",
-    expected: "28%",
-  } as const;
-
   const overviewCards: { label: string; value: string | null | undefined }[] = [];
   if (projectObj?.objectives) overviewCards.push({ label: "Objectives", value: projectObj.objectives });
   if (projectObj?.scope) overviewCards.push({ label: "Scope", value: projectObj.scope });
@@ -897,7 +900,7 @@ export function TestPlanDocumentPDF({
 
   return (
     <Document>
-      <Page size="A4" style={tplanRpt.page}>
+      <Page size="A4" style={tplanRpt.page} wrap>
         <View style={tplanRpt.topBar} fixed />
 
         {/* ── Header ── */}
@@ -949,26 +952,28 @@ export function TestPlanDocumentPDF({
           </View>
         </View>
 
-        {/* ── Project Overview ── */}
+        {/* ── Project Overview (full-width stacked cards — avoid flex:1 collapse) ── */}
         {overviewCards.length > 0 && (
-          <>
+          <View>
             <Text style={tplanRpt.sectionTitle}>Project Overview</Text>
-            {overviewCards.map((card, i) => (
-              <View key={i} style={tplanRpt.infoCard}>
-                <Text style={tplanRpt.infoLabel}>{card.label}</Text>
-                <Text style={tplanRpt.infoValue}>{card.value}</Text>
-              </View>
-            ))}
-          </>
+            <View style={tplanRpt.infoGrid}>
+              {overviewCards.map((card, i) => (
+                <View key={i} style={tplanRpt.infoCard} wrap={false}>
+                  <Text style={tplanRpt.infoLabel}>{card.label}</Text>
+                  <Text style={tplanRpt.infoValue}>{card.value}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
         )}
 
         {/* ── Scenarios ── */}
         {useCases.length === 0 ? (
           <Text style={tplanRpt.emptyState}>No scenarios have been defined for this test plan.</Text>
         ) : (
-          useCases.map((uc, ui) => (
-            <View key={uc.code} wrap={false}>
-              <View style={tplanRpt.scenarioHeader}>
+          useCases.map((uc) => (
+            <View key={uc.code} wrap>
+              <View style={tplanRpt.scenarioHeader} wrap={false}>
                 <Text style={tplanRpt.scenarioTitle}>
                   {uc.code} — {uc.name}
                 </Text>
@@ -983,8 +988,8 @@ export function TestPlanDocumentPDF({
               ) : (
                 uc.testCases.map((tc, ti) => (
                   <View
-                    key={tc.case_number}
-                    wrap={false}
+                    key={`${uc.code}-${tc.case_number}-${ti}`}
+                    wrap
                     style={[
                       tplanRpt.testCaseCard,
                       ti % 2 === 1 ? tplanRpt.testCaseCardAlt : {},
@@ -1004,7 +1009,7 @@ export function TestPlanDocumentPDF({
                     {tc.steps && tc.steps.length > 0 && !detailed && (
                       <View>
                         {tc.steps.map((s, si) => (
-                          <View key={`${tc.case_number}-${s.step_number}`} style={tplanRpt.stepItem}>
+                          <View key={`${tc.case_number}-${s.step_number}-${si}`} style={tplanRpt.stepItem}>
                             <Text style={tplanRpt.stepNumber}>{si + 1}.</Text>
                             <Text style={tplanRpt.stepText}>{s.instruction}</Text>
                           </View>
@@ -1013,26 +1018,26 @@ export function TestPlanDocumentPDF({
                     )}
                     {tc.steps && tc.steps.length > 0 && detailed && (
                       <View style={tplanRpt.stepTable}>
-                        <View style={tplanRpt.stepTableHeader}>
-                          <Text style={[tplanRpt.stepTableHeaderCell, { width: STEP_COLS.num }]}>#</Text>
-                          <Text style={[tplanRpt.stepTableHeaderCell, { width: STEP_COLS.instruction }]}>Instruction</Text>
-                          <Text style={[tplanRpt.stepTableHeaderCell, { width: STEP_COLS.data }]}>Test Data</Text>
-                          <Text style={[tplanRpt.stepTableHeaderCell, { width: STEP_COLS.expected }]}>Expected Result</Text>
+                        <View style={tplanRpt.stepTableHeader} wrap={false}>
+                          <Text style={[tplanRpt.stepTableHeaderCell, tplanRpt.colNum]}>#</Text>
+                          <Text style={[tplanRpt.stepTableHeaderCell, tplanRpt.colInstruction]}>Instruction</Text>
+                          <Text style={[tplanRpt.stepTableHeaderCell, tplanRpt.colData]}>Test Data</Text>
+                          <Text style={[tplanRpt.stepTableHeaderCell, tplanRpt.colExpected]}>Expected Result</Text>
                         </View>
                         {tc.steps.map((s, i) => (
                           <View
-                            key={`${tc.case_number}-${s.step_number}`}
+                            key={`${tc.case_number}-${s.step_number}-${i}`}
+                            wrap={false}
                             style={[tplanRpt.stepTableRow, i % 2 === 1 ? tplanRpt.stepTableRowAlt : {}]}
                           >
-                            <Text style={[tplanRpt.stepTableCell, { width: STEP_COLS.num }]}>{i + 1}</Text>
-                            <Text style={[tplanRpt.stepTableCell, { width: STEP_COLS.instruction }]}>{s.instruction}</Text>
-                            <Text style={[tplanRpt.stepTableCellMuted, { width: STEP_COLS.data }]}>{s.test_data || "—"}</Text>
-                            <Text style={[tplanRpt.stepTableCellMuted, { width: STEP_COLS.expected }]}>{s.expected_result || "—"}</Text>
+                            <Text style={[tplanRpt.stepTableCell, tplanRpt.colNum]}>{i + 1}</Text>
+                            <Text style={[tplanRpt.stepTableCell, tplanRpt.colInstruction]}>{s.instruction || "—"}</Text>
+                            <Text style={[tplanRpt.stepTableCellMuted, tplanRpt.colData]}>{s.test_data?.trim() ? s.test_data : "—"}</Text>
+                            <Text style={[tplanRpt.stepTableCellMuted, tplanRpt.colExpected]}>{s.expected_result?.trim() ? s.expected_result : "—"}</Text>
                           </View>
                         ))}
                       </View>
                     )}
-
                   </View>
                 ))
               )}

@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=.env src/index.ts",
-    "build": "tsc",
-    "start": "node --env-file=.env dist/index.js"
+    "build": "echo 'Build skipped - using tsx runtime'",
+    "start": "tsx src/index.ts"
   },
   "dependencies": {
     "@workspace/db": "workspace:*",

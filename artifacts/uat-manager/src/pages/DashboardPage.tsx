@@ -390,7 +390,7 @@ function TestLeadPanel({
                 <XAxis type="number" allowDecimals={false} />
                 <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 11 }} />
                 <Tooltip
-                  formatter={((value) => Number(value ?? 0)) as any}
+                  formatter={(value: number | string | undefined) => Number(value ?? 0)}
                   labelFormatter={(_, payload) => (payload?.[0]?.payload as { fullName?: string })?.fullName ?? ""}
                 />
                 <Legend />

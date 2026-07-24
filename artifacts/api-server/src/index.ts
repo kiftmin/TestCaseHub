@@ -30,6 +30,7 @@ import preconditionRoutes from "./routes/preconditions.js";
 import sharedStepRoutes from "./routes/shared-steps.js";
 
 const app: Express = express();
+app.set('trust proxy', 1);
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN?.split(",") ?? ["http://localhost:5173", "http://localhost:3001"],

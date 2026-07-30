@@ -103,8 +103,9 @@ app.use("/api", api);
 app.use(errorHandler);
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  logger.info(`Server running on port ${PORT}`);
+const HOST = "0.0.0.0";
+app.listen(PORT, HOST, () => {
+  logger.info(`Server running on http://${HOST}:${PORT}`);
 });
 
 export default app;

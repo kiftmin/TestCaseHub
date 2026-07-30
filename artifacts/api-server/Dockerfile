@@ -10,4 +10,4 @@ RUN pnpm install --frozen-lockfile
 
 ENV NODE_ENV=production
 EXPOSE 3000
-CMD ["pnpm", "--filter", "api-server", "start"]
+CMD ["sh", "-c", "pnpm --filter db migrate && pnpm --filter api-server start"]

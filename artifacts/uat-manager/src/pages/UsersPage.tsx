@@ -439,7 +439,7 @@ function SheetUserForm({
     if (!name.trim()) errs.push("Name is required");
     if (!email.trim()) errs.push("Email is required");
     if (!isEdit && !username.trim()) errs.push("Username is required");
-    if (!isEdit && password.length < 6) errs.push("Password must be at least 6 characters");
+    if (!isEdit && password.length < 8) errs.push("Password must be at least 8 characters");
     setErrors(errs);
     if (errs.length > 0) return;
 
@@ -605,8 +605,8 @@ function PasswordDialog({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (password.length < 6) {
-      setError("Password must be at least 6 characters");
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters");
       return;
     }
     setError("");
@@ -631,7 +631,7 @@ function PasswordDialog({
             <input
               className="w-full bg-white border border-outline-variant rounded-lg px-md py-sm font-body-base focus:ring-2 focus:ring-secondary focus:border-secondary outline-none"
               type="password"
-              placeholder="Min. 6 characters"
+              placeholder="Min. 8 characters"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoFocus

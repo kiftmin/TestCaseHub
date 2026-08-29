@@ -31,9 +31,21 @@ import sharedStepRoutes from "./routes/shared-steps.js";
 
 const app: Express = express();
 app.set('trust proxy', 1);
+const allowedOrigins = process.env.CORS_ORIGIN?.split(",").map((o) => o.trim()).filter(Boolean) ?? ["http://localhost:5173", "http://localhost:3001"];
+const vercelPattern = /\.vercel\.app$/;
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN?.split(",") ?? ["http://localhost:5173", "http://localhost:3001"],
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes("*")) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      try {
+        const { hostname } = new URL(origin);
+        if (vercelPattern.test(hostname)) return callback(null, true);
+      } catch {}
+      if (vercelPattern.test(origin)) return callback(null, true);
+      return callback(null, false);
+    },
     credentials: true,
     maxAge: 86400,
   }),

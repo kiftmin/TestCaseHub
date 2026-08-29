@@ -962,6 +962,7 @@ function StepWizard({
   const queryClient = useQueryClient();
   const [stepIndex, setStepIndex] = useState(0);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [mobileStepsOpen, setMobileStepsOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const currentStep = steps[stepIndex];
@@ -1191,15 +1192,24 @@ function StepWizard({
         right={
           <div className="flex items-center gap-xs">
             <button
+              onClick={() => setMobileStepsOpen(true)}
+              className="lg:hidden inline-flex items-center gap-xs px-sm py-xs text-label-sm text-on-surface border border-outline-variant rounded-md hover:bg-surface-container-low transition-colors"
+              aria-label="Open steps menu"
+            >
+              <span className="material-symbols-outlined text-[18px]">menu</span>
+              Steps
+            </button>
+            <button
               onClick={() => onModeChange("quick")}
               className="inline-flex items-center gap-xs px-sm py-xs text-label-sm text-on-surface-variant hover:text-on-surface border border-outline-variant rounded-md hover:bg-surface-container-low transition-colors"
             >
               <span className="material-symbols-outlined text-[16px]">bolt</span>
-              Switch to Quick
+              <span className="hidden sm:inline">Switch to Quick</span>
+              <span className="sm:hidden">Quick</span>
             </button>
             <button
               onClick={() => setShowSidebar((s) => !s)}
-              className="inline-flex items-center gap-xs px-sm py-xs text-label-sm text-on-surface-variant hover:text-on-surface border border-outline-variant rounded-md hover:bg-surface-container-low transition-colors"
+              className="hidden lg:inline-flex items-center gap-xs px-sm py-xs text-label-sm text-on-surface-variant hover:text-on-surface border border-outline-variant rounded-md hover:bg-surface-container-low transition-colors"
               aria-pressed={showSidebar}
             >
               <span className="material-symbols-outlined text-[16px]">
@@ -1211,14 +1221,56 @@ function StepWizard({
         }
       />
 
-      <div className="grid gap-md" style={{ gridTemplateColumns: showSidebar ? "minmax(0, 280px) minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+      {mobileStepsOpen && (
+        <div className="lg:hidden fixed inset-0 z-50 flex">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setMobileStepsOpen(false)} />
+          <div className="relative w-80 max-w-[85vw] bg-surface-container-lowest h-full shadow-xl flex flex-col">
+            <div className="flex items-center justify-between px-md py-sm border-b border-outline-variant">
+              <h2 className="text-label-md font-bold uppercase tracking-wider text-on-surface">Steps ({steps.length})</h2>
+              <button onClick={() => setMobileStepsOpen(false)} className="w-8 h-8 rounded-full hover:bg-surface-container flex items-center justify-center">
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-sm">
+              <ol className="space-y-xs">
+                {steps.map((s, i) => {
+                  const isCurrent = i === stepIndex;
+                  const result = stepResultsByStep.get(s.id);
+                  const isPassed = result === true;
+                  const isFailed = result === false;
+                  return (
+                    <li key={s.id}>
+                      <button
+                        onClick={() => { setStepIndex(i); setMobileStepsOpen(false); }}
+                        className={`w-full text-left p-sm rounded-lg flex items-start gap-sm transition-all ${isCurrent ? "bg-secondary-container text-on-secondary-container" : "hover:bg-surface-container-low text-on-surface"}`}
+                      >
+                        <span className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-label-sm font-bold ${isPassed ? "bg-green-600 text-white" : isFailed ? "bg-error text-on-error" : isCurrent ? "bg-primary text-on-primary" : "bg-surface-container-high text-on-surface-variant"}`}>
+                          {isPassed ? <span className="material-symbols-outlined text-[14px]">check</span> : isFailed ? <span className="material-symbols-outlined text-[14px]">close</span> : i + 1}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <p className={`text-label-sm line-clamp-2 ${isCurrent ? "font-bold" : ""}`}>{s.instruction}</p>
+                          {isCurrent && <p className="text-[10px] uppercase tracking-wider font-bold mt-1 opacity-80">Current</p>}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className={`grid gap-md grid-cols-1 ${showSidebar ? "lg:grid-cols-[280px_minmax(0,1fr)]" : "lg:grid-cols-1"}`}>
         {showSidebar && (
-          <StepSidebar
-            steps={steps}
-            currentIndex={stepIndex}
-            stepResults={stepResultsByStep}
-            onJump={(i) => setStepIndex(i)}
-          />
+          <div className="hidden lg:block">
+            <StepSidebar
+              steps={steps}
+              currentIndex={stepIndex}
+              stepResults={stepResultsByStep}
+              onJump={(i) => setStepIndex(i)}
+            />
+          </div>
         )}
 
         <div className="space-y-md min-w-0">

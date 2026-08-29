@@ -932,6 +932,7 @@ function ExecutionModal({
   const [initialLoading, setInitialLoading] = useState(true);
   const [showConfirm, setShowConfirm] = useState(false);
   const [readOnlyOverride, setReadOnlyOverride] = useState(false);
+  const [mobileStepsOpen, setMobileStepsOpen] = useState(false);
 
   const handleClose = useCallback(() => {
     executionSessionCache.delete(testCase.id);
@@ -1351,10 +1352,10 @@ function ConfirmDialog({
 }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center sm:p-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={handleClose}
  />
-      <div className="relative bg-surface-container-lowest w-full max-w-[800px] border border-outline-variant rounded-xl shadow-xl flex flex-col overflow-hidden max-h-[90vh]">
+      <div className="relative bg-surface-container-lowest w-full sm:max-w-[800px] border border-outline-variant sm:rounded-xl shadow-xl flex flex-col overflow-hidden max-h-[100dvh] sm:max-h-[90vh] rounded-none">
         {/* Offline banner */}
         {offlineBanner && (
           <div className="bg-red-500 text-white px-lg py-sm text-label-sm flex items-center gap-md">
@@ -1381,7 +1382,7 @@ function ConfirmDialog({
         </div>
 
         {/* Mode toggle + step progress */}
-        <div className="px-lg py-sm flex justify-between items-center bg-surface-container-lowest">
+        <div className="px-lg py-sm flex justify-between items-center bg-surface-container-lowest gap-sm flex-wrap">
           <div className="bg-surface-container-high p-1 rounded-lg flex gap-1">
             <button
               onClick={() => setMode("guided")}
@@ -1401,7 +1402,13 @@ function ConfirmDialog({
             </button>
           </div>
           <div className="flex items-center gap-xs">
-            <div className="flex gap-1">
+            {mode === "guided" && totalSteps > 1 && (
+              <button onClick={() => setMobileStepsOpen(true)} className="md:hidden inline-flex items-center gap-1 px-sm py-1 border border-outline-variant rounded-md text-label-sm">
+                <span className="material-symbols-outlined text-[16px]">menu</span>
+                Steps
+              </button>
+            )}
+            <div className="hidden sm:flex gap-1">
               {stepList.map((_, i) => (
                 <div
                   key={i}
@@ -1418,6 +1425,31 @@ function ConfirmDialog({
             )}
           </div>
         </div>
+        {mobileStepsOpen && mode === "guided" && (
+          <div className="md:hidden fixed inset-0 z-[150] flex">
+            <div className="absolute inset-0 bg-black/40" onClick={() => setMobileStepsOpen(false)} />
+            <div className="relative w-80 max-w-[85vw] bg-surface-container-lowest h-full shadow-xl flex flex-col">
+              <div className="flex items-center justify-between px-md py-sm border-b border-outline-variant">
+                <h3 className="text-label-md font-bold uppercase tracking-wider">Steps ({totalSteps})</h3>
+                <button onClick={() => setMobileStepsOpen(false)} className="w-8 h-8 rounded-full hover:bg-surface-container flex items-center justify-center"><span className="material-symbols-outlined">close</span></button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-sm space-y-xs">
+                {stepList.map((s, i) => {
+                  const r = results[s.id];
+                  const isCurrent = i === currentStep;
+                  const isPassed = r?.passed === true;
+                  const isFailed = r?.passed === false;
+                  return (
+                    <button key={s.id} onClick={() => { setCurrentStep(i); setMobileStepsOpen(false); }} className={`w-full text-left p-sm rounded-lg flex items-start gap-sm ${isCurrent ? "bg-secondary-container text-on-secondary-container" : "hover:bg-surface-container-low"}`}>
+                      <span className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-label-sm font-bold ${isPassed ? "bg-green-600 text-white" : isFailed ? "bg-error text-on-error" : isCurrent ? "bg-primary text-on-primary" : "bg-surface-container-high text-on-surface-variant"}`}>{isPassed ? <span className="material-symbols-outlined text-[14px]">check</span> : isFailed ? <span className="material-symbols-outlined text-[14px]">close</span> : i + 1}</span>
+                      <span className="min-w-0 flex-1"><p className={`text-label-sm line-clamp-2 ${isCurrent ? "font-bold" : ""}`}>{s.instruction ?? `Step ${i+1}`}</p>{isCurrent && <p className="text-[10px] uppercase font-bold opacity-80 mt-1">Current</p>}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-lg">

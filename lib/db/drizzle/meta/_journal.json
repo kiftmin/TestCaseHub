@@ -2,61 +2,14 @@
   "version": "6",
   "dialect": "postgresql",
   "entries": [
-    {
-      "idx": 0,
-      "version": "6",
-      "when": 1780172283499,
-      "tag": "0000_lovely_hemingway",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1780500000000,
-      "tag": "0002_corporate_defects",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1739400000000,
-      "tag": "0008_add_justification_column",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1740000000000,
-      "tag": "0009_add_pending_biz_acceptance",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "6",
-      "when": 1740100000000,
-      "tag": "0010_reset_defects_to_new",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "6",
-      "when": 1751000000000,
-      "tag": "0013_remove_pending_risk_acceptance",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "6",
-      "when": 1782155427451,
-      "tag": "0006_calm_quasimodo",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "6",
-      "when": 1783100000000,
-      "tag": "0016_add_qa_review_gate",
-      "breakpoints": true
-    }
+    {"idx": 0, "version": "6", "when": 1780172283499, "tag": "0000_lovely_hemingway", "breakpoints": true},
+    {"idx": 1, "version": "6", "when": 1780500000000, "tag": "0002_corporate_defects", "breakpoints": true},
+    {"idx": 2, "version": "6", "when": 1781000000000, "tag": "0005_opposite_shen", "breakpoints": true},
+    {"idx": 3, "version": "6", "when": 1781200000000, "tag": "0006_calm_quasimodo", "breakpoints": true},
+    {"idx": 4, "version": "6", "when": 1739400000000, "tag": "0008_add_justification_column", "breakpoints": true},
+    {"idx": 5, "version": "6", "when": 1740000000000, "tag": "0009_add_pending_biz_acceptance", "breakpoints": true},
+    {"idx": 6, "version": "6", "when": 1740100000000, "tag": "0010_reset_defects_to_new", "breakpoints": true},
+    {"idx": 7, "version": "6", "when": 1751000000000, "tag": "0013_remove_pending_risk_acceptance", "breakpoints": true},
+    {"idx": 8, "version": "6", "when": 1783100000000, "tag": "0016_add_qa_review_gate", "breakpoints": true}
   ]
 }

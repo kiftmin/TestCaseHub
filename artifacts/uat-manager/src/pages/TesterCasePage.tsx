@@ -585,7 +585,9 @@ function TestCaseSelector({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
       queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+      queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId] });
       toast.success("Test case unblocked");
+      setBlockingCaseTarget(null);
     },
     onError: (e: Error) => toast.error(e.message),
   });

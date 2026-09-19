@@ -21,7 +21,7 @@ import type { TestRun, TestRunUseCase, TestCase, TestStep, Execution } from "../
    ──────────────────────────────────────────────────────────────────── */
 
 type ScenarioFilter = "all" | "to_do" | "in_progress" | "done";
-type CaseProgress = "Not Started" | "In Progress" | "Completed";
+type CaseProgress = "Not Started" | "In Progress" | "Completed" | "Blocked";
 
 /* ────────────────────────────────────────────────────────────────────
    Helpers
@@ -67,13 +67,14 @@ function computeScenarioProgress(
     const exec = executions.find(e => e && e.test_case_id === tc.id);
     if (!exec) return "Not Started" as CaseProgress;
     // If execution was submitted (overall_result set) it is definitively Completed
+    if (exec.overall_result === "blocked_dependency") return "Blocked" as CaseProgress;
     if (exec.overall_result != null) return "Completed" as CaseProgress;
     const steps = tc.steps ?? [];
     const stepResults = exec.stepResults ?? [];
     return computeCaseProgress(steps, stepResults);
   });
-  if (progresses.every(p => p === "Completed")) return "Completed";
-  if (progresses.some(p => p === "In Progress" || p === "Completed")) return "In Progress";
+  if (progresses.every(p => p === "Completed" || p === "Blocked")) return "Completed";
+  if (progresses.some(p => p === "In Progress" || p === "Completed" || p === "Blocked")) return "In Progress";
   return "Not Started";
 }
 
@@ -86,8 +87,8 @@ function computeRunProgress(
     const tcs = uc.useCase?.testCases ?? [];
     return computeScenarioProgress(tcs, executions);
   });
-  if (progresses.every(p => p === "Completed")) return "Completed";
-  if (progresses.some(p => p === "In Progress" || p === "Completed")) return "In Progress";
+  if (progresses.every(p => p === "Completed" || p === "Blocked")) return "Completed";
+  if (progresses.some(p => p === "In Progress" || p === "Completed" || p === "Blocked")) return "In Progress";
   return "Not Started";
 }
 
@@ -226,7 +227,9 @@ export function TesterScenarioPage({ params }: { params: { testRunId: string } }
         }
         caseExecutable++;
         const exec = allExecutions.find((e) => e.test_case_id === tc.id);
-        if (exec?.overall_result != null) {
+        if (exec?.overall_result === "blocked_dependency") {
+          // blocked_dependency counts as resolved for progress
+        } else if (exec?.overall_result != null) {
           caseCompleted++;
         } else if (exec) {
           const p = computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);

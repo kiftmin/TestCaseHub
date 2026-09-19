@@ -21,7 +21,7 @@ import type { TesterOverview } from "../types/dashboard";
    Types
    ──────────────────────────────────────────────────────────────────── */
 
-type CaseProgress = "Not Started" | "In Progress" | "Completed";
+type CaseProgress = "Not Started" | "In Progress" | "Completed" | "Blocked";
 
 type TestRunSummary = {
   id: number;
@@ -282,6 +282,7 @@ export function TesterDashboardPage() {
         const caseProgresses = tcs.map((tc: any) => {
           const exec = runExecs.find((e: any) => e.test_case_id === tc.id);
           if (!exec) return "Not Started" as CaseProgress;
+          if (exec.overall_result === "blocked_dependency") return "Blocked" as CaseProgress;
           if (exec.overall_result != null) return "Completed" as CaseProgress;
           return computeCaseProgress(tc.steps ?? [], exec.stepResults ?? []);
         });
@@ -290,7 +291,7 @@ export function TesterDashboardPage() {
         const scenarioProgress: CaseProgress =
           tcs.length === 0 && runType === "retest" ? "Completed" :
           caseProgresses.length === 0 ? "Not Started" :
-          caseProgresses.every((p: CaseProgress) => p === "Completed") ? "Completed" :
+          caseProgresses.every((p: CaseProgress) => p === "Completed" || p === "Blocked") ? "Completed" :
           caseProgresses.some((p: CaseProgress) => p === "In Progress" || p === "Completed") ? "In Progress" :
           "Not Started";
 

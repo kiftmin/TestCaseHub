@@ -137,7 +137,7 @@ async function recalculateTestRunCompletion(testRunId: number): Promise<void> {
   const allUseCases = await db.query.testRunUseCases.findMany({
     where: eq(schema.testRunUseCases.test_run_id, testRunId),
   });
-  const terminalStatuses = ["passed", "failed", "passed_by_agreement"];
+  const terminalStatuses = ["passed", "failed", "passed_by_agreement", "blocked_dependency"];
   if (allUseCases.length === 0) return;
   const allTerminal = allUseCases.every(uc => terminalStatuses.includes(uc.status));
   if (allTerminal) {

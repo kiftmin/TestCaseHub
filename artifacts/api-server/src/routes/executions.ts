@@ -1064,6 +1064,8 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
 
       // Set overall_result on each execution based on its step results
       for (const exec of allExecutions) {
+        // Do not overwrite a blocked_dependency result — it was explicitly set by the tester
+        if (exec.overall_result === "blocked_dependency") continue;
         const stepResults = exec.stepResults ?? [];
         const steps = exec.testCase?.steps ?? [];
         if (steps.length === 0) continue;

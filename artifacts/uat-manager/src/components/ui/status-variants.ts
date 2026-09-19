@@ -31,6 +31,7 @@ export const progressStatusVariant: Record<string, StatusVariant> = {
   "Not Started": "neutral",
   "In Progress": "warning",
   Completed: "success",
+  Blocked: "warning",
 };
 
 export const PRIORITY_BADGE_VARIANT: Record<string, "error" | "warning" | "neutral"> = {

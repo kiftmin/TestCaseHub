@@ -27,7 +27,7 @@ import type {
    Types
    ──────────────────────────────────────────────────────────────────── */
 
-type CaseProgress = "Not Started" | "In Progress" | "Completed";
+type CaseProgress = "Not Started" | "In Progress" | "Completed" | "Blocked";
 
 interface Draft {
   stepId: number;
@@ -120,12 +120,14 @@ const PROGRESS_LABELS: Record<CaseProgress, string> = {
   "Not Started": "Not Started",
   "In Progress": "In Progress",
   Completed: "Completed",
+  Blocked: "Blocked",
 };
 
 const PROGRESS_ICONS: Record<CaseProgress, string> = {
   "Not Started": "radio_button_unchecked",
   "In Progress": "autorenew",
   Completed: "check_circle",
+  Blocked: "block",
 };
 
 function isCaseBlocked(tc: TestCase): boolean {
@@ -664,7 +666,7 @@ function TestCaseSelector({
       let progress: CaseProgress;
       if (exec.overall_result === "blocked_dependency") {
         // Blocked by dependency — not Completed, not In Progress
-        progress = "Not Started";
+        progress = "Blocked";
       } else if (exec.overall_result != null) {
         // Execution was submitted — it's definitively Completed
         progress = "Completed";
@@ -693,12 +695,13 @@ function TestCaseSelector({
       }
       const p = caseProgresses[i];
       if (p === "Completed") completed++;
+      else if (p === "Blocked") blocked++;
       else if (p === "In Progress") inProgress++;
       else notStarted++;
     });
     const executable = total - blocked;
-    // Progress only counts cases that can be executed (exclude blocked)
-    const progress = executable > 0 ? Math.round((completed / executable) * 100) : 0;
+    // Progress counts completed + blocked_dependency as resolved
+    const progress = executable > 0 ? Math.round(((completed + caseProgresses.filter(p => p === "Blocked").length) / executable) * 100) : 0;
     return { total, completed, inProgress, notStarted, blocked, executable, progress };
   }, [testCases, caseProgresses]);
 

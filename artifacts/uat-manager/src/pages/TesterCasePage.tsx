@@ -558,6 +558,37 @@ function TestCaseSelector({
     return stored === "quick" ? "quick" : "guided";
   });
   const [filter, setFilter] = useState<CaseFilter>("all");
+  const [blockedDialogOpen, setBlockedDialogOpen] = useState(false);
+  const [blockingCaseTarget, setBlockingCaseTarget] = useState<{ executionId: number; testCaseId: number; useCaseId: number } | null>(null);
+
+  const queryClient = useQueryClient();
+
+  const markBlockedMut = useMutation({
+    mutationFn: (data: { blocked_by_case_id?: number; notes?: string }) =>
+      customFetch(`/executions/${blockingCaseTarget!.executionId}/mark-blocked`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+      queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+      toast.success("Test case marked as blocked");
+      setBlockedDialogOpen(false);
+      setBlockingCaseTarget(null);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const unblockMut = useMutation({
+    mutationFn: (executionId: number) =>
+      customFetch(`/executions/${executionId}/unblock`, { method: "POST" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+      queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+      toast.success("Test case unblocked");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
 
   useEffect(() => {
     sessionStorage.setItem(`tester_mode_${getStoredUser()?.userId}`, mode);
@@ -904,12 +935,60 @@ function TestCaseSelector({
                         )}
                       </div>
                     </button>
+                    {(() => {
+                      const exec = testRun?.executions?.find(e => e.test_case_id === tc.id);
+                      if (exec?.overall_result === "blocked_dependency") {
+                        return (
+                          <div className="flex items-center gap-2 px-md py-2 bg-amber-50 border-t border-amber-200">
+                            <span className="material-symbols-outlined text-amber-600 text-sm">block</span>
+                            <span className="text-xs text-amber-800 flex-1 truncate">
+                              {exec.notes ?? "Blocked by dependency"}
+                            </span>
+                            <button
+                              onClick={() => unblockMut.mutate(exec.id)}
+                              disabled={unblockMut.isPending}
+                              className="text-xs font-medium bg-white border border-amber-300 text-amber-800 px-2.5 py-1 rounded-md hover:bg-amber-100 transition-colors disabled:opacity-50"
+                            >
+                              {unblockMut.isPending ? "..." : "Remove Block"}
+                            </button>
+                          </div>
+                        );
+                      }
+                      if (exec && !blocked) {
+                        return (
+                          <div className="flex items-center px-md py-2 border-t border-outline-variant/50">
+                            <button
+                              onClick={() => {
+                                setBlockingCaseTarget({ executionId: exec.id, testCaseId: tc.id, useCaseId: tc.use_case_id });
+                                setBlockedDialogOpen(true);
+                              }}
+                              className="inline-flex items-center gap-1 text-xs text-amber-700 hover:text-amber-900 font-medium transition-colors"
+                            >
+                              <span className="material-symbols-outlined text-[14px]">block</span>
+                              Mark as Blocked
+                            </button>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
                   </article>
                 );
               })}
             </div>
           )}
         </>
+      )}
+      {blockedDialogOpen && blockingCaseTarget && (
+        <Dialog open={blockedDialogOpen} onClose={() => { setBlockedDialogOpen(false); setBlockingCaseTarget(null); }} title="Mark Test Case as Blocked">
+          <BlockedDependencyDialog
+            currentTestCaseId={blockingCaseTarget.testCaseId}
+            useCaseId={blockingCaseTarget.useCaseId}
+            onSave={(data) => markBlockedMut.mutate(data)}
+            onCancel={() => { setBlockedDialogOpen(false); setBlockingCaseTarget(null); }}
+            loading={markBlockedMut.isPending}
+          />
+        </Dialog>
       )}
     </div>
   );
@@ -1263,6 +1342,16 @@ function StepWizard({
           </span>
         </div>
       ) : null}
+      {!previouslySubmitted && !isReadOnly && !blockReason && execution?.overall_result !== "blocked_dependency" && (
+        <button
+          onClick={() => setBlockedDialogOpen(true)}
+          className="inline-flex items-center gap-1 px-3 py-1.5 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg text-xs font-medium hover:bg-amber-100 transition-colors"
+          title="Cannot execute this test case due to a dependency failure"
+        >
+          <span className="material-symbols-outlined text-[14px]">block</span>
+          Mark as Blocked
+        </button>
+      )}
       <BackBar
         back={{ label: "Cases", href: `/tester/run/${testRunId}/scenario/${scenarioId}` }}
         current={`[${testCase.case_number}] ${testCase.title}`}
@@ -1515,12 +1604,12 @@ function StepWizard({
                 if (isReadOnly) return;
                 persistStepResult(currentStep!.id, false);
               }}
-              disabled={submitStepMut.isPending || isReadOnly}
+              disabled={submitStepMut.isPending || isReadOnly || execution?.overall_result === "blocked_dependency"}
               className={`inline-flex items-center gap-xs px-lg py-sm rounded-md font-label-md text-label-sm transition-all ${
                 stepResultsByStep.get(currentStep!.id) === false
                   ? "bg-error text-on-error shadow-sm"
                   : "text-on-surface hover:bg-surface-container-low"
-              } disabled:opacity-50`}
+              } disabled:opacity-50 ${execution?.overall_result === "blocked_dependency" ? "opacity-40 cursor-not-allowed" : ""}`}
             >
               <span className="material-symbols-outlined text-[18px]">
                 {stepResultsByStep.get(currentStep!.id) === false ? "cancel" : "circle"}
@@ -1534,12 +1623,12 @@ function StepWizard({
                 if (isReadOnly) return;
                 persistStepResult(currentStep!.id, true);
               }}
-              disabled={submitStepMut.isPending || isReadOnly}
+              disabled={submitStepMut.isPending || isReadOnly || execution?.overall_result === "blocked_dependency"}
               className={`inline-flex items-center gap-xs px-lg py-sm rounded-md font-label-md text-label-sm transition-all ${
                 stepResultsByStep.get(currentStep!.id) === true
                   ? "bg-green-600 text-white shadow-sm"
                   : "text-on-surface hover:bg-surface-container-low"
-              } disabled:opacity-50`}
+              } disabled:opacity-50 ${execution?.overall_result === "blocked_dependency" ? "opacity-40 cursor-not-allowed" : ""}`}
             >
               <span className="material-symbols-outlined text-[18px]">
                 {stepResultsByStep.get(currentStep!.id) === true ? "check_circle" : "circle"}
@@ -1547,18 +1636,6 @@ function StepWizard({
               Pass
             </button>
           </div>
-
-          {/* Mark as Blocked — only if not already submitted and not read-only */}
-          {!previouslySubmitted && !isReadOnly && !blockReason && execution?.overall_result !== "blocked_dependency" && (
-            <button
-              onClick={() => setBlockedDialogOpen(true)}
-              className="px-4 py-2 bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-sm font-medium hover:bg-amber-200 transition-colors"
-              title="Cannot execute this test case due to a dependency failure"
-            >
-              <span className="material-symbols-outlined text-sm align-middle mr-1">block</span>
-              Mark as Blocked
-            </button>
-          )}
 
           {/* Next / Submit Case */}
           {isLast ? (
@@ -2125,6 +2202,16 @@ function QuickWizard({
           </span>
         </div>
       ) : null}
+      {!previouslySubmitted && !isReadOnly && !blockReason && execution?.overall_result !== "blocked_dependency" && (
+        <button
+          onClick={() => setBlockedDialogOpen(true)}
+          className="inline-flex items-center gap-1 px-3 py-1.5 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg text-xs font-medium hover:bg-amber-100 transition-colors"
+          title="Cannot execute this test case due to a dependency failure"
+        >
+          <span className="material-symbols-outlined text-[14px]">block</span>
+          Mark as Blocked
+        </button>
+      )}
       <BackBar
         back={{ label: "Cases", href: `/tester/run/${testRunId}/scenario/${scenarioId}` }}
         current={`[${testCase.case_number}] ${testCase.title}`}
@@ -2311,12 +2398,12 @@ function QuickWizard({
                       if (isReadOnly) return;
                       handleQuickStepResult(s.id, true);
                     }}
-                    disabled={saveStepMut.isPending || isReadOnly}
+                    disabled={saveStepMut.isPending || isReadOnly || execution?.overall_result === "blocked_dependency"}
                     className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-xs px-lg py-sm rounded-lg font-label-md text-label-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
                       effective === true
                         ? "bg-green-600 text-white shadow-sm"
                         : "bg-surface-container-low text-on-surface border border-outline-variant hover:bg-green-50 hover:border-green-200 hover:text-green-700"
-                    }`}
+                    } ${execution?.overall_result === "blocked_dependency" ? "opacity-40 cursor-not-allowed" : ""}`}
                   >
                     <span className="material-symbols-outlined text-[18px]">check_circle</span>
                     Pass
@@ -2332,12 +2419,12 @@ function QuickWizard({
                       }
                       handleQuickStepResult(s.id, false);
                     }}
-                    disabled={saveStepMut.isPending || isReadOnly}
+                    disabled={saveStepMut.isPending || isReadOnly || execution?.overall_result === "blocked_dependency"}
                     className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-xs px-lg py-sm rounded-lg font-label-md text-label-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
                       effective === false
                         ? "bg-error text-on-error shadow-sm"
                         : "bg-surface-container-low text-on-surface border border-outline-variant hover:bg-red-50 hover:border-red-200 hover:text-red-700"
-                    }`}
+                    } ${execution?.overall_result === "blocked_dependency" ? "opacity-40 cursor-not-allowed" : ""}`}
                   >
                     <span className="material-symbols-outlined text-[18px]">cancel</span>
                     Fail
@@ -2365,16 +2452,6 @@ function QuickWizard({
             )}
           </div>
           <div className="flex items-center gap-sm">
-            {!previouslySubmitted && !isReadOnly && !blockReason && execution?.overall_result !== "blocked_dependency" && (
-              <button
-                onClick={() => setBlockedDialogOpen(true)}
-                className="px-4 py-2 bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-sm font-medium hover:bg-amber-200 transition-colors"
-                title="Cannot execute this test case due to a dependency failure"
-              >
-                <span className="material-symbols-outlined text-sm align-middle mr-1">block</span>
-                Mark as Blocked
-              </button>
-            )}
             <button
               onClick={onBack}
               className="px-lg py-sm border border-outline-variant text-on-surface rounded-lg font-label-md text-label-sm hover:bg-surface-container-low transition-all"

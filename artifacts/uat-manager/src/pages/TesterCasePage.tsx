@@ -662,7 +662,10 @@ function TestCaseSelector({
       const tc = testCases.find(t => t.id === exec.test_case_id);
       if (!tc) continue;
       let progress: CaseProgress;
-      if (exec.overall_result != null) {
+      if (exec.overall_result === "blocked_dependency") {
+        // Blocked by dependency — not Completed, not In Progress
+        progress = "Not Started";
+      } else if (exec.overall_result != null) {
         // Execution was submitted — it's definitively Completed
         progress = "Completed";
       } else {
@@ -875,26 +878,27 @@ function TestCaseSelector({
                               ~{tc.estimated_minutes}m
                             </span>
                           )}
-                          {blocked ? (
-                            <StatusChip variant="error" icon="block">
-                              Blocked
-                            </StatusChip>
-                          ) : (
-                            <StatusChip variant={progressStatusVariant[progress]} icon={PROGRESS_ICONS[progress]}>
-                              {PROGRESS_LABELS[progress]}
-                            </StatusChip>
-                          )}
                           {(() => {
                             const exec = testRun?.executions?.find(e => e.test_case_id === tc.id);
                             if (exec?.overall_result === "blocked_dependency") {
                               return (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200">
-                                  <span className="material-symbols-outlined text-xs">block</span>
+                                <StatusChip variant="warning" icon="block">
                                   Blocked
-                                </span>
+                                </StatusChip>
                               );
                             }
-                            return null;
+                            if (blocked) {
+                              return (
+                                <StatusChip variant="error" icon="block">
+                                  Blocked
+                                </StatusChip>
+                              );
+                            }
+                            return (
+                              <StatusChip variant={progressStatusVariant[progress]} icon={PROGRESS_ICONS[progress]}>
+                                {PROGRESS_LABELS[progress]}
+                              </StatusChip>
+                            );
                           })()}
                           {tc.retestRole === "verify" && (
                             <span className="text-[10px] uppercase tracking-wider font-bold text-green-800 bg-green-100 px-2 py-0.5 rounded-full">
@@ -939,7 +943,8 @@ function TestCaseSelector({
                     </button>
                     {(() => {
                       const exec = testRun?.executions?.find(e => e.test_case_id === tc.id);
-                      if (exec?.overall_result === "blocked_dependency") {
+                      const runCompleted = testRun?.status === "completed";
+                      if (exec?.overall_result === "blocked_dependency" && !runCompleted) {
                         return (
                           <div className="flex items-center gap-2 px-md py-2 bg-amber-50 border-t border-amber-200">
                             <span className="material-symbols-outlined text-amber-600 text-sm">block</span>
@@ -956,7 +961,17 @@ function TestCaseSelector({
                           </div>
                         );
                       }
-                      if (exec && !blocked) {
+                      if (exec?.overall_result === "blocked_dependency" && runCompleted) {
+                        return (
+                          <div className="flex items-center gap-2 px-md py-2 bg-amber-50 border-t border-amber-200">
+                            <span className="material-symbols-outlined text-amber-600 text-sm">block</span>
+                            <span className="text-xs text-amber-800 flex-1 truncate">
+                              {exec.notes ?? "Blocked by dependency"}
+                            </span>
+                          </div>
+                        );
+                      }
+                      if (exec && !blocked && !runCompleted && exec.overall_result == null) {
                         return (
                           <div className="flex items-center px-md py-2 border-t border-outline-variant/50">
                             <button

@@ -1546,7 +1546,7 @@ function StepWizard({
                 onChange={(e) => setEntry(currentStep.id, { actual_result: e.target.value })}
                 rows={3}
                 placeholder="Describe what you observed while executing this step…"
-                disabled={isReadOnly}
+                disabled={isReadOnly || execution?.overall_result === "blocked_dependency"}
                 className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base text-on-surface placeholder:text-on-surface-variant/60 focus:ring-2 focus:ring-secondary/20 focus:border-secondary outline-none transition-all resize-y disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-gray-50"
               />
             </div>
@@ -1570,7 +1570,7 @@ function StepWizard({
 
             <CameraCapture
               key={currentStep.id}
-              readOnly={isReadOnly}
+              readOnly={isReadOnly || execution?.overall_result === "blocked_dependency"}
               initialUrl={extractPhotoUrl(entry?.comments)}
               onUploaded={(url) => handlePhotoUploaded(currentStep.id, url)}
               onRemoved={() => handlePhotoRemoved(currentStep.id)}
@@ -2384,12 +2384,12 @@ function QuickWizard({
                   onChange={(ev) => setEntry(s.id, { actual_result: ev.target.value })}
                   rows={2}
                   placeholder="Describe what you observed…"
-                  disabled={isReadOnly}
+                  disabled={isReadOnly || execution?.overall_result === "blocked_dependency"}
                   className="w-full bg-surface border border-outline-variant rounded-lg px-md py-sm text-body-base text-on-surface placeholder:text-on-surface-variant/60 focus:ring-2 focus:ring-secondary/20 focus:border-secondary outline-none transition-all resize-y disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-gray-50"
                 />
                 <CameraCapture
                   key={s.id}
-                  readOnly={isReadOnly}
+                  readOnly={isReadOnly || execution?.overall_result === "blocked_dependency"}
                   initialUrl={extractPhotoUrl(e.comments)}
                   onUploaded={(url) => handleQuickPhotoUploaded(s.id, url)}
                   onRemoved={() => handleQuickPhotoRemoved(s.id)}

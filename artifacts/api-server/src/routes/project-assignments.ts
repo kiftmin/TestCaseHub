@@ -60,8 +60,7 @@ router.post("/projects/:projectId/users", async (req: AuthenticatedRequest, res,
       return;
     }
 
-    // is_qa is only meaningful on DEVELOPER assignments — force it to false otherwise.
-    const isQa = data.role === "DEVELOPER" ? (data.isQa ?? false) : false;
+    const isQa = (data.role === "DEVELOPER" || data.role === "TEST_LEAD") ? (data.isQa ?? false) : false;
 
     if (data.role === "TEST_LEAD") {
       await db.delete(schema.projectAssignments).where(
@@ -109,7 +108,7 @@ router.patch("/projects/:projectId/users/:userId", async (req: AuthenticatedRequ
     if (!existing) { res.status(404).json({ message: "Assignment not found" }); return; }
 
     const resultingRole = data.role ?? existing.role;
-    const isQa = resultingRole === "DEVELOPER" ? (data.isQa ?? existing.is_qa ?? false) : false;
+    const isQa = (resultingRole === "DEVELOPER" || resultingRole === "TEST_LEAD") ? (data.isQa ?? existing.is_qa ?? false) : false;
 
     // Keep projects.test_lead_id and single TEST_LEAD assignment in sync
     if (data.role === "TEST_LEAD") {

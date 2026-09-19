@@ -339,6 +339,8 @@ export function TesterDashboardPage() {
       ? Math.round((passedSteps.length / recordedSteps.length) * 100)
       : null;
 
+    const blockedExecs = myExecs.filter(e => e.overall_result === "blocked_dependency");
+
     const todo = grouped.reduce((s, g) => s + g.notStarted, 0);
     const inProgress = grouped.reduce((s, g) => s + g.inProgress, 0);
     const done = grouped.reduce((s, g) => s + g.completed, 0);
@@ -352,6 +354,7 @@ export function TesterDashboardPage() {
       dueToday: overview?.kpis.dueToday ?? dueToday,
       passRate: overview?.kpis.passRate ?? localPassRate,
       openDefectsFound: overview?.kpis.openDefectsFound ?? 0,
+      blockedCount: blockedExecs.length,
       todo: overview?.todayProgress.todo ?? todo,
       inProgressCount: overview?.todayProgress.inProgress ?? inProgress,
       doneCount: overview?.todayProgress.done ?? done,
@@ -472,6 +475,15 @@ export function TesterDashboardPage() {
           hint="From your executions"
           tone={kpis.openDefectsFound > 0 ? "info" : "default"}
         />
+        {kpis.blockedCount > 0 && (
+          <KpiCard
+            icon="block"
+            label="Blocked cases"
+            value={kpis.blockedCount}
+            hint="Waiting on dependency"
+            tone="warning"
+          />
+        )}
       </section>
 
       {(kpis.todo + kpis.inProgressCount + kpis.doneCount) > 0 && (

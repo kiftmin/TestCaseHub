@@ -11,6 +11,7 @@ import {
   EmptyState,
   FilterTabs,
   StatusChip,
+  Dialog,
   progressStatusVariant,
   type FilterTab,
 } from "../components/ui";
@@ -850,6 +851,18 @@ function TestCaseSelector({
                               {PROGRESS_LABELS[progress]}
                             </StatusChip>
                           )}
+                          {(() => {
+                            const exec = testRun?.executions?.find(e => e.test_case_id === tc.id);
+                            if (exec?.overall_result === "blocked_dependency") {
+                              return (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200">
+                                  <span className="material-symbols-outlined text-xs">block</span>
+                                  Blocked
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
                           {tc.retestRole === "verify" && (
                             <span className="text-[10px] uppercase tracking-wider font-bold text-green-800 bg-green-100 px-2 py-0.5 rounded-full">
                               Verify
@@ -964,6 +977,23 @@ function StepWizard({
   const [showSidebar, setShowSidebar] = useState(true);
   const [mobileStepsOpen, setMobileStepsOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [blockedDialogOpen, setBlockedDialogOpen] = useState(false);
+
+  const markBlockedMut = useMutation({
+    mutationFn: (data: { blocked_by_case_id?: number; notes?: string }) =>
+      customFetch(`/executions/${execution?.id}/mark-blocked`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+      queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+      queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+      toast.success("Test case marked as blocked");
+      setBlockedDialogOpen(false);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
 
   const currentStep = steps[stepIndex];
   const entry = currentStep ? entries.get(currentStep.id) : undefined;
@@ -1171,10 +1201,36 @@ function StepWizard({
 
   return (
     <div className="space-y-md max-w-7xl mx-auto w-full">
+      {blockedDialogOpen && (
+        <Dialog open={blockedDialogOpen} onClose={() => setBlockedDialogOpen(false)} title="Mark Test Case as Blocked">
+          <BlockedDependencyDialog
+            currentTestCaseId={testCaseId}
+            useCaseId={testCase?.use_case_id ?? 0}
+            onSave={(data) => markBlockedMut.mutate(data)}
+            onCancel={() => setBlockedDialogOpen(false)}
+            loading={markBlockedMut.isPending}
+          />
+        </Dialog>
+      )}
       {blockReason ? (
         <div className="bg-red-50 border border-red-200 rounded-xl p-md flex items-center gap-sm">
           <span className="material-symbols-outlined text-red-600">block</span>
           <span className="text-label-md text-red-800">{blockReason}</span>
+        </div>
+      ) : execution?.overall_result === "blocked_dependency" ? (
+        <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg p-4">
+          <span className="material-symbols-outlined text-amber-600 text-xl flex-shrink-0">block</span>
+          <div>
+            <p className="font-semibold text-amber-900 text-sm">Blocked by Dependency</p>
+            {execution.notes && (
+              <p className="text-amber-800 text-xs mt-1">{execution.notes}</p>
+            )}
+            {execution.blockedByCase && (
+              <p className="text-amber-700 text-xs mt-1">
+                Blocking case: <span className="font-medium">{execution.blockedByCase.case_number} — {execution.blockedByCase.title}</span>
+              </p>
+            )}
+          </div>
         </div>
       ) : isReadOnly ? (
         <div className="bg-gray-100 border border-gray-300 rounded-xl p-md flex items-center gap-sm">
@@ -1469,6 +1525,18 @@ function StepWizard({
             </button>
           </div>
 
+          {/* Mark as Blocked — only if not already submitted and not read-only */}
+          {!previouslySubmitted && !isReadOnly && !blockReason && execution?.overall_result !== "blocked_dependency" && (
+            <button
+              onClick={() => setBlockedDialogOpen(true)}
+              className="px-4 py-2 bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-sm font-medium hover:bg-amber-200 transition-colors"
+              title="Cannot execute this test case due to a dependency failure"
+            >
+              <span className="material-symbols-outlined text-sm align-middle mr-1">block</span>
+              Mark as Blocked
+            </button>
+          )}
+
           {/* Next / Submit Case */}
           {isLast ? (
             <button
@@ -1708,6 +1776,23 @@ function QuickWizard({
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [blockedDialogOpen, setBlockedDialogOpen] = useState(false);
+
+  const markBlockedMut = useMutation({
+    mutationFn: (data: { blocked_by_case_id?: number; notes?: string }) =>
+      customFetch(`/executions/${execution?.id}/mark-blocked`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+      queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+      queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+      toast.success("Test case marked as blocked");
+      setBlockedDialogOpen(false);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
 
   // Per-step save mutation (saves individual step results as they're entered)
   const saveStepMut = useMutation({
@@ -1955,10 +2040,36 @@ function QuickWizard({
 
   return (
     <div className="space-y-md max-w-4xl mx-auto w-full pb-32">
+      {blockedDialogOpen && (
+        <Dialog open={blockedDialogOpen} onClose={() => setBlockedDialogOpen(false)} title="Mark Test Case as Blocked">
+          <BlockedDependencyDialog
+            currentTestCaseId={testCaseId}
+            useCaseId={testCase?.use_case_id ?? 0}
+            onSave={(data) => markBlockedMut.mutate(data)}
+            onCancel={() => setBlockedDialogOpen(false)}
+            loading={markBlockedMut.isPending}
+          />
+        </Dialog>
+      )}
       {blockReason ? (
         <div className="bg-red-50 border border-red-200 rounded-xl p-md flex items-center gap-sm">
           <span className="material-symbols-outlined text-red-600">block</span>
           <span className="text-label-md text-red-800">{blockReason}</span>
+        </div>
+      ) : execution?.overall_result === "blocked_dependency" ? (
+        <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg p-4">
+          <span className="material-symbols-outlined text-amber-600 text-xl flex-shrink-0">block</span>
+          <div>
+            <p className="font-semibold text-amber-900 text-sm">Blocked by Dependency</p>
+            {execution.notes && (
+              <p className="text-amber-800 text-xs mt-1">{execution.notes}</p>
+            )}
+            {execution.blockedByCase && (
+              <p className="text-amber-700 text-xs mt-1">
+                Blocking case: <span className="font-medium">{execution.blockedByCase.case_number} — {execution.blockedByCase.title}</span>
+              </p>
+            )}
+          </div>
         </div>
       ) : isReadOnly ? (
         <div className="bg-gray-100 border border-gray-300 rounded-xl p-md flex items-center gap-sm">
@@ -2208,6 +2319,16 @@ function QuickWizard({
             )}
           </div>
           <div className="flex items-center gap-sm">
+            {!previouslySubmitted && !isReadOnly && !blockReason && execution?.overall_result !== "blocked_dependency" && (
+              <button
+                onClick={() => setBlockedDialogOpen(true)}
+                className="px-4 py-2 bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-sm font-medium hover:bg-amber-200 transition-colors"
+                title="Cannot execute this test case due to a dependency failure"
+              >
+                <span className="material-symbols-outlined text-sm align-middle mr-1">block</span>
+                Mark as Blocked
+              </button>
+            )}
             <button
               onClick={onBack}
               className="px-lg py-sm border border-outline-variant text-on-surface rounded-lg font-label-md text-label-sm hover:bg-surface-container-low transition-all"
@@ -2234,6 +2355,97 @@ function QuickWizard({
             </button>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Blocked Dependency Dialog
+   ──────────────────────────────────────────────────────────────────── */
+
+function BlockedDependencyDialog({
+  currentTestCaseId,
+  useCaseId,
+  onSave,
+  onCancel,
+  loading,
+}: {
+  currentTestCaseId: number;
+  useCaseId: number;
+  onSave: (data: { blocked_by_case_id?: number; notes?: string }) => void;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  const [selectedCaseId, setSelectedCaseId] = useState<number | undefined>(undefined);
+  const [notes, setNotes] = useState("");
+
+  const { data: sibling } = useQuery({
+    queryKey: ["use-case-test-cases", useCaseId],
+    queryFn: () => customFetch<{ testCases: { id: number; case_number: string; title: string }[] }>(
+      `/use-cases/${useCaseId}`
+    ),
+  });
+
+  const siblings = (sibling?.testCases ?? []).filter(tc => tc.id !== currentTestCaseId);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg p-4">
+        <span className="material-symbols-outlined text-amber-600 text-xl flex-shrink-0">warning</span>
+        <p className="text-sm text-amber-900">
+          Use this when a previous test case failure prevents you from executing this one.
+          This is <strong>not a failure</strong> — it will be re-queued for execution once
+          the blocking defect is resolved.
+        </p>
+      </div>
+
+      {siblings.length > 0 && (
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-on-surface">
+            Blocked by (optional — select the test case that caused this block)
+          </label>
+          <select
+            value={selectedCaseId ?? ""}
+            onChange={(e) => setSelectedCaseId(e.target.value ? Number(e.target.value) : undefined)}
+            className="w-full bg-surface border border-outline-variant rounded-lg p-2 text-sm"
+          >
+            <option value="">— Select blocking test case —</option>
+            {siblings.map(tc => (
+              <option key={tc.id} value={tc.id}>
+                {tc.case_number} — {tc.title}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        <label className="text-sm font-medium text-on-surface">Notes (optional)</label>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          className="w-full h-20 bg-surface border border-outline-variant rounded-lg p-3 text-sm resize-none"
+          placeholder="Briefly describe why this test case cannot be executed..."
+        />
+      </div>
+
+      <div className="flex justify-end gap-3 pt-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-4 py-2 bg-surface border border-outline-variant rounded-lg text-sm font-medium hover:bg-surface-container-high transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={loading}
+          onClick={() => onSave({ blocked_by_case_id: selectedCaseId, notes: notes.trim() || undefined })}
+          className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:brightness-110 disabled:opacity-50 transition-all"
+        >
+          {loading ? "Saving..." : "Confirm — Mark as Blocked"}
+        </button>
       </div>
     </div>
   );

@@ -270,13 +270,15 @@ export interface Execution {
   test_run_id: number;
   test_case_id: number;
   tester_id: number | null;
-  overall_result: "passed" | "failed" | "passed_by_agreement" | null;
+  overall_result: "passed" | "failed" | "passed_by_agreement" | "blocked_dependency" | null;
+  blocked_by_case_id: number | null;
   executed_at: string | null;
   notes: string | null;
   tester_name: string | null;
   status: string;
   iteration_number: number;
   testCase?: TestCase;
+  blockedByCase?: { id: number; case_number: string; title: string } | null;
   stepResults?: StepResult[];
   tester?: User;
 }

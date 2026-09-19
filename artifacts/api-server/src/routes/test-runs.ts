@@ -71,7 +71,8 @@ export async function syncUseCaseStatus(testRunId: number, useCaseId: number): P
   const isTerminal = (e: { overall_result: string | null }) =>
     e.overall_result === "passed" ||
     e.overall_result === "failed" ||
-    e.overall_result === "passed_by_agreement";
+    e.overall_result === "passed_by_agreement" ||
+    e.overall_result === "blocked_dependency";
 
   // A scenario is terminal when every *executable* test case has a terminal execution.
   // Blocked retest cases are intentionally ignored.

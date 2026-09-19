@@ -321,7 +321,8 @@ export const executions = pgTable("executions", {
   tester_name: text("tester_name"),
   tester_id: integer("tester_id").references(() => users.id, { onDelete: "set null" }),
   status: text("status", { enum: ["in_progress", "completed", "failed"] }).notNull().default("in_progress"),
-  overall_result: text("overall_result", { enum: ["passed", "failed", "passed_by_agreement"] }),
+  overall_result: text("overall_result", { enum: ["passed", "failed", "passed_by_agreement", "blocked_dependency"] }),
+  blocked_by_case_id: integer("blocked_by_case_id").references(() => testCases.id, { onDelete: "set null" }),
   notes: text("notes"),
   executed_at: timestamp("executed_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -330,6 +331,10 @@ export const executionsRelations = relations(executions, ({ one, many }) => ({
   testCase: one(testCases, { fields: [executions.test_case_id], references: [testCases.id] }),
   testRun: one(testRuns, { fields: [executions.test_run_id], references: [testRuns.id] }),
   tester: one(users, { fields: [executions.tester_id], references: [users.id] }),
+  blockedByCase: one(testCases, {
+    fields: [executions.blocked_by_case_id],
+    references: [testCases.id],
+  }),
   stepResults: many(stepResults),
   defects: many(defects),
 }));

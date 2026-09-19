@@ -27,6 +27,8 @@ export async function computeExecutionProgress(executionId: number): Promise<"No
     },
   });
   if (!execution) return "Not Started";
+  // Blocked-dependency executions are complete by definition — no steps needed
+  if (execution.overall_result === "blocked_dependency") return "Completed";
   const steps = execution.testCase?.steps ?? [];
   if (steps.length === 0) return "Not Started";
   const stepResults = execution.stepResults ?? [];
@@ -293,7 +295,7 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
       .object({
         status: z.enum(["in_progress", "completed", "failed"]).optional(),
         overall_result: z
-          .enum(["passed", "failed", "passed_by_agreement"])
+          .enum(["passed", "failed", "passed_by_agreement", "blocked_dependency"])
           .optional(),
         notes: z.string().optional(),
       })
@@ -378,6 +380,113 @@ router.patch("/executions/:executionId", async (req: AuthenticatedRequest, res, 
       .returning();
 
     await logAudit({ entityType: "execution", entityId: executionId, changedByUserId: req.user!.userId, fromStatus: oldStatus, toStatus: parsed.status });
+
+    if (execTc && execution.test_run_id) {
+      await syncUseCaseStatus(execution.test_run_id, execTc.use_case_id);
+    }
+
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/executions/:executionId/mark-blocked
+// Marks a test case execution as blocked due to a dependency failure.
+// Sets overall_result = "blocked_dependency", status = "completed",
+// and optionally records which test case caused the block.
+router.post("/executions/:executionId/mark-blocked", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const executionId = Number(req.params.executionId);
+    const data = z
+      .object({
+        blocked_by_case_id: z.number().optional(),
+        notes: z.string().optional(),
+      })
+      .parse(req.body);
+
+    const execution = await db.query.executions.findFirst({
+      where: eq(schema.executions.id, executionId),
+      with: { testRun: true, testCase: { with: { useCase: true } } },
+    });
+    if (!execution) {
+      res.status(404).json({ message: "Execution not found" });
+      return;
+    }
+
+    if (!execution.testRun.entry_confirmed) {
+      res.status(403).json({ message: "Entry criteria not confirmed for this test run" });
+      return;
+    }
+
+    const testerAllowed = await checkProjectRole(req, execution.testRun.project_id, ["TESTER", "TEST_LEAD"]);
+    if (!testerAllowed) {
+      res.status(403).json({ message: "Forbidden — only TESTER role or higher can execute" });
+      return;
+    }
+    const assigned = await isAssignedTester(execution.test_run_id!, execution.test_case_id, req.user!.userId);
+    if (!assigned) {
+      res.status(403).json({ message: "Forbidden — you are not assigned to this scenario" });
+      return;
+    }
+
+    // Check scenario lock (tester has signed off)
+    const execTc = await db.query.testCases.findFirst({
+      where: eq(schema.testCases.id, execution.test_case_id),
+      columns: { use_case_id: true },
+    });
+    if (execTc) {
+      const truc = await db.query.testRunUseCases.findFirst({
+        where: and(
+          eq(schema.testRunUseCases.test_run_id, execution.test_run_id!),
+          eq(schema.testRunUseCases.use_case_id, execTc.use_case_id),
+        ),
+        columns: { tester_sign_off: true },
+      });
+      if (truc?.tester_sign_off) {
+        res.status(423).json({ message: "Scenario is locked — tester has already signed off" });
+        return;
+      }
+    }
+
+    // Cannot mark a passed test case as blocked
+    if (execution.overall_result === "passed" || execution.overall_result === "passed_by_agreement") {
+      res.status(400).json({ message: "Cannot mark a passed test case as blocked" });
+      return;
+    }
+
+    // Validate blocked_by_case_id if provided — must be in the same scenario
+    if (data.blocked_by_case_id != null) {
+      const blockingCase = await db.query.testCases.findFirst({
+        where: eq(schema.testCases.id, data.blocked_by_case_id),
+        columns: { use_case_id: true },
+      });
+      if (!blockingCase || blockingCase.use_case_id !== execution.testCase?.use_case_id) {
+        res.status(400).json({ message: "Blocking test case must be in the same scenario" });
+        return;
+      }
+    }
+
+    const [updated] = await db
+      .update(schema.executions)
+      .set({
+        overall_result: "blocked_dependency",
+        status: "completed",
+        blocked_by_case_id: data.blocked_by_case_id ?? null,
+        notes: data.notes ?? execution.notes,
+        executed_at: new Date(),
+      })
+      .where(eq(schema.executions.id, executionId))
+      .returning();
+
+    await logAudit({
+      entityType: "execution",
+      entityId: executionId,
+      changedByUserId: req.user!.userId,
+      fromStatus: execution.status,
+      toStatus: "blocked_dependency",
+      reason: data.notes ?? "Blocked by dependency failure",
+    });
 
     if (execTc && execution.test_run_id) {
       await syncUseCaseStatus(execution.test_run_id, execTc.use_case_id);
@@ -829,7 +938,7 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
         if (retestScope?.blockedCaseIds?.includes(tc.id)) continue;
         const exec = allExecutions.find((e) => e.test_case_id === tc.id);
         // Already submitted terminal result — treat as complete even if step rows are sparse
-        if (exec?.overall_result === "passed" || exec?.overall_result === "failed" || exec?.overall_result === "passed_by_agreement") {
+        if (exec?.overall_result === "passed" || exec?.overall_result === "failed" || exec?.overall_result === "passed_by_agreement" || exec?.overall_result === "blocked_dependency") {
           continue;
         }
         if (!exec) {
@@ -923,6 +1032,8 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
       const verifyCaseIds = retestVerifyCaseIds ?? new Set<number>();
 
       // Case-level defects: one NEW defect per failed test case (not per failed step)
+      // blocked_dependency executions are intentionally skipped — they are not failures
+      // and should not generate defects. The blocking defect is raised against the upstream case.
       for (const exec of allExecutions) {
         if (exec.overall_result !== "failed") continue;
         if (lockedRun.run_type === "retest" && verifyCaseIds.has(exec.test_case_id)) {
@@ -1088,11 +1199,16 @@ router.post("/test-runs/:testRunId/submit", async (req: AuthenticatedRequest, re
           where: eq(schema.executions.test_run_id, testRunId),
           columns: { overall_result: true },
         });
+        // A run containing blocked-dependency cases is treated as not fully passed
+        const anyBlocked = allExecs.some(e => e.overall_result === "blocked_dependency");
         const allPassed =
           allExecs.length > 0 &&
           allExecs.every(
-            (e) => e.overall_result === "passed" || e.overall_result === "passed_by_agreement",
-          );
+            (e) =>
+              e.overall_result === "passed" ||
+              e.overall_result === "passed_by_agreement",
+            // blocked_dependency intentionally excluded — run is not fully passed
+          ) && !anyBlocked;
         await tx
           .update(schema.testRuns)
           .set({

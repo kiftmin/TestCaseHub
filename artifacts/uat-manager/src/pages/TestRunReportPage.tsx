@@ -44,7 +44,7 @@ interface FullReport {
     test_case_id: number;
     testCase?: { id: number; title: string; case_number: string; test_type: string | null; estimated_minutes: number | null };
     stepResults: Array<{ id: number; step_id: number; actual_result: string | null; comments: string | null; passed: boolean | null }>;
-    overall_result: "passed" | "failed" | "passed_by_agreement" | null;
+    overall_result: "passed" | "failed" | "passed_by_agreement" | "blocked_dependency" | null;
   }>;
   defects: Array<{ id: number; test_case_id: number; severity: string | null; priority: string | null; status: string }>;
 }
@@ -53,6 +53,7 @@ const resultColors: Record<string, string> = {
   passed: "bg-green-100 text-green-800",
   failed: "bg-red-100 text-red-800",
   passed_by_agreement: "bg-purple-100 text-purple-800",
+  blocked_dependency: "bg-amber-100 text-amber-800",
   pending: "bg-surface-container-high text-on-surface-variant",
   in_progress: "bg-amber-100 text-amber-800",
 };
@@ -177,6 +178,28 @@ export function TestRunReportPage({ params }: { params: { runId: string } }) {
             );
           })}
         </section>
+
+        {report.executions?.some(e => e.overall_result === "blocked_dependency") && (
+          <section className="mt-lg">
+            <h2 className="font-title-sm text-title-sm mb-md text-amber-800">
+              Blocked Test Cases (cannot be executed due to dependency failure)
+            </h2>
+            <div className="divide-y divide-outline-variant border border-outline-variant rounded-lg overflow-hidden">
+              {report.executions
+                .filter(e => e.overall_result === "blocked_dependency")
+                .map(e => (
+                  <div key={e.id} className="p-md bg-amber-50">
+                    <p className="font-label-md text-label-md font-bold text-amber-900">
+                      [{e.testCase?.case_number}] {e.testCase?.title}
+                    </p>
+                    <p className="text-xs text-amber-700 mt-1">
+                      Status: Blocked (dependency failure)
+                    </p>
+                  </div>
+                ))}
+            </div>
+          </section>
+        )}
 
         <section className="mt-lg">
           <h2 className="font-title-sm text-title-sm mb-md">Defects</h2>

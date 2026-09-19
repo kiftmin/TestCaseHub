@@ -519,7 +519,7 @@ function TeamTab({ projectId }: { projectId: number }) {
                   >
                     {a.role}
                   </p>
-                  {a.role === "DEVELOPER" && a.is_qa && (
+                  {(a.role === "DEVELOPER" || a.role === "TEST_LEAD") && a.is_qa && (
                     <span className="text-[9px] font-bold uppercase tracking-tighter bg-teal-100 text-teal-700 px-1 rounded">
                       QA
                     </span>
@@ -527,7 +527,7 @@ function TeamTab({ projectId }: { projectId: number }) {
                 </div>
               </div>
             </div>
-            {canManage && a.role === "DEVELOPER" && (
+            {canManage && (a.role === "DEVELOPER" || a.role === "TEST_LEAD") && (
               <button
                 onClick={() => patchMutation.mutate({ userId: a.user_id, isQa: !a.is_qa })}
                 className={`text-[10px] font-bold uppercase tracking-tighter px-1.5 py-0.5 rounded border ${
@@ -636,7 +636,7 @@ function AddMemberDialog({
           <select
             className="w-full bg-white border border-outline-variant rounded-lg px-md py-sm font-body-base focus:ring-2 focus:ring-secondary focus:border-secondary outline-none"
             value={role}
-            onChange={(e) => { setRole(e.target.value); if (e.target.value !== "DEVELOPER") setIsQa(false); }}
+            onChange={(e) => { setRole(e.target.value); if (e.target.value !== "DEVELOPER" && e.target.value !== "TEST_LEAD") setIsQa(false); }}
           >
             {[
               "TEST_LEAD",
@@ -652,7 +652,7 @@ function AddMemberDialog({
             ))}
           </select>
         </div>
-        {role === "DEVELOPER" && (
+        {(role === "DEVELOPER" || role === "TEST_LEAD") && (
           <label className="flex items-center gap-2 text-on-surface font-label-sm">
             <input
               type="checkbox"
@@ -660,7 +660,7 @@ function AddMemberDialog({
               onChange={(e) => setIsQa(e.target.checked)}
               className="w-4 h-4"
             />
-            Is QA? (developer with QA review capability)
+            Is QA? ({role === "TEST_LEAD" ? "test lead" : "developer"} with QA review capability)
           </label>
         )}
         <div className="flex gap-md justify-end">
@@ -672,7 +672,7 @@ function AddMemberDialog({
           </button>
           <button
             disabled={!userId || saving}
-          onClick={() => userId && onSave({ userId, role, isQa: role === "DEVELOPER" ? isQa : false })}
+          onClick={() => userId && onSave({ userId, role, isQa: role === "DEVELOPER" || role === "TEST_LEAD" ? isQa : false })}
             className="px-lg py-sm bg-secondary text-on-secondary rounded-lg font-label-md hover:brightness-110 transition-all disabled:opacity-50"
           >
             {saving ? "Adding..." : "Add Member"}

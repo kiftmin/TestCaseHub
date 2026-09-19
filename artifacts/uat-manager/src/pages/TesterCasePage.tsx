@@ -995,6 +995,20 @@ function StepWizard({
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const unblockMut = useMutation({
+    mutationFn: () =>
+      customFetch(`/executions/${execution?.id}/unblock`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+      queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+      queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+      toast.success("Test case unblocked");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const currentStep = steps[stepIndex];
   const entry = currentStep ? entries.get(currentStep.id) : undefined;
 
@@ -1220,7 +1234,7 @@ function StepWizard({
       ) : execution?.overall_result === "blocked_dependency" ? (
         <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg p-4">
           <span className="material-symbols-outlined text-amber-600 text-xl flex-shrink-0">block</span>
-          <div>
+          <div className="flex-1">
             <p className="font-semibold text-amber-900 text-sm">Blocked by Dependency</p>
             {execution.notes && (
               <p className="text-amber-800 text-xs mt-1">{execution.notes}</p>
@@ -1231,6 +1245,15 @@ function StepWizard({
               </p>
             )}
           </div>
+          {!isReadOnly && (
+            <button
+              onClick={() => unblockMut.mutate()}
+              disabled={unblockMut.isPending}
+              className="text-xs font-medium bg-white border border-amber-300 text-amber-800 px-3 py-1.5 rounded-lg hover:bg-amber-100 transition-colors disabled:opacity-50 flex-shrink-0"
+            >
+              {unblockMut.isPending ? "Unblocking..." : "Unblock"}
+            </button>
+          )}
         </div>
       ) : isReadOnly ? (
         <div className="bg-gray-100 border border-gray-300 rounded-xl p-md flex items-center gap-sm">
@@ -1794,6 +1817,20 @@ function QuickWizard({
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const unblockMut = useMutation({
+    mutationFn: () =>
+      customFetch(`/executions/${execution?.id}/unblock`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tester-execution", testRunId, testCaseId] });
+      queryClient.invalidateQueries({ queryKey: ["test-run", testRunId] });
+      queryClient.invalidateQueries({ queryKey: ["use-case", scenarioId] });
+      toast.success("Test case unblocked");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   // Per-step save mutation (saves individual step results as they're entered)
   const saveStepMut = useMutation({
     mutationFn: ({ stepId, data }: { stepId: number; data: { passed: boolean; actual_result: string; comments: string } }) =>
@@ -2059,7 +2096,7 @@ function QuickWizard({
       ) : execution?.overall_result === "blocked_dependency" ? (
         <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg p-4">
           <span className="material-symbols-outlined text-amber-600 text-xl flex-shrink-0">block</span>
-          <div>
+          <div className="flex-1">
             <p className="font-semibold text-amber-900 text-sm">Blocked by Dependency</p>
             {execution.notes && (
               <p className="text-amber-800 text-xs mt-1">{execution.notes}</p>
@@ -2070,6 +2107,15 @@ function QuickWizard({
               </p>
             )}
           </div>
+          {!isReadOnly && (
+            <button
+              onClick={() => unblockMut.mutate()}
+              disabled={unblockMut.isPending}
+              className="text-xs font-medium bg-white border border-amber-300 text-amber-800 px-3 py-1.5 rounded-lg hover:bg-amber-100 transition-colors disabled:opacity-50 flex-shrink-0"
+            >
+              {unblockMut.isPending ? "Unblocking..." : "Unblock"}
+            </button>
+          )}
         </div>
       ) : isReadOnly ? (
         <div className="bg-gray-100 border border-gray-300 rounded-xl p-md flex items-center gap-sm">

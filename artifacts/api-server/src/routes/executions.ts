@@ -498,6 +498,78 @@ router.post("/executions/:executionId/mark-blocked", async (req: AuthenticatedRe
   }
 });
 
+// POST /api/executions/:executionId/unblock
+// Removes a blocked_dependency status, resetting the execution to in_progress
+// so the tester can re-execute it.
+router.post("/executions/:executionId/unblock", async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const executionId = Number(req.params.executionId);
+
+    const execution = await db.query.executions.findFirst({
+      where: eq(schema.executions.id, executionId),
+      with: { testRun: true },
+    });
+    if (!execution) { res.status(404).json({ message: "Execution not found" }); return; }
+    if (!execution.testRun?.entry_confirmed) {
+      res.status(403).json({ message: "Entry criteria not confirmed for this test run" }); return;
+    }
+
+    const testerAllowed = await checkProjectRole(req, execution.testRun.project_id, ["TESTER", "TEST_LEAD"]);
+    if (!testerAllowed) { res.status(403).json({ message: "Forbidden" }); return; }
+
+    const assigned = await isAssignedTester(execution.test_run_id!, execution.test_case_id, req.user!.userId);
+    if (!assigned) { res.status(403).json({ message: "Forbidden — you are not assigned to this scenario" }); return; }
+
+    if (execution.overall_result !== "blocked_dependency") {
+      res.status(400).json({ message: "Only blocked executions can be unblocked" }); return;
+    }
+
+    // Check scenario lock
+    const tc = await db.query.testCases.findFirst({
+      where: eq(schema.testCases.id, execution.test_case_id),
+      columns: { use_case_id: true },
+    });
+    if (tc) {
+      const truc = await db.query.testRunUseCases.findFirst({
+        where: and(
+          eq(schema.testRunUseCases.test_run_id, execution.test_run_id!),
+          eq(schema.testRunUseCases.use_case_id, tc.use_case_id),
+        ),
+        columns: { tester_sign_off: true },
+      });
+      if (truc?.tester_sign_off) {
+        res.status(423).json({ message: "Scenario is locked — tester has already signed off" }); return;
+      }
+    }
+
+    const [updated] = await db.update(schema.executions)
+      .set({
+        overall_result: null,
+        status: "in_progress",
+        blocked_by_case_id: null,
+        notes: null,
+        executed_at: new Date(),
+      })
+      .where(eq(schema.executions.id, executionId))
+      .returning();
+
+    if (tc && execution.test_run_id) {
+      await syncUseCaseStatus(execution.test_run_id, tc.use_case_id);
+    }
+
+    await logAudit({
+      entityType: "execution",
+      entityId: executionId,
+      changedByUserId: req.user!.userId,
+      fromStatus: "blocked_dependency",
+      toStatus: "in_progress",
+      reason: "Tester removed blocked status",
+    });
+
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
 // POST /api/executions/:executionId/steps/:stepId/result
 router.post(
   "/executions/:executionId/steps/:stepId/result",

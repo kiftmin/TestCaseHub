@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 
 interface DialogProps {
   open: boolean;
@@ -29,6 +29,8 @@ export function Dialog({
   closeOnBackdrop = true,
   contentClassName = "",
 }: DialogProps) {
+  const mouseDownOnBackdrop = useRef(false);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -57,7 +59,15 @@ export function Dialog({
       <div
         className="absolute inset-0"
         style={{ backgroundColor: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)" }}
-        onClick={closeOnBackdrop ? onClose : undefined}
+        onMouseDown={(e) => {
+          mouseDownOnBackdrop.current = e.target === e.currentTarget;
+        }}
+        onClick={(e) => {
+          if (!closeOnBackdrop) return;
+          if (!mouseDownOnBackdrop.current) return;
+          if (e.target !== e.currentTarget) return;
+          onClose();
+        }}
         aria-hidden="true"
       />
       <div

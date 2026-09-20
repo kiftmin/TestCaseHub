@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { pdf } from "@react-pdf/renderer";
@@ -2741,10 +2741,25 @@ function DefectRow({
 }
 
 function Dialog({ children, onClose, title }: { children: React.ReactNode; onClose: () => void; title: string }) {
+  const mouseDownOnBackdrop = useRef(false);
   return createPortal(
-    <div className="fixed inset-0 z-[100] flex items-center justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
-      <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-md mx-4 p-lg space-y-md" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      <div
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onMouseDown={(e) => {
+          mouseDownOnBackdrop.current = e.target === e.currentTarget;
+        }}
+        onClick={(e) => {
+          // Only close on a genuine backdrop click: press AND release on the
+          // backdrop itself. A drag that starts inside the dialog (e.g.
+          // selecting text in the Reason field) fires click on the common
+          // ancestor, not the backdrop — and must not close the dialog.
+          if (e.target !== e.currentTarget) return;
+          if (!mouseDownOnBackdrop.current) return;
+          onClose();
+        }}
+      />
+      <div className="relative bg-surface-container-lowest rounded-xl shadow-2xl w-full max-w-md mx-4 p-lg space-y-md">
         <div className="flex items-center justify-between">
           <h3 className="font-title-sm text-title-sm">{title}</h3>
           <button onClick={onClose} className="p-1 rounded-full hover:bg-surface-container-low">

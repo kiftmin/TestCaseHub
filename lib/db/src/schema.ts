@@ -259,7 +259,7 @@ export const testRunCaseScope = pgTable("test_run_case_scope", {
   id: serial("id").primaryKey(),
   test_run_id: integer("test_run_id").notNull().references(() => testRuns.id, { onDelete: "cascade" }),
   test_case_id: integer("test_case_id").notNull().references(() => testCases.id, { onDelete: "cascade" }),
-  role: text("role", { enum: ["verify", "regression", "blocked"] }).notNull(),
+  role: text("role", { enum: ["verify", "regression", "blocked", "re-attempt"] }).notNull(),
   defect_id: integer("defect_id").references(() => defects.id, { onDelete: "set null" }),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

@@ -106,7 +106,7 @@ export interface UseCase {
   testCases?: (TestCase & { steps?: TestStep[] })[];
 }
 
-export type RetestCaseRole = "verify" | "regression" | "blocked";
+export type RetestCaseRole = "verify" | "regression" | "blocked" | "re-attempt";
 
 export interface ProjectPrecondition {
   id: number;
@@ -199,16 +199,30 @@ export interface RetestPreviewCase {
   blockingReason: string | null;
 }
 
+export interface ReAttemptCase {
+  testCaseId: number;
+  caseNumber: string | null;
+  caseTitle: string | null;
+  useCaseId: number;
+  useCaseCode: string | null;
+  useCaseName: string | null;
+  sourceRunId: number;
+  sourceRunName: string | null;
+  blockedByNotes: string | null;
+}
+
 export interface RetestPreview {
   summary: {
     verify: number;
     blocked: number;
     regression: number;
+    reAttempt: number;
     rfvDefects: number;
     skippedAlreadyEnrolled: number;
     scenarios: number;
   };
   cases: RetestPreviewCase[];
+  reAttemptCases: ReAttemptCase[];
 }
 
 export interface TestRun {

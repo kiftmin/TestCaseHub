@@ -744,6 +744,7 @@ function TestRunsTab({ projectId }: { projectId: number }) {
         verify_case_count?: number;
         regression_case_count?: number;
         blocked_case_count?: number;
+        re_attempt_case_count?: number;
       }>(`/projects/${projectId}/test-runs/retest`, {
         method: "POST",
         body: JSON.stringify(d),
@@ -752,16 +753,17 @@ function TestRunsTab({ projectId }: { projectId: number }) {
       verify_case_count?: number;
       regression_case_count?: number;
       blocked_case_count?: number;
+      re_attempt_case_count?: number;
     }) => {
       invalidate();
       setRetestDialog(false);
       const v = data.verify_case_count ?? 0;
+      const ra = data.re_attempt_case_count ?? 0;
       const r = data.regression_case_count ?? 0;
-      const b = data.blocked_case_count ?? 0;
       toast.success(
         `Verification run created: ${v} verify` +
-          (r ? `, ${r} regression` : "") +
-          (b ? `, ${b} blocked (not executable)` : ""),
+          (ra > 0 ? `, ${ra} re-attempt` : "") +
+          (r ? `, ${r} regression` : ""),
       );
     },
     onError: (e: Error) => toast.error(e.message),
@@ -1040,6 +1042,17 @@ function RetestRunDialog({
   const verifyGroups = groupPreviewByScenario(verifyCases);
   const blockedGroups = groupPreviewByScenario(blockedCases);
   const regressionGroups = groupPreviewByScenario(regressionCases);
+  const reAttemptCases = preview.reAttemptCases ?? [];
+  const reAttemptGroups = groupPreviewByScenario(
+    reAttemptCases.map((c) => ({
+      ...c,
+      role: "re-attempt" as const,
+      defectId: null,
+      bugNumber: null,
+      defectStatus: null,
+      blockingReason: null,
+    })),
+  );
 
   // When enabling regression, select all candidates by default
   const handleToggleRegression = (on: boolean) => {
@@ -1073,8 +1086,10 @@ function RetestRunDialog({
         <div>
           <h3 className="font-headline-md text-headline-md text-primary">Create Verification Run</h3>
           <p className="font-body-sm text-on-surface-variant mt-xs">
-            Includes test cases for <strong>Ready for Verification</strong> defects.
-            Sibling cases still in development are blocked and cannot be executed.
+            Includes test cases for <strong>Ready for Verification</strong> defects, plus any
+            test cases that were <strong>blocked by dependency</strong> in a prior run whose
+            upstream defect has since been fixed. Sibling cases still in active development
+            are shown but cannot be executed.
           </p>
         </div>
 
@@ -1089,6 +1104,11 @@ function RetestRunDialog({
           <span className="px-2 py-1 rounded bg-blue-100 text-blue-800">
             {preview.summary.regression} Regression candidates
           </span>
+          {(preview.summary.reAttempt ?? 0) > 0 && (
+            <span className="px-2 py-1 rounded bg-amber-100 text-amber-800">
+              {preview.summary.reAttempt} Re-attempt
+            </span>
+          )}
           <span className="px-2 py-1 rounded bg-surface-container-high text-on-surface-variant">
             {preview.summary.scenarios} scenario{preview.summary.scenarios === 1 ? "" : "s"}
           </span>
@@ -1179,6 +1199,50 @@ function RetestRunDialog({
                         </li>
                       ))}
                     </ul>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* ── RE-ATTEMPT ── */}
+          {reAttemptCases.length > 0 && (
+            <section className="border border-amber-200 rounded-xl overflow-hidden">
+              <header className="px-md py-sm bg-amber-50 border-b border-amber-200 flex items-center gap-2">
+                <span className="material-symbols-outlined text-amber-700 text-[18px]">replay</span>
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-amber-800">Re-attempt — always included</p>
+                  <p className="text-[11px] text-amber-700/80">
+                    Previously blocked by a dependency failure — precondition now resolved ({reAttemptCases.length} test case
+                    {reAttemptCases.length === 1 ? "" : "s"})
+                  </p>
+                </div>
+              </header>
+              <div className="max-h-48 overflow-y-auto divide-y divide-outline-variant/50">
+                {reAttemptGroups.map((group) => (
+                  <div key={group.useCaseId} className="px-md py-sm">
+                    <p className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-xs">
+                      {scenarioHeading(group.useCaseCode, group.useCaseName, group.useCaseId)}
+                    </p>
+                    {group.cases.map((c) => {
+                      const ra = reAttemptCases.find((r) => r.testCaseId === c.testCaseId);
+                      return (
+                        <div key={c.testCaseId} className="flex items-start gap-2 py-xs">
+                          <span className="material-symbols-outlined text-amber-600 text-[15px] mt-[1px] flex-shrink-0">replay</span>
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium">
+                              [{c.caseNumber}] {c.caseTitle}
+                            </p>
+                            {ra?.sourceRunName && (
+                              <p className="text-[11px] text-on-surface-variant truncate">
+                                Blocked in: {ra.sourceRunName}
+                                {ra.blockedByNotes ? ` — ${ra.blockedByNotes}` : ""}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 ))}
               </div>

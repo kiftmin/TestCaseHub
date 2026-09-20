@@ -8,7 +8,7 @@ import { db } from "../db.js";
 import * as schema from "@workspace/db";
 import { authenticate, authorize, checkProjectRole, denyUnlessProjectAccess, AuthenticatedRequest } from "../middlewares/auth.js";
 import { bumpProjectVersion, logAudit } from "../utils/project.js";
-import { classifySiblingCases } from "../utils/retest-scope.js";
+import { classifySiblingCases, fetchBlockedDependencyCases } from "../utils/retest-scope.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -269,16 +269,33 @@ router.get("/:projectId/test-runs/retest-preview", async (req: AuthenticatedRequ
     const eligible = defects.filter((d) => !alreadyEnrolled.has(d.id) && d.testCase);
     const siblings = await classifySiblingCases(projectId, eligible);
 
+    // Find scenario IDs included via verify cases
+    const verifyUseCaseIds = siblings
+      .filter((s) => s.role === "verify")
+      .map((s) => s.useCaseId);
+
+    // Find blocked_dependency cases from prior completed runs in the same scenarios
+    const alreadyClassifiedIds = new Set(siblings.map((s) => s.testCaseId));
+    const reAttemptCases = await fetchBlockedDependencyCases(
+      projectId,
+      verifyUseCaseIds,
+      alreadyClassifiedIds,
+    );
+
     const summary = {
       verify: siblings.filter((s) => s.role === "verify").length,
       blocked: siblings.filter((s) => s.role === "blocked").length,
       regression: siblings.filter((s) => s.role === "regression").length,
+      reAttempt: reAttemptCases.length,
       rfvDefects: eligible.length,
       skippedAlreadyEnrolled: defects.length - eligible.length,
-      scenarios: new Set(siblings.map((s) => s.useCaseId)).size,
+      scenarios: new Set([
+        ...siblings.map((s) => s.useCaseId),
+        ...reAttemptCases.map((c) => c.useCaseId),
+      ]).size,
     };
 
-    res.json({ summary, cases: siblings });
+    res.json({ summary, cases: siblings, reAttemptCases });
   } catch (err) {
     next(err);
   }
@@ -369,10 +386,19 @@ router.post("/:projectId/test-runs/retest", async (req: AuthenticatedRequest, re
       regressionToInclude = regressionCandidates.filter((c) => allowedIds.has(c.testCaseId));
     }
 
+    const verifyUseCaseIds = verifyCases.map((c) => c.useCaseId);
+    const alreadyClassifiedIds = new Set(siblings.map((s) => s.testCaseId));
+    const reAttemptCases = await fetchBlockedDependencyCases(
+      projectId,
+      verifyUseCaseIds,
+      alreadyClassifiedIds,
+    );
+
     const useCaseIds = Array.from(
       new Set([
         ...verifyCases.map((c) => c.useCaseId),
         ...regressionToInclude.map((c) => c.useCaseId),
+        ...reAttemptCases.map((c) => c.useCaseId),
         // Keep blocked scenarios for visibility when they share a scenario with verify
         ...blockedCases
           .filter((b) => verifyCases.some((v) => v.useCaseId === b.useCaseId))
@@ -409,7 +435,7 @@ router.post("/:projectId/test-runs/retest", async (req: AuthenticatedRequest, re
       const scopeRows: Array<{
         test_run_id: number;
         test_case_id: number;
-        role: "verify" | "regression" | "blocked";
+        role: "verify" | "regression" | "blocked" | "re-attempt";
         defect_id: number | null;
       }> = [];
 
@@ -437,6 +463,19 @@ router.post("/:projectId/test-runs/retest", async (req: AuthenticatedRequest, re
           test_case_id: c.testCaseId,
           role: "blocked",
           defect_id: c.defectId,
+        });
+      }
+      // Re-attempt: previously blocked_dependency cases whose preconditions are now resolved.
+      // These ARE executable — the upstream defect has been fixed.
+      for (const c of reAttemptCases) {
+        if (!useCaseIds.includes(c.useCaseId)) continue;
+        // Avoid inserting a duplicate if somehow already in scope
+        if (scopeRows.some((r) => r.test_case_id === c.testCaseId)) continue;
+        scopeRows.push({
+          test_run_id: run.id,
+          test_case_id: c.testCaseId,
+          role: "re-attempt",
+          defect_id: null,
         });
       }
 
@@ -467,7 +506,7 @@ router.post("/:projectId/test-runs/retest", async (req: AuthenticatedRequest, re
       entityId: newRun.id,
       changedByUserId: req.user!.userId,
       toStatus: "created_retest",
-      reason: `verify=${verifyCases.length} regression=${regressionToInclude.length} blocked=${blockedCases.length} scenarios=${useCaseIds.length}`,
+      reason: `verify=${verifyCases.length} regression=${regressionToInclude.length} blocked=${blockedCases.length} reAttempt=${reAttemptCases.length} scenarios=${useCaseIds.length}`,
     });
 
     res.status(201).json({
@@ -476,6 +515,7 @@ router.post("/:projectId/test-runs/retest", async (req: AuthenticatedRequest, re
       verify_case_count: verifyCases.length,
       regression_case_count: regressionToInclude.length,
       blocked_case_count: blockedCases.filter((b) => useCaseIds.includes(b.useCaseId)).length,
+      re_attempt_case_count: reAttemptCases.length,
       use_case_count: useCaseIds.length,
       skipped_already_enrolled: defects.length - eligible.length,
       verification_items: verifyCases.map((c) => ({

@@ -1,4 +1,4 @@
-import { eq, and, ne, inArray, notInArray } from "drizzle-orm";
+import { eq, and, ne, inArray, notInArray, desc } from "drizzle-orm";
 import { db } from "../db.js";
 import * as schema from "@workspace/db";
 
@@ -11,7 +11,7 @@ export const TERMINAL_DEFECT_STATUSES = [
 /** Statuses that mean "fix is ready to verify" — case is VERIFY. */
 export const VERIFY_DEFECT_STATUSES = ["READY_FOR_VERIFICATION"] as const;
 
-export type CaseRole = "verify" | "regression" | "blocked";
+export type CaseRole = "verify" | "regression" | "blocked" | "re-attempt";
 
 export type SiblingCasePreview = {
   testCaseId: number;
@@ -43,7 +43,7 @@ export type RetestScopeItem = {
 
 export type RetestScope = {
   defectIds: number[];
-  /** Executable cases only (verify + regression). */
+  /** Executable cases only (verify + regression + re-attempt). */
   testCaseIds: number[];
   /** All scoped cases including blocked. */
   allTestCaseIds: number[];
@@ -52,6 +52,7 @@ export type RetestScope = {
   verifyCaseIds: number[];
   regressionCaseIds: number[];
   blockedCaseIds: number[];
+  reAttemptCaseIds: number[];
 };
 
 /**
@@ -281,6 +282,7 @@ function buildScopeFromRows(
   const verifyCaseIds = new Set<number>();
   const regressionCaseIds = new Set<number>();
   const blockedCaseIds = new Set<number>();
+  const reAttemptCaseIds = new Set<number>();
   const useCaseIds = new Set<number>();
 
   for (const r of rows) {
@@ -291,6 +293,8 @@ function buildScopeFromRows(
       if (r.defectId) defectIds.push(r.defectId);
     } else if (r.role === "regression") {
       regressionCaseIds.add(r.testCaseId);
+    } else if (r.role === "re-attempt") {
+      reAttemptCaseIds.add(r.testCaseId);
     } else {
       blockedCaseIds.add(r.testCaseId);
     }
@@ -306,13 +310,14 @@ function buildScopeFromRows(
       useCaseName: r.useCaseName,
       defectStatus: r.defectStatus,
       role: r.role,
-      executable: r.role === "verify" || r.role === "regression",
+      executable: r.role === "verify" || r.role === "regression" || r.role === "re-attempt",
     });
   }
 
   const executableIds = [
     ...Array.from(verifyCaseIds),
     ...Array.from(regressionCaseIds),
+    ...Array.from(reAttemptCaseIds),
   ];
 
   return {
@@ -324,6 +329,7 @@ function buildScopeFromRows(
     verifyCaseIds: Array.from(verifyCaseIds),
     regressionCaseIds: Array.from(regressionCaseIds),
     blockedCaseIds: Array.from(blockedCaseIds),
+    reAttemptCaseIds: Array.from(reAttemptCaseIds),
   };
 }
 
@@ -347,7 +353,7 @@ export async function isTestCaseInRetestScope(
     columns: { role: true },
   });
   if (scopeRow) {
-    return scopeRow.role === "verify" || scopeRow.role === "regression";
+    return scopeRow.role === "verify" || scopeRow.role === "regression" || scopeRow.role === "re-attempt";
   }
 
   // Legacy: enrolled via defect_retests
@@ -389,7 +395,7 @@ export async function getRetestCaseBlockReason(
       const st = scopeRow.defect?.status;
       return `Blocked — open defect${bn != null ? ` #${bn}` : ""}${st ? ` (${st})` : ""} still in development`;
     }
-    if (scopeRow.role === "verify" || scopeRow.role === "regression") return null;
+    if (scopeRow.role === "verify" || scopeRow.role === "regression" || scopeRow.role === "re-attempt") return null;
   }
 
   const inScope = await isTestCaseInRetestScope(testRunId, testCaseId, runType);
@@ -397,6 +403,123 @@ export async function getRetestCaseBlockReason(
     return "This test case is not in retest scope";
   }
   return null;
+}
+
+/**
+ * Finds test cases that were marked blocked_dependency in completed runs for
+ * this project and whose scenarios overlap with the given useCaseIds.
+ * These are candidates for re-attempt in a verification run.
+ *
+ * Excludes cases that:
+ * - Already appear in alreadyClassifiedIds (avoid double-counting)
+ * - Have an open (non-terminal) defect of their own
+ */
+export async function fetchBlockedDependencyCases(
+  projectId: number,
+  useCaseIds: number[],
+  alreadyClassifiedIds: Set<number>,
+): Promise<Array<{
+  testCaseId: number;
+  caseNumber: string | null;
+  caseTitle: string | null;
+  useCaseId: number;
+  useCaseCode: string | null;
+  useCaseName: string | null;
+  sourceRunId: number;
+  sourceRunName: string | null;
+  blockedByNotes: string | null;
+}>> {
+  if (useCaseIds.length === 0) return [];
+
+  // Find all test cases in the relevant scenarios
+  const scenarios = await db.query.useCases.findMany({
+    where: inArray(schema.useCases.id, useCaseIds),
+    columns: { id: true, code: true, name: true },
+    with: {
+      testCases: {
+        columns: { id: true, case_number: true, title: true, use_case_id: true },
+      },
+    },
+  });
+
+  const candidateCaseIds = scenarios
+    .flatMap((s) => s.testCases.map((tc) => ({ ...tc, useCaseCode: s.code, useCaseName: s.name })))
+    .filter((tc) => !alreadyClassifiedIds.has(tc.id));
+
+  if (candidateCaseIds.length === 0) return [];
+
+  const caseIdList = candidateCaseIds.map((tc) => tc.id);
+
+  // Find completed runs for this project that have blocked_dependency executions
+  const completedRuns = await db.query.testRuns.findMany({
+    where: and(
+      eq(schema.testRuns.project_id, projectId),
+      eq(schema.testRuns.status, "completed"),
+    ),
+    columns: { id: true, name: true },
+  });
+
+  if (completedRuns.length === 0) return [];
+
+  const runIds = completedRuns.map((r) => r.id);
+
+  // Find blocked_dependency executions for these cases in those runs
+  const blockedExecs = await db.query.executions.findMany({
+    where: and(
+      inArray(schema.executions.test_run_id, runIds),
+      inArray(schema.executions.test_case_id, caseIdList),
+      eq(schema.executions.overall_result, "blocked_dependency"),
+    ),
+    columns: {
+      test_case_id: true,
+      test_run_id: true,
+      notes: true,
+    },
+    orderBy: [desc(schema.executions.executed_at)],
+  });
+
+  if (blockedExecs.length === 0) return [];
+
+  // Deduplicate — one entry per test case (most recent block)
+  const seenCaseIds = new Set<number>();
+  const uniqueBlockedExecs = blockedExecs.filter((e) => {
+    if (seenCaseIds.has(e.test_case_id)) return false;
+    seenCaseIds.add(e.test_case_id);
+    return true;
+  });
+
+  // Exclude cases that have their own open (non-terminal) defects
+  const openDefects = await db.query.defects.findMany({
+    where: and(
+      eq(schema.defects.project_id, projectId),
+      inArray(schema.defects.test_case_id, uniqueBlockedExecs.map((e) => e.test_case_id)),
+      notInArray(schema.defects.status, [...TERMINAL_DEFECT_STATUSES]),
+    ),
+    columns: { test_case_id: true },
+  });
+  const hasOpenDefect = new Set(openDefects.map((d) => d.test_case_id));
+
+  const runMap = new Map(completedRuns.map((r) => [r.id, r.name]));
+  const caseMap = new Map(
+    candidateCaseIds.map((tc) => [tc.id, tc]),
+  );
+
+  return uniqueBlockedExecs
+    .filter((e) => !hasOpenDefect.has(e.test_case_id))
+    .map((e) => {
+      const tc = caseMap.get(e.test_case_id)!;
+      return {
+        testCaseId: e.test_case_id,
+        caseNumber: tc.case_number,
+        caseTitle: tc.title,
+        useCaseId: tc.use_case_id,
+        useCaseCode: tc.useCaseCode,
+        useCaseName: tc.useCaseName,
+        sourceRunId: e.test_run_id!,
+        sourceRunName: runMap.get(e.test_run_id!) ?? null,
+        blockedByNotes: e.notes,
+      };
+    });
 }
 
 /** Defect IDs enrolled in any incomplete retest run for this project. */

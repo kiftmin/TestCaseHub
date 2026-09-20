@@ -30,16 +30,22 @@ export function Dialog({
   contentClassName = "",
 }: DialogProps) {
   const mouseDownOnBackdrop = useRef(false);
+  const backdropRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
+    const onMouseDown = (e: MouseEvent) => {
+      mouseDownOnBackdrop.current = e.target === backdropRef.current;
+    };
     window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onMouseDown);
     document.body.style.overflow = "hidden";
     return () => {
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onMouseDown);
       document.body.style.overflow = "";
     };
   }, [open, onClose]);
@@ -57,11 +63,9 @@ export function Dialog({
       aria-label={title}
     >
       <div
+        ref={backdropRef}
         className="absolute inset-0"
         style={{ backgroundColor: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)" }}
-        onMouseDown={(e) => {
-          mouseDownOnBackdrop.current = e.target === e.currentTarget;
-        }}
         onClick={(e) => {
           if (!closeOnBackdrop) return;
           if (!mouseDownOnBackdrop.current) return;

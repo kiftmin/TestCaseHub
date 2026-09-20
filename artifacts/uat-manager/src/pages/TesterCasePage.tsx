@@ -914,6 +914,11 @@ function TestCaseSelector({
                               Regression
                             </span>
                           )}
+                          {tc.retestRole === "re-attempt" && (
+                            <span className="text-[10px] uppercase tracking-wider font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full">
+                              Re-attempt
+                            </span>
+                          )}
                         </div>
                         <p className="font-title-sm text-title-sm text-on-surface leading-snug">
                           {tc.title}
